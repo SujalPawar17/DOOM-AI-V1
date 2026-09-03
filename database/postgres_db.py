@@ -1,0 +1,488 @@
+import os
+import json
+import time
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+try:
+    import psycopg2
+    from psycopg2 import pool, extras
+    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+
+
+class PostgresManager:
+    """
+    PostgreSQL Database Manager for DOOM V2
+    Handles connection lifecycle, auto-database creation, table schema migrations,
+    telemetry logging, and Memory 2.0 relational synchronization.
+    """
+    def __init__(self):
+        self.user = os.getenv("DB_USER", "postgres")
+        self.password = os.getenv("DB_PASSWORD", "Admin@123")
+        self.host = os.getenv("DB_HOST", "localhost")
+        self.port = int(os.getenv("DB_PORT", "5432"))
+        self.dbname = os.getenv("DB_NAME", "Doom")
+        self.sslmode = os.getenv("DB_SSLMODE", "disable")
+        self._pool = None
+        self._connected = False
+        self._initialized = False
+
+        if PSYCOPG2_AVAILABLE:
+            self._init_db()
+
+    def _get_connection_params(self, dbname: Optional[str] = None) -> Dict[str, Any]:
+        return {
+            "user": self.user,
+            "password": self.password,
+            "host": self.host,
+            "port": self.port,
+            "dbname": dbname or self.dbname,
+            "sslmode": self.sslmode,
+            "connect_timeout": 5
+        }
+
+    def _ensure_database_exists(self):
+        """Connects to the default 'postgres' db and creates 'Doom' if it doesn't exist."""
+        try:
+            admin_conn = psycopg2.connect(**self._get_connection_params(dbname="postgres"))
+            admin_conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            cur = admin_conn.cursor()
+            cur.execute("SELECT 1 FROM pg_database WHERE LOWER(datname) = LOWER(%s)", (self.dbname,))
+            exists = cur.fetchone()
+            if not exists:
+                print(f"[POSTGRES] Database '{self.dbname}' not found. Creating database now...")
+                safe_db_name = self.dbname.replace('"', '""')
+                cur.execute(f'CREATE DATABASE "{safe_db_name}"')
+                print(f"[POSTGRES] [OK] Database '{self.dbname}' created successfully.")
+            cur.close()
+            admin_conn.close()
+        except Exception as e:
+            print(f"[POSTGRES NOTE] Check/Create database step: {e}")
+
+    def _init_db(self):
+        """Initializes connection pool and ensures schemas are present."""
+        if not PSYCOPG2_AVAILABLE:
+            return
+
+        try:
+            self._ensure_database_exists()
+
+            # Create connection pool
+            self._pool = pool.SimpleConnectionPool(
+                minconn=1,
+                maxconn=10,
+                **self._get_connection_params()
+            )
+            self._connected = True
+            self._create_tables()
+            self._initialized = True
+            print(f"[POSTGRES] [OK] Connected to PostgreSQL '{self.dbname}' on {self.host}:{self.port}")
+        except Exception as e:
+            self._connected = False
+            print(f"[POSTGRES ERROR] Failed to connect to PostgreSQL: {e}")
+
+    def _create_tables(self):
+        """Initializes all DOOM relational tables if they do not exist."""
+        queries = [
+            """
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                id VARCHAR(50) PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                role VARCHAR(100),
+                title VARCHAR(50),
+                preferences JSONB,
+                projects JSONB,
+                custom_notes JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS episodic_memory (
+                id SERIAL PRIMARY KEY,
+                episode_id VARCHAR(100) UNIQUE,
+                goal TEXT NOT NULL,
+                plan_steps JSONB,
+                tools_called JSONB,
+                outcome TEXT,
+                success BOOLEAN DEFAULT TRUE,
+                recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS semantic_facts (
+                key VARCHAR(150) PRIMARY KEY,
+                value JSONB NOT NULL,
+                category VARCHAR(100) DEFAULT 'general',
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS system_telemetry (
+                id SERIAL PRIMARY KEY,
+                cpu_percent REAL,
+                ram_percent REAL,
+                disk_percent REAL,
+                raw_metrics JSONB,
+                recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS command_logs (
+                id SERIAL PRIMARY KEY,
+                user_command TEXT NOT NULL,
+                response_text TEXT,
+                tools_used JSONB,
+                latency_ms REAL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        ]
+
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                for q in queries:
+                    cur.execute(q)
+            conn.commit()
+            print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs")
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Failed to create schema tables: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def get_connection(self):
+        """Retrieves a connection from the pool or creates a standalone connection."""
+        if not PSYCOPG2_AVAILABLE:
+            return None
+        if self._pool:
+            try:
+                return self._pool.getconn()
+            except Exception:
+                pass
+        try:
+            return psycopg2.connect(**self._get_connection_params())
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Could not get connection: {e}")
+            return None
+
+    def release_connection(self, conn):
+        """Releases a connection back to the pool."""
+        if not conn:
+            return
+        if self._pool:
+            try:
+                self._pool.putconn(conn)
+                return
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def is_connected(self) -> bool:
+        """Health check for active database connection."""
+        conn = self.get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                res = cur.fetchone()
+                return res is not None and res[0] == 1
+        except Exception:
+            return False
+        finally:
+            self.release_connection(conn)
+
+    def test_connection(self) -> Dict[str, Any]:
+        """Returns diagnostic statistics about database and table rows."""
+        if not PSYCOPG2_AVAILABLE:
+            return {"status": "error", "message": "psycopg2 library not available"}
+
+        conn = self.get_connection()
+        if not conn:
+            return {"status": "disconnected", "database": self.dbname, "host": f"{self.host}:{self.port}"}
+
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT 
+                        (SELECT COUNT(*) FROM user_profiles) AS profile_count,
+                        (SELECT COUNT(*) FROM episodic_memory) AS episode_count,
+                        (SELECT COUNT(*) FROM semantic_facts) AS fact_count,
+                        (SELECT COUNT(*) FROM system_telemetry) AS telemetry_count,
+                        (SELECT COUNT(*) FROM command_logs) AS log_count;
+                """)
+                counts = cur.fetchone()
+
+                return {
+                    "status": "connected",
+                    "database": self.dbname,
+                    "host": f"{self.host}:{self.port}",
+                    "user": self.user,
+                    "tables": dict(counts) if counts else {}
+                }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        finally:
+            self.release_connection(conn)
+
+    # -------------------------------------------------------------
+    # User Profile Operations
+    # -------------------------------------------------------------
+    def save_user_profile(self, data: Dict[str, Any], user_id: str = "sujal"):
+        """Saves or updates Sujal's persistent profile in PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO user_profiles (id, name, role, title, preferences, projects, custom_notes, last_updated)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        role = EXCLUDED.role,
+                        title = EXCLUDED.title,
+                        preferences = EXCLUDED.preferences,
+                        projects = EXCLUDED.projects,
+                        custom_notes = EXCLUDED.custom_notes,
+                        last_updated = CURRENT_TIMESTAMP;
+                """, (
+                    user_id,
+                    data.get("name", "Sujal"),
+                    data.get("role", "Creator, Boss, and Lead AI Engineer"),
+                    data.get("title", "Sir"),
+                    json.dumps(data.get("preferences", {})),
+                    json.dumps(data.get("projects", [])),
+                    json.dumps(data.get("custom_notes", {}))
+                ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Failed to save user profile: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def load_user_profile(self, user_id: str = "sujal") -> Optional[Dict[str, Any]]:
+        """Loads user profile from PostgreSQL if available."""
+        conn = self.get_connection()
+        if not conn:
+            return None
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM user_profiles WHERE id = %s;", (user_id,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "name": row["name"],
+                        "role": row["role"],
+                        "title": row["title"],
+                        "preferences": row["preferences"] if isinstance(row["preferences"], dict) else json.loads(row["preferences"] or "{}"),
+                        "projects": row["projects"] if isinstance(row["projects"], list) else json.loads(row["projects"] or "[]"),
+                        "custom_notes": row["custom_notes"] if isinstance(row["custom_notes"], dict) else json.loads(row["custom_notes"] or "{}"),
+                        "last_updated": row["last_updated"].isoformat() if row["last_updated"] else None
+                    }
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Failed to load user profile: {e}")
+        finally:
+            self.release_connection(conn)
+        return None
+
+    # -------------------------------------------------------------
+    # Episodic Memory Operations
+    # -------------------------------------------------------------
+    def record_episode(self, episode_id: str, goal: str, plan_steps: List[str], tools_called: List[Dict[str, Any]], outcome: str, success: bool = True):
+        """Records an action episode into PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO episodic_memory (episode_id, goal, plan_steps, tools_called, outcome, success, recorded_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (episode_id) DO UPDATE SET
+                        goal = EXCLUDED.goal,
+                        plan_steps = EXCLUDED.plan_steps,
+                        tools_called = EXCLUDED.tools_called,
+                        outcome = EXCLUDED.outcome,
+                        success = EXCLUDED.success;
+                """, (
+                    episode_id,
+                    goal,
+                    json.dumps(plan_steps),
+                    json.dumps(tools_called),
+                    outcome,
+                    success
+                ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Failed to record episode: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def get_recent_episodes(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Retrieves recent action episodes from PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return []
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM episodic_memory ORDER BY recorded_at DESC LIMIT %s;", (limit,))
+                rows = cur.fetchall()
+                results = []
+                for r in rows:
+                    results.append({
+                        "id": r["episode_id"],
+                        "goal": r["goal"],
+                        "plan_steps": r["plan_steps"],
+                        "tools_called": r["tools_called"],
+                        "outcome": r["outcome"],
+                        "success": r["success"],
+                        "timestamp": r["recorded_at"].isoformat() if r["recorded_at"] else ""
+                    })
+                return results
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Failed to fetch episodes: {e}")
+            return []
+        finally:
+            self.release_connection(conn)
+
+    # -------------------------------------------------------------
+    # Semantic Facts Operations
+    # -------------------------------------------------------------
+    def save_semantic_fact(self, key: str, value: Any, category: str = "general"):
+        """Saves a permanent fact to PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO semantic_facts (key, value, category, updated_at)
+                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        category = EXCLUDED.category,
+                        updated_at = CURRENT_TIMESTAMP;
+                """, (key.lower().strip(), json.dumps(value), category))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Failed to save semantic fact: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def load_semantic_facts(self) -> Dict[str, Any]:
+        """Loads all semantic facts from PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("SELECT key, value FROM semantic_facts;")
+                rows = cur.fetchall()
+                return {r["key"]: r["value"] for r in rows}
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Failed to load semantic facts: {e}")
+            return {}
+        finally:
+            self.release_connection(conn)
+
+    # -------------------------------------------------------------
+    # Telemetry & Command Logging (Dashboard Data)
+    # -------------------------------------------------------------
+    def log_telemetry(self, cpu_percent: float, ram_percent: float, disk_percent: float, raw_metrics: Optional[Dict[str, Any]] = None):
+        """Logs hardware telemetry snapshot for dashboard monitoring."""
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO system_telemetry (cpu_percent, ram_percent, disk_percent, raw_metrics, recorded_at)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP);
+                """, (cpu_percent, ram_percent, disk_percent, json.dumps(raw_metrics or {})))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Telemetry log error: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def log_command(self, user_command: str, response_text: str, tools_used: Optional[List[str]] = None, latency_ms: float = 0.0):
+        """Logs user command query and DOOM response for dashboard auditing."""
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO command_logs (user_command, response_text, tools_used, latency_ms, created_at)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP);
+                """, (user_command, response_text, json.dumps(tools_used or []), latency_ms))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Command log error: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def get_table_counts(self) -> Dict[str, int]:
+        """Returns row counts for all 5 core tables."""
+        conn = self.get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cur:
+                counts = {}
+                for tbl in ["user_profiles", "episodic_memory", "semantic_facts", "system_telemetry", "command_logs"]:
+                    cur.execute(f"SELECT COUNT(*) FROM {tbl};")
+                    counts[tbl] = cur.fetchone()[0]
+                return counts
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Failed to fetch table counts: {e}")
+            return {}
+        finally:
+            self.release_connection(conn)
+
+    def execute_query(self, query: str, params: Optional[tuple] = None, readonly: bool = True) -> List[Dict[str, Any]]:
+        """Executes a SQL query safely and returns list of dictionaries."""
+        conn = self.get_connection()
+        if not conn:
+            return [{"error": "Database not connected"}]
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute(query, params or ())
+                if readonly or query.strip().upper().startswith("SELECT"):
+                    rows = cur.fetchall()
+                    return [dict(r) for r in rows]
+                else:
+                    conn.commit()
+                    return [{"rows_affected": cur.rowcount, "status": "success"}]
+        except Exception as e:
+            if not readonly:
+                conn.rollback()
+            return [{"error": str(e)}]
+        finally:
+            self.release_connection(conn)
+
+
+# Global singleton instance
+postgres_manager = PostgresManager()

@@ -1,0 +1,49 @@
+# Core AI and Speech
+speechrecognition==3.10.0
+pyttsx3==2.90
+gtts==2.4.0
+pygame==2.5.2
+pywhatkit
+googletrans==4.0.0rc1
+requests==2.31.0
+colorama==0.4.6
+
+# High-Tech Neural Voice (JARVIS British Accent - 100% FREE)
+edge-tts>=6.1.9
+# elevenlabs (optional)
+
+# Fast Cloud AI & Tool Calling (Optional)
+groq>=0.4.0
+openai>=1.0.0
+
+# UI and Styling
+rich==13.7.0
+typing-extensions>=4.8.0
+
+# Web Search & Intelligence
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# Automation & OS Control
+pyautogui
+schedule
+psutil
+
+# Computer Vision & Gestures
+opencv-python
+pillow
+numpy
+scipy
+scikit-learn
+
+# Audio & Acoustic Sensors
+pyaudio
+
+# Global hotkey for stop button
+keyboard
+
+# Environment
+python-dotenv
+aiohttp
+asyncio
+websockets

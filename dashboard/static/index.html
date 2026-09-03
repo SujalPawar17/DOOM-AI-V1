@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DOOM V2 — Holographic Control HUD</title>
+    <meta name="description" content="DOOM V2 Autonomous Personal AI Operating System Holographic Control Center & HUD">
+    <!-- Google Fonts: Orbitron (Futuristic Display) & Inter (Modern UI) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="cyber-body">
+    <!-- Background Animated Cyber Grid & Ambient Glows -->
+    <div class="cyber-grid-bg"></div>
+    <div class="ambient-glow glow-cyan"></div>
+    <div class="ambient-glow glow-purple"></div>
+    <div class="scanlines"></div>
+
+    <!-- MAIN APP CONTAINER -->
+    <div class="hud-container">
+        
+        <!-- PROACTIVE SENTINEL ALERT BANNER -->
+        <div class="sentinel-alert-banner" id="sentinel-banner" style="display: none;">
+            <div class="sentinel-alert-content">
+                <span class="sentinel-icon">⚠️</span>
+                <span class="sentinel-msg" id="sentinel-msg">SENTINEL: All systems nominal.</span>
+            </div>
+            <button class="btn-dismiss-alert" id="btn-dismiss-alert">ACKNOWLEDGE</button>
+        </div>
+
+        <!-- TOP HUD HEADER BAR -->
+        <header class="hud-header">
+            <div class="brand-block">
+                <div class="brand-icon-wrapper">
+                    <div class="brand-pulse"></div>
+                    <span class="brand-glyph">⬡</span>
+                </div>
+                <div>
+                    <h1 class="hud-title">DOOM <span class="accent-text">V2.0</span></h1>
+                    <p class="hud-subtitle">AUTONOMOUS PERSONAL AI OS // CREATOR: <span class="creator-tag">SUJAL</span></p>
+                </div>
+            </div>
+
+            <!-- Central Live Indicators -->
+            <div class="header-badges">
+                <div class="status-badge" id="system-status-badge">
+                    <span class="badge-dot pulse-green"></span>
+                    <span class="badge-label">SYSTEM</span>
+                    <span class="badge-val" id="badge-system-val">ONLINE</span>
+                </div>
+
+                <div class="status-badge" id="postgres-badge">
+                    <span class="badge-dot pulse-cyan"></span>
+                    <span class="badge-label">POSTGRES</span>
+                    <span class="badge-val" id="badge-db-val">CONNECTED</span>
+                </div>
+
+                <div class="status-badge" id="model-badge">
+                    <span class="badge-dot pulse-purple"></span>
+                    <span class="badge-label">BRAIN</span>
+                    <span class="badge-val" id="badge-model-val">GROQ (500 T/S)</span>
+                </div>
+
+                <div class="status-badge" id="tools-badge">
+                    <span class="badge-dot pulse-amber"></span>
+                    <span class="badge-label">TOOLS</span>
+                    <span class="badge-val" id="badge-tools-val">30 ACTIVE</span>
+                </div>
+            </div>
+
+            <!-- Header Controls: Gestures, Morning Schedule, Hands-Free Mic, Voice & Clock -->
+            <div class="header-right-block">
+                <button class="voice-toggle-btn" id="btn-gesture-toggle" title="Toggle Iron Man Webcam Gesture Controls">
+                    <span class="voice-icon" id="gesture-icon">🖐️</span>
+                    <span class="voice-label" id="gesture-label">GESTURES</span>
+                </button>
+
+                <button class="voice-toggle-btn" id="btn-schedule-briefing" title="Set Scheduled Morning Briefing Alarm">
+                    <span class="voice-icon">⏰</span>
+                    <span class="voice-label" id="schedule-time-label">09:00 AM</span>
+                </button>
+
+                <button class="voice-toggle-btn hands-free-btn active" id="btn-handsfree-toggle" title="Continuous Hands-Free Listening (Say 'Hey DOOM')">
+                    <span class="voice-icon" id="handsfree-icon">🎙️</span>
+                    <span class="voice-label" id="handsfree-label">HANDS-FREE ON</span>
+                </button>
+
+                <button class="voice-toggle-btn active" id="btn-voice-toggle" title="Toggle Neural Voice Audio Output">
+                    <span class="voice-icon" id="voice-icon">🔊</span>
+                    <span class="voice-label" id="voice-label">AUDIO ON</span>
+                </button>
+
+                <div class="clock-block">
+                    <div class="digital-time" id="digital-clock">00:00:00</div>
+                    <div class="uptime-label" id="uptime-display">UPTIME: 0h 0m</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- WORKSTATION MODES ACTION BAR (IRON MAN MACROS) -->
+        <section class="modes-action-bar">
+            <span class="modes-label">⚡ WORKSTATION MODES:</span>
+            <button class="mode-btn mode-code" data-mode="code" id="btn-mode-code">
+                <span class="mode-glyph">💻</span>
+                <div class="mode-text-wrap">
+                    <span class="mode-title">CODE MODE</span>
+                    <span class="mode-sub">Antigravity • Cursor • VS Code</span>
+                </div>
+            </button>
+            <button class="mode-btn mode-briefing" data-mode="briefing" id="btn-mode-briefing">
+                <span class="mode-glyph">☀️</span>
+                <div class="mode-text-wrap">
+                    <span class="mode-title">DAILY BRIEFING</span>
+                    <span class="mode-sub">Health • Day Intelligence</span>
+                </div>
+            </button>
+            <button class="mode-btn mode-standup" data-mode="standup" id="btn-mode-standup">
+                <span class="mode-glyph">📊</span>
+                <div class="mode-text-wrap">
+                    <span class="mode-title">STANDUP REPORT</span>
+                    <span class="mode-sub">Past 24h SQL Audit</span>
+                </div>
+            </button>
+            <button class="mode-btn mode-scaffold" data-mode="scaffold" id="btn-mode-scaffold">
+                <span class="mode-glyph">🏗️</span>
+                <div class="mode-text-wrap">
+                    <span class="mode-title">SCAFFOLD</span>
+                    <span class="mode-sub">FastAPI • React • Next.js</span>
+                </div>
+            </button>
+            <button class="mode-btn mode-vision" data-mode="vision" id="btn-mode-vision">
+                <span class="mode-glyph">👁️</span>
+                <div class="mode-text-wrap">
+                    <span class="mode-title">SCREEN EYE</span>
+                    <span class="mode-sub">Look at My Screen</span>
+                </div>
+            </button>
+            <button class="mode-btn mode-lock" data-mode="lockdown" id="btn-mode-lock">
+                <span class="mode-glyph">🔒</span>
+                <div class="mode-text-wrap">
+                    <span class="mode-title">LOCKDOWN</span>
+                    <span class="mode-sub">Secure & Audit Log</span>
+                </div>
+            </button>
+        </section>
+
+        <!-- CYBERPUNK AMBIENT MUSIC DJ & YOUTUBE BAR -->
+        <section class="cyber-music-bar" id="music-player-bar">
+            <div class="music-left-info">
+                <button class="btn-music-play" id="btn-music-play" title="Play / Pause Ambient Focus Music">
+                    <span id="music-play-icon">▶</span>
+                </button>
+                <div class="music-equalizer" id="music-equalizer">
+                    <span class="eq-bar eq-1"></span>
+                    <span class="eq-bar eq-2"></span>
+                    <span class="eq-bar eq-3"></span>
+                    <span class="eq-bar eq-4"></span>
+                </div>
+                <div class="music-meta-wrap">
+                    <span class="music-track-title" id="music-track-title">NEON OVERDRIVE // CYBERPUNK SYNTHWAVE</span>
+                    <span class="music-station-tag" id="music-station-tag">FOCUS HIGH (AUTO-DUCKING ENABLED)</span>
+                </div>
+            </div>
+
+            <div class="music-controls-right">
+                <!-- YouTube Instant Search Bar -->
+                <form id="yt-search-form" class="yt-search-form" onsubmit="return false;">
+                    <span class="yt-glyph">📺</span>
+                    <input type="text" id="yt-search-input" class="yt-input" placeholder="Search & Stream YouTube song (e.g. 'Interstellar', 'Believer')...">
+                    <button type="submit" id="btn-yt-play" class="btn-yt-submit">STREAM ▶</button>
+                </form>
+
+                <button class="btn-music-skip" id="btn-music-prev" title="Previous Station">⏮</button>
+                <button class="btn-music-skip" id="btn-music-next" title="Next Station">⏭</button>
+                <div class="volume-slider-wrap">
+                    <span class="vol-icon">🔉</span>
+                    <input type="range" id="music-volume" class="cyber-range" min="0" max="1" step="0.05" value="0.7">
+                </div>
+            </div>
+        </section>
+
+        <!-- WEBCAM GESTURE HUD WINDOW OVERLAY (TOGGLEABLE) -->
+        <div class="gesture-hud-overlay" id="gesture-hud-overlay" style="display: none;">
+            <div class="gesture-hud-header">
+                <div class="card-title-wrap">
+                    <span class="card-icon">🖐️</span>
+                    <span class="gesture-hud-title">IRON MAN VISION GESTURE SENSOR</span>
+                </div>
+                <button class="btn-close-gesture" id="btn-close-gesture">✕</button>
+            </div>
+            <div class="gesture-video-wrapper">
+                <video id="gestureVideo" autoplay playsinline muted width="320" height="240"></video>
+                <canvas id="gestureCanvas" width="320" height="240" class="gesture-canvas-overlay"></canvas>
+                <div class="gesture-crosshair"></div>
+                <div class="gesture-targeting-box"></div>
+            </div>
+            <div class="gesture-status-bar">
+                <span class="gesture-pill" id="gesture-status-pill">SENSOR READY</span>
+                <span class="gesture-hint" id="gesture-hint">Wave hand to cycle tabs • Palm for Briefing • Fist for Lockdown</span>
+            </div>
+        </div>
+
+        <!-- MAIN 3-COLUMN WORKSPACE -->
+        <main class="hud-main-grid">
+            
+            <!-- LEFT COLUMN: LIVE TELEMETRY & HARDWARE GAUGES -->
+            <section class="hud-card telemetry-card" id="telemetry-section">
+                <div class="card-header">
+                    <div class="card-title-wrap">
+                        <span class="card-icon">⚡</span>
+                        <h2 class="card-title">SYSTEM TELEMETRY</h2>
+                    </div>
+                    <span class="live-tag">LIVE WS</span>
+                </div>
+
+                <!-- Hardware Gauge Circular Ring Meters -->
+                <div class="gauges-row">
+                    <!-- CPU Gauge -->
+                    <div class="gauge-item">
+                        <div class="gauge-circle" data-metric="cpu">
+                            <svg viewBox="0 0 100 100" class="gauge-svg">
+                                <circle class="gauge-track" cx="50" cy="50" r="40"></circle>
+                                <circle class="gauge-bar" id="cpu-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="180"></circle>
+                            </svg>
+                            <div class="gauge-center-val">
+                                <span class="gauge-number" id="cpu-val">0</span><span class="gauge-unit">%</span>
+                            </div>
+                        </div>
+                        <span class="gauge-label">CPU LOAD</span>
+                    </div>
+
+                    <!-- RAM Gauge -->
+                    <div class="gauge-item">
+                        <div class="gauge-circle" data-metric="ram">
+                            <svg viewBox="0 0 100 100" class="gauge-svg">
+                                <circle class="gauge-track" cx="50" cy="50" r="40"></circle>
+                                <circle class="gauge-bar bar-purple" id="ram-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="120"></circle>
+                            </svg>
+                            <div class="gauge-center-val">
+                                <span class="gauge-number" id="ram-val">0</span><span class="gauge-unit">%</span>
+                            </div>
+                        </div>
+                        <span class="gauge-label">RAM USAGE</span>
+                    </div>
+
+                    <!-- DISK Gauge -->
+                    <div class="gauge-item">
+                        <div class="gauge-circle" data-metric="disk">
+                            <svg viewBox="0 0 100 100" class="gauge-svg">
+                                <circle class="gauge-track" cx="50" cy="50" r="40"></circle>
+                                <circle class="gauge-bar bar-amber" id="disk-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="60"></circle>
+                            </svg>
+                            <div class="gauge-center-val">
+                                <span class="gauge-number" id="disk-val">0</span><span class="gauge-unit">%</span>
+                            </div>
+                        </div>
+                        <span class="gauge-label">STORAGE</span>
+                    </div>
+                </div>
+
+                <!-- Hardware Detailed Metrics Grid -->
+                <div class="metric-tiles-grid">
+                    <div class="metric-tile">
+                        <span class="metric-tile-label">RAM USED</span>
+                        <span class="metric-tile-val" id="metric-ram-used">0 GB / 0 GB</span>
+                    </div>
+                    <div class="metric-tile">
+                        <span class="metric-tile-label">STORAGE FREE</span>
+                        <span class="metric-tile-val" id="metric-disk-free">0 GB</span>
+                    </div>
+                    <div class="metric-tile">
+                        <span class="metric-tile-label">PROCESSES</span>
+                        <span class="metric-tile-val text-cyan" id="metric-processes">0 ACTIVE</span>
+                    </div>
+                    <div class="metric-tile">
+                        <span class="metric-tile-label">NET I/O (RX/TX)</span>
+                        <span class="metric-tile-val text-green" id="metric-network">0 / 0 MB</span>
+                    </div>
+                </div>
+
+                <!-- Rolling Live Canvas Telemetry Chart -->
+                <div class="chart-wrapper">
+                    <div class="chart-header">
+                        <span class="chart-title">REAL-TIME LOAD STREAM</span>
+                        <div class="chart-legend">
+                            <span class="legend-dot dot-cyan"></span> CPU
+                            <span class="legend-dot dot-purple"></span> RAM
+                        </div>
+                    </div>
+                    <canvas id="telemetryCanvas" width="400" height="130"></canvas>
+                </div>
+            </section>
+
+            <!-- CENTER COLUMN: HOLOGRAPHIC ARC REACTOR & VOICE/ACTION CONSOLE -->
+            <section class="hud-card center-card" id="core-reactor-section">
+                
+                <!-- Holographic Arc Reactor Visualizer -->
+                <div class="reactor-container">
+                    <div class="reactor-ring ring-outer"></div>
+                    <div class="reactor-ring ring-middle"></div>
+                    <div class="reactor-ring ring-inner"></div>
+                    <canvas id="coreCanvas" width="220" height="220" class="reactor-core-canvas"></canvas>
+                    
+                    <div class="core-text-overlay">
+                        <div class="core-status-text" id="core-state-text">DOOM ONLINE</div>
+                        <div class="core-sub-text">WE ARE DOOM // AWAITING COMMAND</div>
+                    </div>
+                </div>
+
+                <!-- Interactive Command Terminal Form with Live Mic -->
+                <div class="command-terminal-box">
+                    <div class="terminal-header">
+                        <span class="term-prompt-label">SUJAL@DOOM-OS:~$</span>
+                        <span class="term-status-indicator" id="term-status-indicator">READY</span>
+                    </div>
+
+                    <form id="command-form" class="command-input-row" onsubmit="return false;">
+                        <button type="button" id="btn-mic" class="btn-mic" title="Speak to DOOM (Click to Talk)">
+                            <span class="mic-icon">🎙️</span>
+                        </button>
+                        <input 
+                            type="text" 
+                            id="command-input" 
+                            class="cyber-input" 
+                            placeholder="Ask or speak a goal (e.g. 'Play music', 'Daily briefing', 'Code mode', 'Calc 2**16')..." 
+                            autocomplete="off"
+                            required
+                        >
+                        <button type="submit" id="btn-execute" class="btn-cyber-primary">
+                            <span class="btn-text">EXECUTE</span>
+                            <span class="btn-glyph">▶</span>
+                        </button>
+                    </form>
+
+                    <!-- Quick Action Command Chips -->
+                    <div class="quick-chips-row">
+                        <span class="chip-label">QUICK:</span>
+                        <button type="button" class="quick-chip" data-cmd="Who am I?">Who am I?</button>
+                        <button type="button" class="quick-chip" data-cmd="Daily briefing">Briefing</button>
+                        <button type="button" class="quick-chip" data-cmd="Standup report">Standup</button>
+                        <button type="button" class="quick-chip" data-cmd="Play synthwave music">Play Music 🎵</button>
+                        <button type="button" class="quick-chip" data-cmd="database telemetry">Hardware Logs</button>
+                    </div>
+
+                    <!-- AI Orchestrator Realtime Response Box -->
+                    <div class="response-display-box" id="response-box">
+                        <div class="response-header">
+                            <span class="response-title">DOOM RESPONSE</span>
+                            <span class="response-meta" id="response-meta">Ready for command</span>
+                        </div>
+                        <div class="response-content" id="response-content">
+                            Greetings, Boss Sujal. DOOM V2 Holographic OS is online, fully synced with PostgreSQL 'Doom' database, and standing by for your instructions. We are DOOM.
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RIGHT COLUMN: MODEL ROUTER & 30 AUTONOMOUS TOOLS -->
+            <section class="hud-card models-card" id="models-tools-section">
+                
+                <!-- Model Router Matrix -->
+                <div class="card-header">
+                    <div class="card-title-wrap">
+                        <span class="card-icon">🧠</span>
+                        <h2 class="card-title">INTELLIGENCE MATRIX</h2>
+                    </div>
+                    <span class="live-tag">6 PROVIDERS</span>
+                </div>
+
+                <div class="models-grid" id="models-matrix-grid">
+                    <div class="model-tile active" id="provider-groq">
+                        <div class="model-header-row">
+                            <span class="model-name">GROQ CLOUD</span>
+                            <span class="model-pill pill-green">LIVE 500 T/S</span>
+                        </div>
+                        <span class="model-desc">LLaMA 3.3 / GPT-OSS 20B Reasoning</span>
+                    </div>
+
+                    <div class="model-tile" id="provider-bedrock">
+                        <div class="model-header-row">
+                            <span class="model-name">AMAZON BEDROCK</span>
+                            <span class="model-pill pill-cyan">PRIORITY 1</span>
+                        </div>
+                        <span class="model-desc">Claude 3.5 Sonnet / Nova / Grok</span>
+                    </div>
+
+                    <div class="model-tile" id="provider-gemini">
+                        <div class="model-header-row">
+                            <span class="model-name">GOOGLE GEMINI</span>
+                            <span class="model-pill">2.0 FLASH</span>
+                        </div>
+                        <span class="model-desc">Multimodal & Fast Reasoning</span>
+                    </div>
+
+                    <div class="model-tile active" id="provider-fallback">
+                        <div class="model-header-row">
+                            <span class="model-name">LOCAL FALLBACK</span>
+                            <span class="model-pill pill-green">ACTIVE</span>
+                        </div>
+                        <span class="model-desc">Zero-Config Rule & Task Engine</span>
+                    </div>
+                </div>
+
+                <!-- 30 Tools Explorer -->
+                <div class="tools-explorer-block">
+                    <div class="tools-explorer-header">
+                        <div class="card-title-wrap">
+                            <span class="card-icon">🛠️</span>
+                            <h3 class="tools-sub-title">TOOL REGISTRY (30)</h3>
+                        </div>
+                        <span class="tools-count-badge" id="tools-count-pill">30 REGISTERED</span>
+                    </div>
+
+                    <div class="tools-pills-container" id="tools-pills-list">
+                        <!-- Populated dynamically via app.js -->
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- BOTTOM WORKSPACE: POSTGRESQL MEMORY 2.0 & AUDIT TABS -->
+        <footer class="hud-footer-tabs">
+            <div class="tabs-header-bar">
+                <div class="tab-buttons">
+                    <button class="tab-btn active" data-tab="tab-audit" id="btn-tab-audit">
+                        <span class="tab-glyph">📊</span> COMMAND AUDIT LOGS (<span id="count-logs">0</span>)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-episodes" id="btn-tab-episodes">
+                        <span class="tab-glyph">📜</span> EPISODIC MEMORY (<span id="count-episodes">0</span>)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-facts" id="btn-tab-facts">
+                        <span class="tab-glyph">🧠</span> SEMANTIC FACTS (<span id="count-facts">0</span>)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-api-tester" id="btn-tab-api-tester">
+                        <span class="tab-glyph">⚡</span> API TESTER & BENCHMARK
+                    </button>
+                    <button class="tab-btn" data-tab="tab-scaffolder" id="btn-tab-scaffolder">
+                        <span class="tab-glyph">🏗️</span> CODEBASE SCAFFOLDER
+                    </button>
+                    <button class="tab-btn" data-tab="tab-agent-studio" id="btn-tab-agent-studio">
+                        <span class="tab-glyph">🤖</span> AI AGENT STUDIO (PAIR PROGRAMMER)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-profile" id="btn-tab-profile">
+                        <span class="tab-glyph">👑</span> USER PROFILE (SUJAL)
+                    </button>
+                </div>
+
+                <div class="tab-actions">
+                    <button type="button" class="btn-tab-refresh" id="btn-refresh-tabs">
+                        <span>↻ REFRESH DB</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- TAB CONTENT CONTAINER -->
+            <div class="tab-content-area">
+                
+                <!-- TAB 1: Command Audit Logs with Latency -->
+                <div class="tab-panel active" id="tab-audit">
+                    <div class="table-responsive">
+                        <table class="cyber-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>USER INPUT / GOAL</th>
+                                    <th>MODEL ROUTED</th>
+                                    <th>TOOL EXECUTED</th>
+                                    <th>LATENCY</th>
+                                    <th>STATUS</th>
+                                    <th>TIMESTAMP</th>
+                                </tr>
+                            </thead>
+                            <tbody id="audit-table-body">
+                                <tr><td colspan="7" class="loading-cell">Loading PostgreSQL Command Logs...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- TAB 2: Episodic Memory -->
+                <div class="tab-panel" id="tab-episodes">
+                    <div class="episodes-feed" id="episodes-feed-list">
+                        <div class="empty-feed">Loading PostgreSQL Episodic Records...</div>
+                    </div>
+                </div>
+
+                <!-- TAB 3: Semantic Facts -->
+                <div class="tab-panel" id="tab-facts">
+                    <div class="facts-grid" id="facts-grid-list">
+                        <div class="empty-feed">Loading PostgreSQL Semantic Facts...</div>
+                    </div>
+                </div>
+
+                <!-- TAB 4: API Tester & Latency Benchmarker (Mini Postman) -->
+                <div class="tab-panel" id="tab-api-tester">
+                    <div class="api-tester-layout">
+                        <!-- Request Bar -->
+                        <div class="api-request-bar">
+                            <select id="api-method" class="cyber-select">
+                                <option value="GET">GET</option>
+                                <option value="POST">POST</option>
+                                <option value="PUT">PUT</option>
+                                <option value="DELETE">DELETE</option>
+                                <option value="PATCH">PATCH</option>
+                            </select>
+                            <input type="text" id="api-url" class="cyber-api-input" placeholder="Enter endpoint URL (e.g. https://api.github.com/users/sujal)" value="https://api.github.com/users/sujal">
+                            <button id="btn-api-send" class="btn-api-send">SEND REQUEST ⚡</button>
+                        </div>
+
+                        <div class="api-body-section" id="api-body-wrap" style="display: none;">
+                            <label class="api-label">JSON REQUEST BODY:</label>
+                            <textarea id="api-request-body" class="cyber-textarea" placeholder='{"key": "value"}'></textarea>
+                        </div>
+
+                        <!-- Response Header Bar -->
+                        <div class="api-response-header">
+                            <div class="api-metrics">
+                                <span class="api-metric-item">STATUS: <span id="api-status-pill" class="pill-green">READY</span></span>
+                                <span class="api-metric-item">LATENCY: <span id="api-latency-pill" class="text-cyan">0 ms</span></span>
+                                <span class="api-metric-item">TYPE: <span id="api-type-pill" class="text-purple">-</span></span>
+                            </div>
+                            <div class="api-action-buttons">
+                                <button id="btn-gen-typescript" class="btn-api-sub">📝 Gen TypeScript</button>
+                                <button id="btn-gen-pydantic" class="btn-api-sub">🐍 Gen Pydantic</button>
+                                <button id="btn-copy-json" class="btn-api-sub">📋 Copy JSON</button>
+                            </div>
+                        </div>
+
+                        <!-- Response & Code Split View -->
+                        <div class="api-response-viewer">
+                            <pre id="api-response-json" class="cyber-code-block">// Response JSON or Generated Types will appear here... Click 'SEND REQUEST ⚡' to test.</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 5: Codebase Scaffolder -->
+                <div class="tab-panel" id="tab-scaffolder">
+                    <div class="scaffolder-layout">
+                        <div class="scaffolder-form">
+                            <div class="form-row">
+                                <label class="scaffold-label">PROJECT NAME:</label>
+                                <input type="text" id="scaffold-project-name" class="cyber-api-input" placeholder="e.g. OrderService" value="OrderService">
+                            </div>
+                            <div class="form-row">
+                                <label class="scaffold-label">TEMPLATE STACK:</label>
+                                <div class="template-grid">
+                                    <label class="template-card active">
+                                        <input type="radio" name="scaffold-template" value="fastapi_postgres" checked>
+                                        <div class="template-info">
+                                            <span class="tpl-title">🚀 FastAPI + PostgreSQL</span>
+                                            <span class="tpl-sub">FastAPI, SQLAlchemy, Docker, Compose, PyTest</span>
+                                        </div>
+                                    </label>
+                                    <label class="template-card">
+                                        <input type="radio" name="scaffold-template" value="react_vite">
+                                        <div class="template-info">
+                                            <span class="tpl-title">⚛️ React + Vite + TypeScript</span>
+                                            <span class="tpl-sub">React 18, Vite, TS, Lucide Icons</span>
+                                        </div>
+                                    </label>
+                                    <label class="template-card">
+                                        <input type="radio" name="scaffold-template" value="nextjs_fullstack">
+                                        <div class="template-info">
+                                            <span class="tpl-title">▲ Next.js 14 Fullstack</span>
+                                            <span class="tpl-sub">App Router, Server Actions, API Routes</span>
+                                        </div>
+                                    </label>
+                                    <label class="template-card">
+                                        <input type="radio" name="scaffold-template" value="flask_microservice">
+                                        <div class="template-info">
+                                            <span class="tpl-title">🐍 Flask Microservice</span>
+                                            <span class="tpl-sub">Flask, PyTest, Gunicorn, Alpine Docker</span>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <label class="scaffold-label">PROJECT REQUIREMENTS & FEATURES (AI CUSTOMIZER):</label>
+                                <textarea id="scaffold-description" class="cyber-textarea" placeholder="Describe specific business logic (e.g. 'Hospital Management API with patient appointment booking, doctor schedules, and JWT auth with PostgreSQL')..."></textarea>
+                            </div>
+                            <div class="form-row">
+                                <label class="scaffold-label">TARGET FOLDER PATH (OPTIONAL):</label>
+                                <input type="text" id="scaffold-target-dir" class="cyber-api-input" placeholder="Defaults to your Desktop">
+                            </div>
+                            <button id="btn-scaffold-generate" class="btn-scaffold-submit">🚀 GENERATE COMPLETE CODEBASE NOW</button>
+                        </div>
+                        <div class="scaffolder-output">
+                            <span class="scaffold-output-title">SCAFFOLDING STATUS & LOGS:</span>
+                            <pre id="scaffold-log-box" class="cyber-code-block">// Select a template above and click 'GENERATE' to autonomously build a complete codebase.</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 6: AI AGENT STUDIO — DOOM INTELLIGENCE PANEL (ANTIGRAVITY-STYLE) -->
+                <div class="tab-panel" id="tab-agent-studio">
+                    <div class="agent-studio-layout-v2">
+
+                        <!-- LEFT: CHAT MAIN WINDOW -->
+                        <div class="agent-chat-window">
+
+                            <!-- Chat Window Header Bar -->
+                            <div class="agent-window-header">
+                                <div class="agent-window-brand">
+                                    <div class="agent-window-orb">
+                                        <div class="agent-orb-pulse"></div>
+                                        <span class="agent-orb-glyph">⬡</span>
+                                    </div>
+                                    <div>
+                                        <div class="agent-window-title">DOOM</div>
+                                        <div class="agent-window-sub">AI Intelligence Panel</div>
+                                    </div>
+                                </div>
+                                <div class="agent-window-header-actions">
+                                    <button class="agent-header-btn" id="btn-agent-new-chat" title="New Conversation">✦ New Chat</button>
+                                    <button class="agent-header-btn agent-header-btn-danger" id="btn-clear-agent-chat-v2" title="Clear History">✕ Clear</button>
+                                </div>
+                            </div>
+
+                            <!-- Messages Feed -->
+                            <div class="agent-messages-feed" id="agent-chat-feed">
+                                <!-- Welcome Message -->
+                                <div class="agent-msg-v2 agent-msg-ai">
+                                    <div class="agent-msg-avatar">
+                                        <div class="avatar-ai-dot"></div>
+                                        <span>D</span>
+                                    </div>
+                                    <div class="agent-msg-content-wrap">
+                                        <div class="agent-msg-meta-row">
+                                            <span class="agent-msg-sender">DOOM AI</span>
+                                            <span class="agent-msg-timestamp" id="welcome-ts"></span>
+                                        </div>
+                                        <div class="agent-msg-text">
+                                            <p>Greetings, <strong>Boss Sujal</strong>. Your personal AI intelligence panel is online.</p>
+                                            <p style="margin-top:0.5rem; color: var(--text-secondary);">I can help you:</p>
+                                            <ul class="agent-welcome-list">
+                                                <li>⚡ <strong>Write & generate</strong> code, APIs, tests, and entire projects</li>
+                                                <li>🐛 <strong>Debug & fix</strong> errors, trace issues, analyze stack traces</li>
+                                                <li>🏗️ <strong>Architect</strong> systems, plan microservices, design schemas</li>
+                                                <li>📝 <strong>Refactor</strong> and review your existing code files</li>
+                                                <li>🤖 <strong>Automate</strong> anything via DOOM's 30+ autonomous tools</li>
+                                            </ul>
+                                            <p style="margin-top:0.6rem; color: var(--neon-cyan); font-size:0.78rem;">Select a model → type your goal → press Enter. Let's build.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Typing Indicator (hidden by default) -->
+                            <div class="agent-typing-indicator" id="agent-typing-indicator" style="display:none;">
+                                <div class="agent-msg-avatar">
+                                    <div class="avatar-ai-dot"></div>
+                                    <span>D</span>
+                                </div>
+                                <div class="typing-dots-wrap">
+                                    <span class="typing-label" id="typing-label-text">DOOM is thinking</span>
+                                    <div class="typing-dots">
+                                        <span class="dot dot1"></span>
+                                        <span class="dot dot2"></span>
+                                        <span class="dot dot3"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Input Area -->
+                            <div class="agent-input-area">
+                                <!-- Quick Action Chips -->
+                                <div class="agent-quick-chips" id="agent-quick-chips">
+                                    <button class="agent-chip" data-quick="Write a Python FastAPI endpoint for user authentication with JWT">⚡ Auth API</button>
+                                    <button class="agent-chip" data-quick="Debug this code and explain the issue">🐛 Debug Code</button>
+                                    <button class="agent-chip" data-quick="Write unit tests for my code using pytest">🧪 Gen Tests</button>
+                                    <button class="agent-chip" data-quick="Refactor this code to be cleaner and more efficient">✨ Refactor</button>
+                                    <button class="agent-chip" data-quick="Explain this code step by step">📖 Explain</button>
+                                    <button class="agent-chip" data-quick="Write a React component with TypeScript">⚛️ React Comp</button>
+                                </div>
+
+                                <!-- File Context -->
+                                <div class="agent-file-context-bar">
+                                    <span class="file-ctx-label">📁</span>
+                                    <input type="text" id="agent-file-path" class="agent-file-ctx-input" placeholder="Attach file path for context (optional)  e.g. tools/computer_tools.py">
+                                </div>
+
+                                <!-- Main Input Row -->
+                                <div class="agent-main-input-row">
+                                    <div class="agent-input-box">
+                                        <textarea
+                                            id="agent-prompt-input"
+                                            class="agent-textarea-v2"
+                                            placeholder="Ask anything, @ to mention files, / for actions..."
+                                            rows="2"
+                                        ></textarea>
+                                        <div class="agent-input-footer">
+                                            <span class="agent-input-hint">Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to send</span>
+                                            <div class="agent-input-actions">
+                                                <button class="agent-input-action-btn" id="btn-agent-mic" title="Voice Input">🎙️</button>
+                                                <button class="agent-input-action-btn agent-send-btn" id="btn-agent-send">
+                                                    <span id="agent-send-label">Send</span>
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Bottom Disclaimer -->
+                                <div class="agent-disclaimer">
+                                    <span>⚠ AI may make mistakes. Double-check all generated code.</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- RIGHT: SIDEBAR (Model + Mode + Context) -->
+                        <div class="agent-sidebar">
+
+                            <!-- Model Selector Panel -->
+                            <div class="agent-sidebar-card">
+                                <div class="sidebar-card-title">
+                                    <span class="sidebar-card-icon">🧠</span>
+                                    AI MODEL
+                                </div>
+                                <div class="agent-model-list" id="agent-model-list">
+                                    <div class="agent-model-option active" data-model="groq">
+                                        <div class="model-option-indicator"></div>
+                                        <div class="model-option-info">
+                                            <span class="model-option-name">Groq LPU</span>
+                                            <span class="model-option-sub">LLaMA 3.3 • 500 T/S</span>
+                                        </div>
+                                        <span class="model-option-badge badge-green">FAST</span>
+                                    </div>
+                                    <div class="agent-model-option" data-model="bedrock_claude">
+                                        <div class="model-option-indicator indicator-purple"></div>
+                                        <div class="model-option-info">
+                                            <span class="model-option-name">Claude 3.5 Sonnet</span>
+                                            <span class="model-option-sub">AWS Bedrock • Priority 1</span>
+                                        </div>
+                                        <span class="model-option-badge badge-purple">SMART</span>
+                                    </div>
+                                    <div class="agent-model-option" data-model="bedrock_nova">
+                                        <div class="model-option-indicator indicator-cyan"></div>
+                                        <div class="model-option-info">
+                                            <span class="model-option-name">Nova Pro</span>
+                                            <span class="model-option-sub">AWS Bedrock • Amazon</span>
+                                        </div>
+                                        <span class="model-option-badge badge-cyan">NOVA</span>
+                                    </div>
+                                    <div class="agent-model-option" data-model="gemini">
+                                        <div class="model-option-indicator indicator-amber"></div>
+                                        <div class="model-option-info">
+                                            <span class="model-option-name">Gemini 2.0 Flash</span>
+                                            <span class="model-option-sub">Google • Multimodal</span>
+                                        </div>
+                                        <span class="model-option-badge badge-amber">VISION</span>
+                                    </div>
+                                    <div class="agent-model-option" data-model="auto">
+                                        <div class="model-option-indicator indicator-multi"></div>
+                                        <div class="model-option-info">
+                                            <span class="model-option-name">DOOM Auto-Router</span>
+                                            <span class="model-option-sub">Best model per task</span>
+                                        </div>
+                                        <span class="model-option-badge badge-multi">AUTO</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Mode Selector -->
+                            <div class="agent-sidebar-card">
+                                <div class="sidebar-card-title">
+                                    <span class="sidebar-card-icon">⚙️</span>
+                                    AGENT MODE
+                                </div>
+                                <div class="agent-mode-list" id="agent-mode-list">
+                                    <div class="agent-mode-option active" data-agent-mode="pair_programmer">
+                                        <span class="mode-option-icon">💻</span>
+                                        <div class="mode-option-text">
+                                            <span class="mode-option-name">Pair Programmer</span>
+                                            <span class="mode-option-sub">Write & build code</span>
+                                        </div>
+                                    </div>
+                                    <div class="agent-mode-option" data-agent-mode="architect">
+                                        <span class="mode-option-icon">🏗️</span>
+                                        <div class="mode-option-text">
+                                            <span class="mode-option-name">Architect</span>
+                                            <span class="mode-option-sub">System design & planning</span>
+                                        </div>
+                                    </div>
+                                    <div class="agent-mode-option" data-agent-mode="debugger">
+                                        <span class="mode-option-icon">🐛</span>
+                                        <div class="mode-option-text">
+                                            <span class="mode-option-name">Bug Hunter</span>
+                                            <span class="mode-option-sub">Debug & fix errors</span>
+                                        </div>
+                                    </div>
+                                    <div class="agent-mode-option" data-agent-mode="reviewer">
+                                        <span class="mode-option-icon">👁️</span>
+                                        <div class="mode-option-text">
+                                            <span class="mode-option-name">Code Reviewer</span>
+                                            <span class="mode-option-sub">Review & refactor</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Live Stats -->
+                            <div class="agent-sidebar-card">
+                                <div class="sidebar-card-title">
+                                    <span class="sidebar-card-icon">📊</span>
+                                    SESSION STATS
+                                </div>
+                                <div class="agent-stats-grid">
+                                    <div class="agent-stat-tile">
+                                        <span class="stat-val" id="stat-messages">0</span>
+                                        <span class="stat-label">MESSAGES</span>
+                                    </div>
+                                    <div class="agent-stat-tile">
+                                        <span class="stat-val text-cyan" id="stat-tokens">0</span>
+                                        <span class="stat-label">TOKENS EST.</span>
+                                    </div>
+                                    <div class="agent-stat-tile">
+                                        <span class="stat-val text-green" id="stat-model-display">GROQ</span>
+                                        <span class="stat-label">ACTIVE MODEL</span>
+                                    </div>
+                                    <div class="agent-stat-tile">
+                                        <span class="stat-val text-purple" id="stat-mode-display">PAIR</span>
+                                        <span class="stat-label">MODE</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Provider Status -->
+                            <div class="agent-sidebar-card">
+                                <div class="sidebar-card-title">
+                                    <span class="sidebar-card-icon">🔗</span>
+                                    API PROVIDERS
+                                </div>
+                                <div class="agent-provider-list">
+                                    <div class="provider-row">
+                                        <span class="provider-dot provider-dot-green"></span>
+                                        <span class="provider-name">Groq Cloud</span>
+                                        <span class="provider-status status-live">LIVE</span>
+                                    </div>
+                                    <div class="provider-row">
+                                        <span class="provider-dot provider-dot-cyan"></span>
+                                        <span class="provider-name">AWS Bedrock</span>
+                                        <span class="provider-status status-live">LIVE</span>
+                                    </div>
+                                    <div class="provider-row">
+                                        <span class="provider-dot provider-dot-amber"></span>
+                                        <span class="provider-name">Google Gemini</span>
+                                        <span class="provider-status status-ready">READY</span>
+                                    </div>
+                                    <div class="provider-row">
+                                        <span class="provider-dot provider-dot-muted"></span>
+                                        <span class="provider-name">Local Ollama</span>
+                                        <span class="provider-status status-offline">OFFLINE</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- TAB 7: User Profile (Sujal) -->
+                <div class="tab-panel" id="tab-profile">
+                    <div class="profile-card-layout">
+                        <div class="profile-avatar-box">
+                            <div class="avatar-ring">
+                                <span class="avatar-glyph">👑</span>
+                            </div>
+                            <h3 class="profile-name">SUJAL</h3>
+                            <span class="profile-role">CREATOR & LEAD AI ENGINEER</span>
+                        </div>
+                        <div class="profile-fields-grid">
+                            <div class="profile-field">
+                                <span class="field-title">AUTHORIZATION LEVEL</span>
+                                <span class="field-value text-cyan">LEVEL 10 (FULL ROOT)</span>
+                            </div>
+                            <div class="profile-field">
+                                <span class="field-title">PREFERRED VOICE</span>
+                                <span class="field-value text-purple">British Neural (Ryan)</span>
+                            </div>
+                            <div class="profile-field">
+                                <span class="field-title">ACOUSTIC TRIGGER</span>
+                                <span class="field-value text-green">Double-Clap Sensor [Active]</span>
+                            </div>
+                            <div class="profile-field">
+                                <span class="field-title">PERSISTENCE STORAGE</span>
+                                <span class="field-value text-amber">Dual-Sync (JSON + PostgreSQL 'Doom')</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- MAIN JAVASCRIPT LOGIC -->
+    <script src="js/app.js"></script>
+</body>
+</html>

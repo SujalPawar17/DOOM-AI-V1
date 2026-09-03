@@ -1,0 +1,67 @@
+# Environment variables & secrets (CRITICAL: DO NOT COMMIT REAL KEYS)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Logs & Temporary Files
+*.log
+doom_bg.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# Local memory & cache dumps (preserve code, ignore generated user state)
+memory.json
+doom_memory.json
+memory_episodes.json
+memory_semantic.json
+memory_profile.json
+test_lang*.txt
+test_tts.txt
+
+# Screenshots & Local media captures
+screenshot_*.png
+*.png
+sujal.jpg
+!dashboard/static/**/*.png
+!ide/static/**/*.png
+
+# IDE & OS files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,374 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DOOM IDE — Autonomous AI Development Studio</title>
+    <meta name="description" content="DOOM Cyber IDE - High-Performance AI Pair Programming & Code Development Environment">
+    <!-- Google Fonts: Inter & JetBrains Mono & Orbitron -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@600;800&display=swap" rel="stylesheet">
+    <!-- Monaco Editor Loader -->
+    <link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/editor/editor.main.min.css">
+    <link rel="stylesheet" href="ide.css">
+</head>
+<body class="doom-ide-body">
+
+    <!-- TOP MENU & TITLE BAR -->
+    <header class="ide-titlebar">
+        <div class="titlebar-left">
+            <div class="doom-logo">
+                <span class="logo-icon">⬡</span>
+                <span class="logo-text">DOOM <span class="accent-cyan">IDE</span></span>
+            </div>
+            <div class="titlebar-menus">
+                <button class="menu-btn" id="btn-menu-file">File</button>
+                <button class="menu-btn" id="btn-menu-edit">Edit</button>
+                <button class="menu-btn" id="btn-menu-view">View</button>
+                <button class="menu-btn" id="btn-menu-terminal">Terminal</button>
+                <button class="menu-btn" id="btn-menu-ai">AI Copilot</button>
+            </div>
+        </div>
+
+        <div class="titlebar-center">
+            <div class="workspace-pill" id="workspace-pill" title="Click to open or switch folder">
+                <span class="folder-glyph">📂</span>
+                <span class="workspace-name" id="workspace-name-display">Loading Workspace...</span>
+                <span class="switch-icon">⇄</span>
+            </div>
+        </div>
+
+        <div class="titlebar-right">
+            <button class="titlebar-action-btn run-btn" id="btn-run-file" title="Run Current File (F5 / Click)">
+                <span class="btn-icon">▶</span>
+                <span class="btn-text">RUN CODE</span>
+            </button>
+            <button class="titlebar-action-btn ai-toggle-btn active" id="btn-toggle-ai-panel" title="Toggle AI Copilot Sidebar (Ctrl+L)">
+                <span class="btn-icon">✨</span>
+                <span class="btn-text">AI COPILOT</span>
+            </button>
+            <div class="creator-badge">
+                <span>SUJAL</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN IDE WORKSPACE CONTAINER -->
+    <div class="ide-workspace">
+
+        <!-- 1. ACTIVITY BAR (FAR LEFT ICONS) -->
+        <nav class="activity-bar">
+            <div class="activity-top">
+                <button class="act-btn active" data-view="explorer" id="act-explorer" title="Explorer (Ctrl+Shift+E)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+                </button>
+                <button class="act-btn" data-view="search" id="act-search" title="Search Files (Ctrl+Shift+F)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                </button>
+                <button class="act-btn" data-view="ai" id="act-ai" title="DOOM AI Copilot (Ctrl+Shift+A)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path></svg>
+                </button>
+                <button class="act-btn" data-view="terminal" id="act-terminal" title="Terminal Panel (Ctrl+)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                </button>
+            </div>
+            <div class="activity-bottom">
+                <button class="act-btn" id="act-settings" title="IDE Settings & Models">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                </button>
+            </div>
+        </nav>
+
+        <!-- 2. PRIMARY SIDEBAR (FILE EXPLORER) -->
+        <aside class="ide-sidebar" id="ide-sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-title" id="sidebar-title">EXPLORER</span>
+                <div class="sidebar-actions">
+                    <button class="icon-btn" id="btn-new-file" title="New File">📄+</button>
+                    <button class="icon-btn" id="btn-new-folder" title="New Folder">📁+</button>
+                    <button class="icon-btn" id="btn-upload-files" title="Upload Files to Workspace">⬆️</button>
+                    <button class="icon-btn" id="btn-refresh-tree" title="Refresh Tree">↻</button>
+                </div>
+            </div>
+
+            <!-- Workspace Folder Switcher Bar -->
+            <div class="workspace-action-box">
+                <button class="btn-open-folder" id="btn-open-folder">
+                    <span>📁 Open Folder / Project</span>
+                </button>
+            </div>
+
+            <!-- Tree View List -->
+            <div class="file-tree-container" id="file-tree">
+                <div class="tree-loading">Loading project structure...</div>
+            </div>
+
+            <!-- Hidden File Input for Upload -->
+            <input type="file" id="hidden-file-input" multiple style="display: none;">
+        </aside>
+
+        <!-- RESIZE HANDLE (SIDEBAR / EDITOR) -->
+        <div class="resize-handle" id="handle-sidebar"></div>
+
+        <!-- 3. CENTER MAIN EDITOR & TERMINAL AREA -->
+        <main class="ide-main-center">
+            
+            <!-- EDITOR TABS BAR -->
+            <div class="tabs-bar" id="tabs-bar">
+                <!-- Dynamically populated tab buttons -->
+            </div>
+
+            <!-- BREADCRUMBS BAR -->
+            <div class="breadcrumbs-bar">
+                <span class="breadcrumb-root" id="breadcrumb-root">DOOM</span>
+                <span class="breadcrumb-sep">›</span>
+                <span class="breadcrumb-active" id="breadcrumb-active">Welcome</span>
+                <div class="breadcrumbs-right">
+                    <span class="save-status" id="save-status">Saved</span>
+                </div>
+            </div>
+
+            <!-- MONACO EDITOR CONTAINER -->
+            <div class="editor-container" id="editor-container">
+                <!-- Welcome Screen Placeholder when no files are open -->
+                <div class="welcome-screen" id="welcome-screen">
+                    <div class="welcome-card">
+                        <div class="welcome-orb">⬡</div>
+                        <h1 class="welcome-title">DOOM <span class="accent-cyan">CYBER IDE</span></h1>
+                        <p class="welcome-subtitle">Autonomous AI Development Studio for <span class="accent-text">Sujal</span></p>
+                        
+                        <div class="welcome-actions">
+                            <button class="welcome-btn" id="btn-welcome-open">
+                                <span class="wb-icon">📂</span>
+                                <div class="wb-text">
+                                    <strong>Open Project Folder</strong>
+                                    <span>Select any local directory or codebase</span>
+                                </div>
+                            </button>
+                            <button class="welcome-btn" id="btn-welcome-new">
+                                <span class="wb-icon">📄</span>
+                                <div class="wb-text">
+                                    <strong>New Script / File</strong>
+                                    <span>Create Python, JS, HTML, or API</span>
+                                </div>
+                            </button>
+                            <button class="welcome-btn" id="btn-welcome-ai">
+                                <span class="wb-icon">🤖</span>
+                                <div class="wb-text">
+                                    <strong>Ask AI Copilot</strong>
+                                    <span>Generate complete codebases or debug</span>
+                                </div>
+                            </button>
+                        </div>
+
+                        <div class="welcome-shortcuts">
+                            <div class="shortcut-item"><kbd>Ctrl</kbd> + <kbd>S</kbd> <span>Save File</span></div>
+                            <div class="shortcut-item"><kbd>Ctrl</kbd> + <kbd></kbd> <span>Toggle Terminal</span></div>
+                            <div class="shortcut-item"><kbd>Ctrl</kbd> + <kbd>L</kbd> <span>Focus AI Copilot</span></div>
+                            <div class="shortcut-item"><kbd>F5</kbd> <span>Run Active Code</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Monaco DOM Target -->
+                <div id="monaco-target" style="width: 100%; height: 100%; display: none;"></div>
+            </div>
+
+            <!-- RESIZE HANDLE (EDITOR / BOTTOM TERMINAL) -->
+            <div class="resize-handle-h" id="handle-bottom"></div>
+
+            <!-- BOTTOM PANEL (INTEGRATED TERMINAL & OUTPUT) -->
+            <div class="bottom-panel" id="bottom-panel">
+                <div class="bottom-panel-header">
+                    <div class="panel-tabs">
+                        <button class="panel-tab-btn active" data-panel="terminal" id="tab-term">
+                            <span class="pt-icon">💻</span> TERMINAL (POWERSHELL)
+                        </button>
+                        <button class="panel-tab-btn" data-panel="output" id="tab-output">
+                            <span class="pt-icon">📜</span> RUN OUTPUT
+                        </button>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="icon-btn" id="btn-clear-term" title="Clear Terminal">🗑️ Clear</button>
+                        <button class="icon-btn" id="btn-toggle-bottom" title="Minimize / Expand Panel">_</button>
+                    </div>
+                </div>
+
+                <div class="bottom-panel-body">
+                    <!-- Tab: Terminal -->
+                    <div class="panel-view active" id="view-terminal">
+                        <div class="terminal-feed" id="terminal-feed">
+                            <div class="terminal-line banner">DOOM Cyber IDE Terminal — Ready for commands (PowerShell)</div>
+                        </div>
+                        <form class="terminal-input-bar" id="terminal-form" onsubmit="return false;">
+                            <span class="term-prompt">PS></span>
+                            <input type="text" class="term-input" id="terminal-input" placeholder="Type command (e.g. python app.py, pip install, git status)..." autocomplete="off">
+                            <button type="submit" class="btn-term-send">▶</button>
+                        </form>
+                    </div>
+
+                    <!-- Tab: Run Output -->
+                    <div class="panel-view" id="view-output">
+                        <pre class="output-log" id="run-output-log">// Click 'RUN CODE' or press F5 to execute current file...</pre>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- RESIZE HANDLE (EDITOR / AI COPILOT) -->
+        <div class="resize-handle" id="handle-ai"></div>
+
+        <!-- 4. RIGHT SIDEBAR (AI COPILOT / PAIR PROGRAMMER) -->
+        <aside class="ide-ai-panel" id="ide-ai-panel">
+            
+            <!-- AI Panel Header -->
+            <div class="ai-header">
+                <div class="ai-title-wrap">
+                    <span class="ai-orb">⬡</span>
+                    <div>
+                        <div class="ai-name">DOOM COPILOT</div>
+                        <div class="ai-sub">Autonomous Pair Programmer</div>
+                    </div>
+                </div>
+                <div class="ai-header-actions">
+                    <button class="icon-btn" id="btn-ai-new-chat" title="New AI Session">✦ New</button>
+                    <button class="icon-btn" id="btn-ai-close" title="Collapse Copilot">✕</button>
+                </div>
+            </div>
+
+            <!-- Model Selection Bar -->
+            <div class="ai-model-selector-bar">
+                <label class="model-label">MODEL:</label>
+                <select class="cyber-model-select" id="ai-model-dropdown">
+                    <option value="groq" selected>⚡ Groq LPU (LLaMA 3.3 70B • 500 T/S)</option>
+                    <option value="bedrock_claude">🧠 Claude 3.5 Sonnet (AWS Bedrock)</option>
+                    <option value="bedrock_nova">🚀 Nova Pro (AWS Bedrock)</option>
+                    <option value="gemini">🌟 Gemini 2.0 Flash</option>
+                    <option value="openai">🤖 OpenAI GPT-4o</option>
+                    <option value="ollama">🔒 Local Ollama LLM</option>
+                    <option value="fallback">⚙️ DOOM Autonomous Engine</option>
+                </select>
+            </div>
+
+            <!-- Active Context Pill -->
+            <div class="ai-context-indicator">
+                <span class="ctx-glyph">📄</span>
+                <span class="ctx-file-name" id="ai-active-file-label">No file selected</span>
+                <span class="ctx-badge" id="ai-selection-badge" style="display:none;">Selection attached</span>
+            </div>
+
+            <!-- AI Messages Feed -->
+            <div class="ai-chat-feed" id="ai-chat-feed">
+                <!-- Welcome Message -->
+                <div class="ai-chat-msg msg-assistant">
+                    <div class="msg-avatar">D</div>
+                    <div class="msg-bubble">
+                        <div class="msg-author">DOOM AI</div>
+                        <div class="msg-text">
+                            <p>Greetings, <strong>Boss Sujal</strong>. DOOM Autonomous Pair Programmer is standing by.</p>
+                            <p style="margin-top:0.4rem; color: var(--text-dim);">I have full context over your workspace. Ask me to write functions, refactor code, fix bugs, or build entire microservices.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Action Chips -->
+            <div class="ai-quick-chips">
+                <button class="ai-chip" data-prompt="Explain this file and walk through its logic">📖 Explain</button>
+                <button class="ai-chip" data-prompt="Find any bugs or performance bottlenecks in this code and provide a clean fix">🐛 Debug</button>
+                <button class="ai-chip" data-prompt="Refactor this code to be modern, modular, and fully typed">✨ Refactor</button>
+                <button class="ai-chip" data-prompt="Generate comprehensive unit tests for this file">🧪 Gen Tests</button>
+                <button class="ai-chip" data-prompt="Add detailed docstrings, comments, and type hints">📝 Document</button>
+            </div>
+
+            <!-- AI Input Box -->
+            <div class="ai-input-wrapper">
+                <textarea class="ai-textarea" id="ai-prompt-input" placeholder="Ask DOOM Copilot... (Ctrl+Enter to send)" rows="3"></textarea>
+                <div class="ai-input-footer">
+                    <span class="input-hint">Ctrl+Enter to send</span>
+                    <button class="btn-ai-send" id="btn-ai-send">
+                        <span>Send</span>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- 5. BOTTOM STATUS BAR -->
+    <footer class="ide-statusbar">
+        <div class="status-left">
+            <div class="status-item highlight" id="sb-branch">
+                <span>🌿 main</span>
+            </div>
+            <div class="status-item" id="sb-workspace">
+                <span>📁 <span id="sb-workspace-path">DOOM</span></span>
+            </div>
+            <div class="status-item" id="sb-files-count">
+                <span>📄 <span id="sb-file-stats">Ready</span></span>
+            </div>
+        </div>
+
+        <div class="status-right">
+            <div class="status-item" id="sb-cursor">
+                <span>Ln <span id="sb-line">1</span>, Col <span id="sb-col">1</span></span>
+            </div>
+            <div class="status-item" id="sb-encoding">
+                <span>UTF-8</span>
+            </div>
+            <div class="status-item" id="sb-language">
+                <span id="sb-lang-name">Plain Text</span>
+            </div>
+            <div class="status-item highlight-cyan" id="sb-model">
+                <span>🧠 <span id="sb-model-name">Groq LPU</span></span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- OPEN FOLDER MODAL DIALOG -->
+    <div class="modal-overlay" id="folder-modal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title">📂 Open / Switch Workspace Folder</div>
+                <button class="modal-close" id="btn-close-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-desc">Enter any local directory path on your machine to open it in DOOM IDE:</p>
+                <input type="text" class="modal-input" id="folder-path-input" placeholder="e.g. C:\Users\dell\Desktop\MyProject or D:\Websites\app">
+                <div class="quick-paths">
+                    <span class="qp-label">Quick:</span>
+                    <button class="qp-btn" data-path="c:\Users\dell\Desktop\DOOM">DOOM Root</button>
+                    <button class="qp-btn" data-path="c:\Users\dell\Desktop">Desktop</button>
+                    <button class="qp-btn" data-path="c:\Users\dell\Downloads">Downloads</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-cancel" id="btn-modal-cancel">Cancel</button>
+                <button class="modal-btn modal-confirm" id="btn-modal-confirm">Open Workspace 🚀</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NEW FILE / FOLDER PROMPT MODAL -->
+    <div class="modal-overlay" id="create-modal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title" id="create-modal-title">📄 Create New File</div>
+                <button class="modal-close" id="btn-close-create-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" class="modal-input" id="create-name-input" placeholder="filename.py or folder_name">
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-cancel" id="btn-create-cancel">Cancel</button>
+                <button class="modal-btn modal-confirm" id="btn-create-confirm">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Monaco Editor require script -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <script src="ide.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+# DOOM Advanced AI Assistant (JARVIS-Level) Configuration
+# Copy this file to .env and fill in your optional API keys
+
+# ⚡ Ultra-Fast Cloud Brain (Groq LLaMA 3.3 70B - Free tier available at https://console.groq.com)
+GROQ_API_KEY=your_groq_api_key_here
+
+# 🧠 OpenAI GPT-4o Key (Optional, for GPT-4o reasoning)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# 🗣️ Hyper-Realistic Voice Cloning (Optional ElevenLabs key)
+ELEVENLABS_API_KEY=your_elevenlabs_key_here
+ELEVENLABS_VOICE_ID=your_elevenlabs_voice_id_here
+
+# 🎙️ Free British Neural Voice (Default: en-GB-RyanNeural for JARVIS)
+EDGE_TTS_VOICE=en-GB-RyanNeural
+
+# 🌍 Multilingual Support
+# STT Language (Google Speech Recognition): en-US, hi-IN, mr-IN, ta-IN, te-IN, kn-IN, ml-IN, gu-IN, bn-IN, pa-IN, ur-IN, etc.
+STT_LANGUAGE=en-US
+# TTS Language (Edge-TTS): en, hi, mr, ta, te, kn, ml, gu, bn, pa, ur, etc.
+TTS_LANGUAGE=en
+# TTS Voice per language (Edge-TTS voices): 
+# en: en-GB-RyanNeural, en-US-GuyNeural
+# hi: hi-IN-MadhurNeural, hi-IN-SwaraNeural
+# mr: mr-IN-AarohiNeural
+# ta: ta-IN-PallaviNeural
+# te: te-IN-MohanNeural, te-IN-ShrutiNeural
+# kn: kn-IN-GaganNeural, kn-IN-SapnaNeural
+# ml: ml-IN-MidhunNeural, ml-IN-SobhanaNeural
+# gu: gu-IN-DhwaniNeural, gu-IN-NiranjanNeural
+# bn: bn-IN-TanishaaNeural, bn-IN-BashkarNeural
+# pa: pa-IN-GaganNeural
+# ur: ur-IN-AsadNeural, ur-IN-GulNeural
+TTS_VOICE_EN=en-GB-RyanNeural
+TTS_VOICE_HI=hi-IN-MadhurNeural
+TTS_VOICE_MR=mr-IN-AarohiNeural
+TTS_VOICE_TA=ta-IN-PallaviNeural
+TTS_VOICE_TE=te-IN-MohanNeural
+TTS_VOICE_KN=kn-IN-GaganNeural
+TTS_VOICE_ML=ml-IN-MidhunNeural
+TTS_VOICE_GU=gu-IN-DhwaniNeural
+TTS_VOICE_BN=bn-IN-TanishaaNeural
+TTS_VOICE_PA=pa-IN-GaganNeural
+TTS_VOICE_UR=ur-IN-AsadNeural
+
+# Auto-detect language from speech (requires Whisper)
+AUTO_DETECT_LANGUAGE=false
+
+# 🔬 Computational Math (Optional Wolfram Alpha)
+WOLFRAM_API_KEY=your_wolfram_alpha_api_key_here
+
+# 📰 Real-Time News (Optional NewsAPI)
+NEWS_API_KEY=your_news_api_key_here
+
+# 🐘 PostgreSQL (Dashboard DB) - Local
+DB_USER=postgres
+DB_PASSWORD=Admin@123
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=Doom
+DB_SSLMODE=disable
