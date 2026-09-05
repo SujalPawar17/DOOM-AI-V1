@@ -354,14 +354,22 @@ async def resume_task(task_id: str):
     }
 
 @app.post("/api/tasks/{task_id}/approve")
-async def approve_task_action(task_id: str):
-    """User authorization for HIGH / CRITICAL risk tool execution."""
-    task = task_engine.active_task
-    if not task or task.task_id != task_id:
-        raise HTTPException(status_code=404, detail="Active task requiring approval not found")
-    task.user_approval_required = False
-    state_machine.transition_to(DoomState.EXECUTING, "Action approved by Boss.", task_id=task_id)
-    return {"status": "APPROVED", "task_id": task_id}
+async def approve_task_action(task_id: str, payload: Optional[Dict[str, Any]] = None):
+    """User authorization for HIGH / CRITICAL risk tool execution with token binding."""
+    token = payload.get("operation_token") if payload else None
+    success, msg = task_engine.approve_task_action(task_id, operation_token=token)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "APPROVED", "task_id": task_id, "message": msg}
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, payload: Optional[Dict[str, Any]] = None):
+    """Cancels an active or paused task safely."""
+    reason = payload.get("reason", "User requested cancellation") if payload else "User requested cancellation"
+    task = task_engine.cancel_task(task_id, reason=reason)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"status": "CANCELLED", "task_id": task_id, "reason": reason}
 
 @app.get("/api/system/intelligence")
 async def get_system_intelligence():

@@ -10,7 +10,7 @@ import time
 import uuid
 import json
 import os
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from core.state_machine import state_machine, DoomState
 from database.postgres_db import postgres_manager
 
@@ -25,7 +25,9 @@ class TaskStatus(str, Enum):
     COMPLETED = "COMPLETED"
     PARTIAL_SUCCESS = "PARTIAL_SUCCESS"   # V3.3: Some steps done, others blocked/failed
     FAILED = "FAILED"
+    CANCELLING = "CANCELLING"             # V4.2: In-flight cancellation draining
     CANCELLED = "CANCELLED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED" # V4.2: State corrupted/unknown, requires human reconciliation
 
 
 class StepStatus(str, Enum):
@@ -48,8 +50,11 @@ class FinalResponseStatus(str, Enum):
     SUCCESS = "success"
     PARTIAL_SUCCESS = "partial_success"
     BLOCKED = "blocked"
+    PAUSED = "paused"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RECOVERY_REQUIRED = "recovery_required"
+    WAITING_FOR_APPROVAL = "waiting_for_approval"
 
 
 @dataclass
@@ -321,19 +326,96 @@ class TaskEngine:
         self._active_task = None
         state_machine.transition_to(DoomState.IDLE, "Standing by, Boss.")
 
-    def require_user_approval(self, tool_name: str, tool_args: Dict[str, Any]) -> None:
-        """Pauses task execution until user authorizes a high-risk tool."""
+    def require_user_approval(self, tool_name: str, tool_args: Dict[str, Any], operation_id: Optional[str] = None) -> str:
+        """Pauses task execution until user authorizes a high-risk tool. Returns operation token."""
         if not self._active_task:
-            return
+            return ""
         self._active_task.status = TaskStatus.WAITING_FOR_APPROVAL
         self._active_task.user_approval_required = True
-        self._active_task.pending_tool_call = {"name": tool_name, "args": tool_args}
+
+        import hashlib
+        args_repr = json.dumps(tool_args, sort_keys=True, default=str)
+        op_token = hashlib.sha256(f"{self._active_task.task_id}::{tool_name}::{args_repr}".encode()).hexdigest()[:16]
+
+        self._active_task.pending_tool_call = {
+            "name": tool_name,
+            "args": tool_args,
+            "operation_id": operation_id or f"op_{time.time_ns()}",
+            "operation_token": op_token,
+            "timestamp": time.time()
+        }
         state_machine.transition_to(
             DoomState.WAITING_FOR_APPROVAL,
             f"Authorization required: {tool_name}",
             task_id=self._active_task.task_id
         )
         self._save_checkpoint()
+        return op_token
+
+    def approve_task_action(self, task_id: str, operation_token: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Validates approval binding, guards against stale approvals, changed actions,
+        or approving a non-waiting task.
+        """
+        task = self._active_task if (self._active_task and self._active_task.task_id == task_id) else self.get_task_by_id(task_id)
+        if not task:
+            return False, "Task not found"
+        if task.status != TaskStatus.WAITING_FOR_APPROVAL:
+            return False, f"Task is not waiting for approval (current status: {task.status.value})"
+        if not task.pending_tool_call:
+            return False, "No pending action awaiting approval"
+
+        # Check for stale approval (older than 10 minutes)
+        req_time = task.pending_tool_call.get("timestamp", 0)
+        if req_time and (time.time() - req_time > 600.0):
+            return False, "Approval has expired (stale > 10m)"
+
+        # Check operation token if provided
+        expected_token = task.pending_tool_call.get("operation_token")
+        if operation_token and expected_token and operation_token != expected_token:
+            return False, "Approval token mismatch: underlying action or arguments changed"
+
+        task.user_approval_required = False
+        task.pending_tool_call = None
+        task.status = TaskStatus.RUNNING
+        state_machine.transition_to(DoomState.EXECUTING, "Action approved by Boss.", task_id=task_id)
+        self._save_checkpoint()
+        return True, "Approved"
+
+    def cancel_task(self, task_id: str, reason: str = "User cancellation") -> Optional[Task]:
+        """
+        Transitions task to CANCELLING -> CANCELLED.
+        Drains active execution and reconciles state.
+        """
+        task = self._active_task if (self._active_task and self._active_task.task_id == task_id) else self.get_task_by_id(task_id)
+        if not task:
+            return None
+
+        state_machine.transition_to(DoomState.CANCELLING, f"Cancelling task: {reason}", task_id=task_id)
+        task.status = TaskStatus.CANCELLING
+        self._broadcast_task_state("TASK_CANCELLING", reason=reason)
+
+        for s in task.steps:
+            if s.status in (StepStatus.PENDING, StepStatus.RUNNING, StepStatus.BLOCKED):
+                s.status = StepStatus.FAILED
+                s.error = f"Cancelled: {reason}"
+
+        task.status = TaskStatus.CANCELLED
+        task.final_response_status = FinalResponseStatus.CANCELLED
+        task.termination_reason = reason
+        task.error = reason
+        task.resume_available = False
+        task.updated_at = time.strftime("%H:%M:%S")
+
+        self._save_checkpoint()
+        state_machine.transition_to(DoomState.CANCELLED, f"Task cancelled: {reason}", task_id=task_id)
+        self._broadcast_task_state("TASK_CANCELLED", reason=reason)
+
+        if self._active_task and self._active_task.task_id == task_id:
+            self._active_task = None
+            state_machine.transition_to(DoomState.IDLE, "Standing by, Boss.")
+
+        return task
 
     def resume_task(self, task_id: str) -> Optional[Task]:
         """Resumes a paused/failed task from checkpoint."""
@@ -472,11 +554,17 @@ class TaskEngine:
             
             # Sort by index
             task.steps.sort(key=lambda s: s.index)
-            
             return task
         except Exception as e:
             print(f"[TASK ENGINE] Checkpoint load failed: {e}")
-            return None
+            return Task(
+                task_id=task_id,
+                goal="Unknown (Corrupted Checkpoint)",
+                status=TaskStatus.RECOVERY_REQUIRED,
+                final_response_status=FinalResponseStatus.RECOVERY_REQUIRED,
+                error=f"Corrupted checkpoint: {e}",
+                resume_available=False
+            )
 
     def get_task_by_id(self, task_id: str) -> Optional[Task]:
         """Retrieves a task from history by ID."""

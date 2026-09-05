@@ -49,6 +49,8 @@ memory_semantic.json
 memory_profile.json
 test_lang*.txt
 test_tts.txt
+database/idempotency_ledger.json
+doom_crash_test*.py
 
 # Screenshots & Local media captures
 screenshot_*.png

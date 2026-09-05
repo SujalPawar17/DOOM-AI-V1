@@ -117,8 +117,14 @@ class ModelRouter:
 
     def route(self, task_type: str = "general") -> BaseLLMProvider:
         """Finds the optimal online provider based on task capabilities."""
+        from core.reliability.circuit_breaker import provider_circuit_breaker
         key = (task_type or "general").lower()
         priorities = self.capability_priorities.get(key, self.capability_priorities["general"])
+        for name in priorities:
+            p = self.providers.get(name)
+            if p and p.is_available() and provider_circuit_breaker.can_attempt(name):
+                return p
+        # Fallback probe if all breakers open
         for name in priorities:
             p = self.providers.get(name)
             if p and p.is_available():
@@ -134,10 +140,11 @@ class ModelRouter:
         provider_override: Optional[str] = None
     ) -> LLMResponse:
         """
-        Executes generation with capability-preserving failover.
+        Executes generation with capability-preserving failover and circuit breaker protection.
         If the primary routed provider throws an exception, tries the next CAPABLE provider.
         Raises NoCapableProviderError if no capable provider is available.
         """
+        from core.reliability.circuit_breaker import provider_circuit_breaker
         key = (task_type or "general").lower()
         required_caps = self.capability_requirements.get(key, ["tool_calling"])
         
@@ -153,11 +160,17 @@ class ModelRouter:
             provider = self.providers.get(name)
             if not provider or not provider.is_available():
                 continue
+            if not provider_circuit_breaker.can_attempt(name):
+                print(f"[MODEL ROUTER] Circuit open for '{name}' -> skipping to next provider.")
+                continue
             try:
                 response = provider.generate(prompt=prompt, system_prompt=system_prompt, tools=tools)
                 if response and (response.text or response.tool_calls):
+                    provider_circuit_breaker.record_success(name)
                     return response
             except Exception as e:
+                provider_circuit_breaker.record_failure(name)
+                print(f"[MODEL ROUTER] Provider '{name}' failed with {e}. Failing over...")
                 print(f"[MODEL ROUTER] Provider '{name}' failed ({e}). Attempting capability-preserving failover...")
                 continue
         

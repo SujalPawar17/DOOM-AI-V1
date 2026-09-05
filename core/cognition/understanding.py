@@ -41,8 +41,8 @@ class UnderstandingEngine:
         # 1. Ambiguity & Clarification Detection
         # Check for dangerous or vague destructive actions with missing targets
         vague_destructive_patterns = [
-            r"^(delete|remove|destroy|wipe|erase)\s+(the\s+)?(file|folder|directory|item|script|data)(\s+please)?$",
-            r"^(delete|remove|destroy|wipe|erase)\s+(the\s+)?(old|previous|last|recent)\s+(file|folder|directory|script)(\s+please)?$"
+            r"^(delete|remove|destroy|wipe|erase)\s+(the\s+)?(file|folder|directory|item|thing|script|data)(\s+.*)?$",
+            r"^(delete|remove|destroy|wipe|erase)\s+(the\s+)?(old|previous|last|recent)\s+(file|folder|directory|thing|item|script)(\s+.*)?$"
         ]
         for pat in vague_destructive_patterns:
             if re.search(pat, lower):

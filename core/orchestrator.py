@@ -442,6 +442,8 @@ class DOOMCore:
             return FinalResponseStatus.FAILED
         if termination_reason == TerminationReason.USER_APPROVAL_REQUIRED:
             return FinalResponseStatus.BLOCKED
+        if termination_reason == TerminationReason.PARTIAL_COMPLETION:
+            return FinalResponseStatus.PARTIAL_SUCCESS
         if termination_reason == TerminationReason.MAX_STEPS_REACHED:
             if completed_actions and not failed_actions:
                 return FinalResponseStatus.PARTIAL_SUCCESS
@@ -452,7 +454,7 @@ class DOOMCore:
         # Default fallback
         if verification_passed:
             return FinalResponseStatus.SUCCESS
-        elif completed_actions:
+        elif completed_actions or verification_status in ("PARTIAL_SUCCESS", "PARTIAL"):
             return FinalResponseStatus.PARTIAL_SUCCESS
         else:
             return FinalResponseStatus.FAILED
