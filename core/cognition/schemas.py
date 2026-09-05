@@ -119,6 +119,7 @@ class CognitiveTelemetry:
     replanning_ms: float = 0.0
     checkpoint_ms: float = 0.0
     verification_ms: float = 0.0
+    memory_retrieval_ms: float = 0.0   # V5.1: memory retrieval latency
     total_cognitive_ms: float = 0.0
     cognitive_cycles: int = 0
     replan_count: int = 0
@@ -172,6 +173,9 @@ class CognitiveState:
     
     # Telemetry
     telemetry: CognitiveTelemetry = field(default_factory=CognitiveTelemetry)
+
+    # V5.1: Structured memory context (MemoryContext | None — Any to avoid circular import at module load)
+    memory_context: Optional[Any] = None
 
     def to_dict(self, safe: bool = True) -> Dict[str, Any]:
         """Safe serialization. Never exposes raw or private chain-of-thought."""

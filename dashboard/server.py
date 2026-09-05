@@ -1228,7 +1228,174 @@ updateLineNumbers(); updateStats();
 </html>"""
     return HTMLResponse(content=ide_html)
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# V5.1 Memory Foundation API — /api/v2/memory
+# Canonical memory CRUD through MemoryManager. Legacy /api/memory preserved.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MemoryCreateRequest(BaseModel):
+    content: str
+    memory_type: str = "SEMANTIC"
+    source: str = "USER_EXPLICIT"
+    importance: float = 0.5
+    project_id: Optional[str] = None
+    tags: Optional[List[str]] = None
+    privacy_class: str = "NORMAL"
+
+class MemoryUpdateRequest(BaseModel):
+    content: str
+
+class MemorySearchRequest(BaseModel):
+    query: Optional[str] = None
+    memory_type: Optional[str] = None
+    project_id: Optional[str] = None
+    limit: int = 20
+
+
+@app.get("/api/v2/memory")
+async def get_all_memories(
+    memory_type: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """List ACTIVE memory records. Optionally filter by type or project."""
+    try:
+        from memory.manager import memory_manager
+        from memory.types import MemoryType
+        mt = MemoryType(memory_type) if memory_type else None
+        records = memory_manager.search(memory_type=mt, project_id=project_id, limit=limit)
+        return {
+            "status": "ok",
+            "count": len(records),
+            "memories": [r.to_dict() for r in records],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v2/memory/{memory_id}")
+async def get_memory(memory_id: str):
+    """Fetch a single memory record by ID."""
+    try:
+        from memory.manager import memory_manager
+        record = memory_manager.get(memory_id)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found")
+        return {"status": "ok", "memory": record.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/memory")
+async def create_memory(req: MemoryCreateRequest):
+    """Store a new memory record through MemoryManager (policy enforced)."""
+    try:
+        from memory.manager import memory_manager
+        from memory.schemas import MemoryRecord
+        from memory.types import MemoryType, MemorySource, PrivacyClass
+
+        record = MemoryRecord(
+            memory_type=MemoryType(req.memory_type),
+            content=req.content,
+            source=MemorySource(req.source),
+            importance=req.importance,
+            project_id=req.project_id,
+            tags=req.tags or [],
+            privacy_class=PrivacyClass(req.privacy_class),
+        )
+        stored = memory_manager.store(record)
+        if not stored:
+            raise HTTPException(status_code=422, detail="Memory rejected by policy gate")
+        broadcast_hud_event({"type": "memory_event", "event": "MEMORY_STORED",
+                              "memory_id": stored.memory_id,
+                              "memory_type": stored.memory_type.value})
+        return {"status": "ok", "memory": stored.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/v2/memory/{memory_id}")
+async def update_memory(memory_id: str, req: MemoryUpdateRequest):
+    """Update the content of an existing ACTIVE memory."""
+    try:
+        from memory.manager import memory_manager
+        success = memory_manager.update(memory_id, req.content)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found or not ACTIVE")
+        broadcast_hud_event({"type": "memory_event", "event": "MEMORY_UPDATED", "memory_id": memory_id})
+        return {"status": "ok", "memory_id": memory_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v2/memory/{memory_id}")
+async def delete_memory(memory_id: str):
+    """Logically delete a memory record (status → DELETED, record preserved in DB)."""
+    try:
+        from memory.manager import memory_manager
+        success = memory_manager.delete(memory_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found")
+        broadcast_hud_event({"type": "memory_event", "event": "MEMORY_DELETED", "memory_id": memory_id})
+        return {"status": "ok", "memory_id": memory_id, "action": "deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/memory/search")
+async def search_memories(req: MemorySearchRequest):
+    """Search memory records by query text, type, and project."""
+    try:
+        from memory.manager import memory_manager
+        from memory.types import MemoryType
+        mt = MemoryType(req.memory_type) if req.memory_type else None
+        records = memory_manager.search(
+            query=req.query,
+            memory_type=mt,
+            project_id=req.project_id,
+            limit=req.limit,
+        )
+        return {
+            "status": "ok",
+            "count": len(records),
+            "memories": [r.to_dict() for r in records],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v2/memory/stats")
+async def get_memory_stats():
+    """Return V5.1 memory system statistics."""
+    try:
+        from memory.manager import memory_manager
+        count = memory_manager.count()
+        telemetry = memory_manager.telemetry.to_dict()
+        db_stats = {}
+        if postgres_manager.is_connected():
+            db_stats = postgres_manager.get_memory_table_stats()
+        return {
+            "status": "ok",
+            "active_count": count,
+            "db_breakdown": db_stats,
+            "telemetry": telemetry,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -50,23 +50,33 @@ class CognitiveEngine:
                 pass
 
     def retrieve_relevant_memory(self, goal: str) -> Dict[str, Any]:
-        """Retrieves only relevant memory facts for the given goal to prevent context pollution."""
+        """
+        V5.1: Delegates to MemoryRetriever for structured, ranked, privacy-filtered retrieval.
+        Falls back to legacy keyword lookup if V5.1 retriever fails (graceful degradation).
+        Returns a plain dict for backward compat with existing callers.
+        The full MemoryContext is stored in state.memory_context.
+        """
+        try:
+            from memory.retrieval import memory_retriever
+            ctx = memory_retriever.retrieve(query=goal, project_id="doom")
+            if ctx.has_memories():
+                # Return a summary dict for backward compat (reasoning_engine still receives dict)
+                return {"memory_context_summary": ctx.context_summary, "memory_count": ctx.memory_count}
+        except Exception:
+            pass
+
+        # Legacy fallback (keyword-based, V4.2 behavior preserved)
         from memory import semantic_memory, user_profile
         relevant = {}
         lower = goal.lower()
-
-        # Check for profile facts
         name = user_profile.get_name()
         if "who" in lower or "name" in lower or "me" in lower or "profile" in lower:
             relevant["user_name"] = name
             relevant["user_role"] = user_profile.get_role()
-
-        # Check semantic facts
         for key in ["assistant", "voice", "operating_system", "capabilities"]:
             val = semantic_memory.recall_fact(key)
             if val and (key in lower or "system" in lower or "doom" in lower or "status" in lower):
                 relevant[key] = val
-
         return relevant
 
     def process(self, user_request: str, context: Optional[Dict[str, Any]] = None) -> CognitiveState:
@@ -78,9 +88,31 @@ class CognitiveEngine:
         self._broadcast("COGNITION_STARTED", request=user_request)
 
         # ---------------------------------------------------------------------
-        # 1. MEMORY & CONTEXT RETRIEVAL
+        # 1. MEMORY CONTEXT RETRIEVAL (V5.1)
         # ---------------------------------------------------------------------
-        state.relevant_memory = self.retrieve_relevant_memory(user_request)
+        t_mem = time.time()
+        try:
+            from memory.retrieval import memory_retriever
+            self._broadcast("MEMORY_RETRIEVAL_STARTED", query=user_request[:60])
+            mem_ctx = memory_retriever.retrieve(query=user_request, project_id="doom")
+            state.memory_context = mem_ctx
+            state.telemetry.memory_retrieval_ms = (time.time() - t_mem) * 1000.0
+            # Backward compat: populate state.relevant_memory as summary dict
+            if mem_ctx.has_memories():
+                state.relevant_memory = {
+                    "memory_context_summary": mem_ctx.context_summary,
+                    "memory_count": mem_ctx.memory_count,
+                }
+                self._broadcast("MEMORY_RETRIEVAL_COMPLETED",
+                               count=mem_ctx.memory_count,
+                               latency_ms=mem_ctx.retrieval_latency_ms)
+            else:
+                # Legacy fallback for profile/system facts
+                state.relevant_memory = self.retrieve_relevant_memory(user_request)
+        except Exception as mem_err:
+            # Memory retrieval failure must never prevent cognition
+            state.telemetry.memory_retrieval_ms = (time.time() - t_mem) * 1000.0
+            state.relevant_memory = self.retrieve_relevant_memory(user_request)
 
         # ---------------------------------------------------------------------
         # 2. UNDERSTAND

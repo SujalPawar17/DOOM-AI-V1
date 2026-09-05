@@ -169,7 +169,39 @@ class PostgresManager:
                 final_response_status VARCHAR(50),
                 resume_available BOOLEAN DEFAULT TRUE
             );
+            """,
+            # V5.1: Canonical memory records (Memory Foundation)
             """
+            CREATE TABLE IF NOT EXISTS memory_records (
+                memory_id VARCHAR(100) PRIMARY KEY,
+                memory_type VARCHAR(50) NOT NULL,
+                content TEXT NOT NULL,
+                source VARCHAR(50) NOT NULL DEFAULT 'DERIVED_CONTEXT',
+                confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
+                importance REAL NOT NULL DEFAULT 0.5,
+                status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+                project_id VARCHAR(100),
+                task_id VARCHAR(100),
+                entity_ids JSONB DEFAULT '[]',
+                tags JSONB DEFAULT '[]',
+                supersedes_memory_id VARCHAR(100),
+                source_event_id VARCHAR(100),
+                verification_status VARCHAR(30) DEFAULT 'UNVERIFIED',
+                privacy_class VARCHAR(20) DEFAULT 'NORMAL',
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                last_accessed_at TIMESTAMP WITH TIME ZONE
+            );
+            """,
+            # V5.1: Indexes for efficient memory retrieval
+            "CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_records(memory_type);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_records(status);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_project ON memory_records(project_id);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_task ON memory_records(task_id);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_records(created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_importance ON memory_records(importance DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_privacy ON memory_records(privacy_class);",
         ]
 
         conn = self.get_connection()
@@ -180,7 +212,7 @@ class PostgresManager:
                 for q in queries:
                     cur.execute(q)
             conn.commit()
-            print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs")
+            print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records")
         except Exception as e:
             conn.rollback()
             print(f"[POSTGRES ERROR] Failed to create schema tables: {e}")
@@ -618,6 +650,44 @@ class PostgresManager:
             if not readonly:
                 conn.rollback()
             return [{"error": str(e)}]
+        finally:
+            self.release_connection(conn)
+
+
+    # -------------------------------------------------------------
+    # V5.1: Memory Records Operations
+    # -------------------------------------------------------------
+    def get_memory_count(self) -> int:
+        """Return count of ACTIVE memory_records for telemetry."""
+        conn = self.get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM memory_records WHERE status = 'ACTIVE';")
+                row = cur.fetchone()
+                return row[0] if row else 0
+        except Exception:
+            return 0
+        finally:
+            self.release_connection(conn)
+
+    def get_memory_table_stats(self) -> Dict[str, Any]:
+        """Return basic stats for the memory_records table."""
+        conn = self.get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT status, COUNT(*) as cnt
+                    FROM memory_records
+                    GROUP BY status;
+                """)
+                rows = cur.fetchall()
+                return {r[0]: r[1] for r in rows}
+        except Exception as e:
+            return {"error": str(e)}
         finally:
             self.release_connection(conn)
 

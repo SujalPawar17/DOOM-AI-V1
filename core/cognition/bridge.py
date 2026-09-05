@@ -600,21 +600,31 @@ class CognitiveBridge:
                 task_engine.fail_task(final_text)
 
             # -----------------------------------------------------------------
-            # 8. Memory 2.0 Safety (V4.2: Only verified successes recorded as success)
+            # 8. Memory Safety (V5.1: Canonical MemoryManager write, non-fatal)
+            # Task state is authoritative — memory failure must never alter task status.
             # -----------------------------------------------------------------
             try:
-                from memory import short_term_memory, episodic_memory
+                from memory import short_term_memory
                 used_tool_names = [o.tool for o in obs_canonical if o.action != "skip_redundant"]
                 short_term_memory.add_assistant_turn(final_text, used_tool_names)
-                
+
+                # V5.1: Write experience through canonical MemoryManager
+                # Only verified successes become EXPERIENCE memories.
                 is_empirically_successful = (final_response_status == FinalResponseStatus.SUCCESS) and state.verification_results.get("verified", False)
-                episodic_memory.record_episode(
-                    goal=state.normalized_goal,
-                    plan_steps=[s.description or s.objective for s in state.current_plan],
-                    tools_called=[{"name": o.tool, "action": o.action, "success": o.success} for o in obs_canonical],
-                    outcome=final_text,
-                    success=is_empirically_successful
-                )
+                if is_empirically_successful:
+                    from memory.writers import write_experience
+                    write_experience(
+                        goal=state.normalized_goal,
+                        outcome_summary=final_text[:300],
+                        tools_used=used_tool_names[:5],
+                        task_id=task.task_id if task else None,
+                        project_id="doom",
+                        task_verified=True,
+                    )
+                # Note: failed/partial tasks are NOT recorded as verified experience memories.
+                # This replaces the legacy episodic_memory.record_episode() in this path.
+                # Legacy episodic_memory.record_episode() in orchestrator._finalize_and_log()
+                # is a dead code path (not called in V4.1+ flow) and preserved for compat only.
             except Exception:
                 pass
 
