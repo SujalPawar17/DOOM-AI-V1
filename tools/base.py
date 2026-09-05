@@ -26,6 +26,14 @@ class TerminationReason(str, Enum):
     UNRECOVERABLE_ERROR = "UNRECOVERABLE_ERROR"
 
 
+class FinalResponseStatus(str, Enum):
+    SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class CanonicalToolResult:
     """
@@ -192,8 +200,6 @@ class BaseTool(ABC):
 
     def get_effective_risk(self) -> RiskLevel:
         """Returns the normalized risk level for security enforcement."""
-        if hasattr(self, "risk_level") and isinstance(self.risk_level, RiskLevel):
-            return self.risk_level
         legacy_map = {
             "safe": RiskLevel.SAFE,
             "standard": RiskLevel.LOW,
@@ -201,7 +207,16 @@ class BaseTool(ABC):
             "sensitive": RiskLevel.HIGH,
             "dangerous": RiskLevel.CRITICAL
         }
-        return legacy_map.get(str(self.permission_level).lower(), RiskLevel.SAFE)
+        # If tool explicitly defines a non-default risk_level, respect it
+        if hasattr(self, "risk_level") and isinstance(self.risk_level, RiskLevel) and self.risk_level != RiskLevel.SAFE:
+            return self.risk_level
+
+        # If permission_level is set, map it
+        perm_risk = legacy_map.get(str(self.permission_level).lower(), RiskLevel.SAFE)
+        if perm_risk != RiskLevel.SAFE:
+            return perm_risk
+
+        return getattr(self, "risk_level", RiskLevel.SAFE)
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Convert tool to OpenAI/Groq/Gemini JSON function calling format"""

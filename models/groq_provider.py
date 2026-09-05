@@ -118,19 +118,34 @@ class GroqProvider(BaseLLMProvider):
 
         except Exception as e:
             print(f"[GROQ ERROR] {e}")
-            # Fallback attempt to fast model if 120B errors
-            if self.model != "openai/gpt-oss-20b":
-                try:
-                    kwargs["model"] = "openai/gpt-oss-20b"
-                    fallback_res = client.chat.completions.create(**kwargs)
-                    text = fallback_res.choices[0].message.content or ""
-                    return LLMResponse(
-                        text=text,
-                        tool_calls=[],
-                        model_name="groq/openai/gpt-oss-20b"
-                    )
-                except Exception:
-                    pass
+            # Fallback attempt to alternate models if 120B errors/rate limits
+            fallback_models = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+            for fb_model in fallback_models:
+                if self.model != fb_model:
+                    try:
+                        kwargs["model"] = fb_model
+                        fallback_res = client.chat.completions.create(**kwargs)
+                        choice = fallback_res.choices[0]
+                        text = choice.message.content or ""
+                        fallback_tools = []
+                        if choice.message.tool_calls:
+                            for tc in choice.message.tool_calls:
+                                try:
+                                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                                except Exception:
+                                    args = {}
+                                fallback_tools.append({
+                                    "id": tc.id,
+                                    "name": tc.function.name,
+                                    "arguments": args or {}
+                                })
+                        return LLMResponse(
+                            text=text,
+                            tool_calls=fallback_tools,
+                            model_name=f"groq/{fb_model}"
+                        )
+                    except Exception:
+                        continue
 
             return LLMResponse(
                 text="",

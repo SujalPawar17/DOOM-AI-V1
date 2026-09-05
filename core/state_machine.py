@@ -86,6 +86,17 @@ class StateMachine:
             "timestamp": time.strftime("%H:%M:%S")
         }
 
+    def get_state(self) -> DoomState:
+        """Returns the current state."""
+        return self._current_state
+
+    def reset(self) -> None:
+        """Resets state machine back to IDLE state."""
+        self._current_state = DoomState.IDLE
+        self._state_message = "Awaiting command, Boss."
+        self._active_task_id = None
+        self._last_changed = time.time()
+
 
 # Global State Machine instance
 state_machine = StateMachine()

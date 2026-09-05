@@ -61,6 +61,19 @@ async def on_server_startup():
         print("[DASHBOARD] [OK] Acoustic Clap Detector initializing in background thread!")
     except Exception as e:
         print(f"[DASHBOARD] Acoustic Clap Sensor warning: {e}")
+    
+    # Register task state broadcaster
+    def broadcast_task_state(payload: dict):
+        for client in list(connected_clients):
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    client.send_text(json.dumps(payload)),
+                    dashboard_loop
+                )
+            except Exception:
+                pass
+    task_engine.set_state_broadcaster(broadcast_task_state)
+    print("[DASHBOARD] [OK] Task state broadcaster registered")
 
 @app.on_event("shutdown")
 async def on_server_shutdown():
@@ -295,6 +308,47 @@ async def get_tasks():
     return {
         "active_task": task_engine.get_active_task_dict(),
         "history": task_engine.get_history_dicts(limit=15)
+    }
+
+@app.get("/api/tasks/resumable")
+async def get_resumable_tasks():
+    """Returns list of tasks that are paused or failed and can be resumed from checkpoint."""
+    return {"resumable_tasks": task_engine.get_resumable_tasks()}
+
+@app.get("/api/tasks/{task_id}")
+async def get_task(task_id: str):
+    """Fetches detailed task state including steps, verification, and resume availability."""
+    task = task_engine.get_task_by_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task.to_dict()
+
+@app.post("/api/tasks/{task_id}/resume")
+async def resume_task(task_id: str):
+    """Resumes a paused/failed task from checkpoint."""
+    task = task_engine.resume_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found or cannot be resumed")
+    
+    # Broadcast resume event
+    for client in connected_clients:
+        try:
+            asyncio.create_task(client.send_text(json.dumps({
+                "type": "task_state",
+                "task_id": task_id,
+                "status": "RUNNING",
+                "current_step": task.current_step,
+                "resumed": True,
+                "timestamp": time.strftime("%H:%M:%S")
+            })))
+        except Exception:
+            pass
+    
+    return {
+        "task_id": task_id,
+        "status": "RUNNING",
+        "resumed_from_step": task.current_step,
+        "message": f"Task resumed from step: {task.current_step}"
     }
 
 @app.post("/api/tasks/{task_id}/approve")

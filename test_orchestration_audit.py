@@ -9,7 +9,7 @@ Executes and validates the 5 canonical test scenarios specified in the audit pro
 """
 
 import sys
-import os
+import os as _os
 import time
 import traceback
 
@@ -21,10 +21,10 @@ try:
 except Exception:
     pass
 
-os.environ["DOOM_HEADLESS"] = "1"
+_os.environ["DOOM_HEADLESS"] = "1"
 
 # Ensure project root is in sys.path
-PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = _os.path.abspath(_os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -74,6 +74,7 @@ def run_tests():
     print(">>> RUNNING TEST 2: 'Show my CPU, RAM and disk usage.'", flush=True)
     print("-" * 60, flush=True)
     try:
+        import os
         prompt2 = "Show my CPU, RAM and disk usage."
         plan2 = planner.classify_and_plan(prompt2)
         print(f"[TEST 2] Classification: {plan2.type} (is_code_generation={plan2.is_code_generation})", flush=True)
@@ -121,6 +122,7 @@ def run_tests():
         assert len(plan3.steps) >= 3, f"Expected at least 3 planned steps, got {len(plan3.steps)}"
 
         desktop_test_path = canonical_path("Desktop/system_info.py").absolute_path
+        import os
         if os.path.exists(desktop_test_path):
             try:
                 os.remove(desktop_test_path)

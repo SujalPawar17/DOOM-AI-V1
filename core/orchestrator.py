@@ -6,14 +6,14 @@ import psutil
 from typing import Dict, Any, List, Optional
 from core.context_manager import context_manager
 from core.planner import planner, ExecutionPlan, PlanStep
-from core.model_router import model_router
+from core.model_router import model_router, NoCapableProviderError
 from core.tool_registry import tool_registry
 from core.verifier import verifier
 from core.state_machine import state_machine, DoomState
 from core.task_engine import task_engine
 from core.decision_engine import decision_engine
 from core.path_resolver import canonical_path
-from tools.base import RiskLevel, CanonicalToolResult, ToolResult, TerminationReason, MAX_AGENT_STEPS, MAX_TOOL_CALLS, MAX_RETRIES_PER_ACTION
+from tools.base import RiskLevel, CanonicalToolResult, ToolResult, TerminationReason, FinalResponseStatus, MAX_AGENT_STEPS, MAX_TOOL_CALLS, MAX_RETRIES_PER_ACTION
 from memory import user_profile, short_term_memory, episodic_memory
 
 
@@ -66,15 +66,18 @@ def correct_tool_filename(tool_name: str, tool_args: Dict[str, Any], expected_fi
 
 class DOOMCore:
     """
-    DOOM V3.2 Master Autonomous Agent Orchestrator — Hardened Pipeline.
+    DOOM V3.3 Master Autonomous Agent Orchestrator — Reliability, Truth & Resume Engine.
     Features:
       - Intent Classification (DIRECT, QUERY, ACTION, MULTI_STEP, AUTONOMOUS)
       - Deterministic Telemetry/Identity dispatch (0 unnecessary tool calls)
       - Pre-Execution Decision & Idempotency Engine (rejects redundant tools)
       - Canonical Observation Format (structured, normalized tool results)
       - Ground-Truth Verification (syntax, process exit code == 0, file on disk)
-      - Single Synthesized Final Response (no raw tool output concatenation)
-      - Latency Profiling (planning, routing, llm, tool, verification, synthesis, total)
+      - Truth-First Synthesis (NEVER claims completion without verified ground-truth)
+      - Capability-Preserving Failover (raises NoCapableProviderError on outage)
+      - Task Checkpointing (persisted after every tool execution)
+      - Partial Success / PAUSED states (distinguishes planned/started/blocked/complete)
+      - Latency Profiling (planning, routing, llm, tool, verification, synthesis, checkpoint, total)
       - Hard Tool Timeouts with structured timeout observations
       - Autonomous Loop Control (MAX_AGENT_STEPS, MAX_TOOL_CALLS, MAX_RETRIES_PER_ACTION)
       - Explicit Termination Reasons (COMPLETED, FAILED, TIMEOUT, USER_APPROVAL_REQUIRED, MAX_STEPS_REACHED, MAX_RETRIES_REACHED, UNRECOVERABLE_ERROR)
@@ -104,6 +107,7 @@ class DOOMCore:
             "tool_ms": 0.0,
             "verification_ms": 0.0,
             "synthesis_ms": 0.0,
+            "checkpoint_ms": 0.0,
             "total_ms": 0.0
         }
         user_prompt = user_input.strip()
@@ -230,12 +234,20 @@ class DOOMCore:
             task_engine.record_tool_call("", model_name=provider.name)
 
             t_llm = time.time()
-            llm_response = self.router.generate(
-                prompt=current_context,
-                system_prompt=system_prompt,
-                tools=schemas,
-                task_type=plan.type
-            )
+            try:
+                llm_response = self.router.generate(
+                    prompt=current_context,
+                    system_prompt=system_prompt,
+                    tools=schemas,
+                    task_type=plan.type
+                )
+            except NoCapableProviderError as e:
+                # V3.3: No capable provider available - pause task
+                print(f"[DOOM CORE] [PROVIDER OUTAGE] No capable provider for {plan.type}: {e}")
+                task_engine.pause_task(f"NO_CAPABLE_MODEL_AVAILABLE: {e.task_type}")
+                termination_reason = TerminationReason.UNRECOVERABLE_ERROR
+                # Return user-facing response
+                return f"Boss, the task is paused because no capable reasoning provider is currently available for {e.task_type}. The completed work has been saved and the task can resume from the current step when a provider is available."
             perf["llm_ms"] += (time.time() - t_llm) * 1000.0
 
             if llm_response.text:
@@ -345,14 +357,21 @@ class DOOMCore:
                     last_canonical_res = canonical_res
                     observations.append(canonical_res)
 
-                    # Advance step in task engine
+                    # Advance step in task engine with artifact tracking
                     step_idx = min(agent_step, len(step_descriptions))
+                    artifacts = canonical_res.artifact if canonical_res.artifact else None
                     task_engine.advance_step(
                         step_index=step_idx,
                         tool_name=tool_name,
                         output=canonical_res.output,
-                        success=canonical_res.success
+                        success=canonical_res.success,
+                        artifacts=[artifacts] if artifacts else None
                     )
+
+                    # V3.3: Save checkpoint after each tool execution
+                    t_cp_start = time.time()
+                    task_engine._save_checkpoint()
+                    perf["checkpoint_ms"] += (time.time() - t_cp_start) * 1000.0
 
                     # Format structured observation for model context
                     obs_summary = canonical_res.stdout or canonical_res.output
@@ -428,37 +447,43 @@ class DOOMCore:
         verification: Dict[str, Any]
     ) -> str:
         """
-        Creates ONE clean, high-impact final response.
+        V3.3 Truth-First Final Response Synthesis.
+        DOOM MUST NEVER claim completion without verified ground-truth.
         Uses EXACT artifact paths from structured observations.
+        Explicitly represents PARTIAL_SUCCESS, BLOCKED, and PAUSED states.
         Never concatenates raw tool execution strings.
-        Performs semantic result deduplication.
         """
         # If no tools were called, return LLM response or fallback
         if not observations:
-            return last_llm_text.strip() or "Goal completed successfully, Boss."
+            return last_llm_text.strip() or "Standing by, Boss. No action was required."
 
         # Filter out skipped observations
         real_obs = [o for o in observations if o.action != "skip_redundant"]
 
-        # Check for code execution / script creation workflow
-        written_files = []
-        executed_runs = []
+        # Build structured action inventory from observations
+        written_files = []      # Files successfully created
+        executed_runs = []      # Execution attempts
+        failed_actions = []     # Failed actions with reasons
+
         for o in real_obs:
             if o.success and o.action == "create_file":
-                # Use EXACT canonical path from artifact
-                fpath = o.artifact.get("relative_path") or o.artifact.get("path")
+                # Use EXACT canonical path from artifact — never reconstruct from LLM text
+                fpath = o.artifact.get("relative_path") or o.artifact.get("path") if o.artifact else None
                 if fpath:
                     written_files.append(fpath)
             elif o.action in ["execute_file", "execute_code"]:
                 executed_runs.append(o)
+            elif not o.success:
+                failed_actions.append(o)
 
-        # Semantic Deduplication of file mentions (preserve order, use exact paths)
+        # Semantic Deduplication of file mentions (preserve order, use exact canonical paths)
         unique_files = list(dict.fromkeys(written_files))
 
-        # Check if we have code execution output (e.g. CPU, RAM, Disk printed from python)
+        # ── CASE 1: File created AND executed with output ────────────────────
+        # Only claim "Done" if BOTH the write AND execution actually succeeded
         if unique_files and executed_runs:
             latest_run = executed_runs[-1]
-            stdout_clean = latest_run.stdout.strip()
+            stdout_clean = latest_run.stdout.strip() if latest_run.stdout else ""
             file_ref = unique_files[0]  # EXACT artifact path
 
             if latest_run.success and stdout_clean:
@@ -467,23 +492,76 @@ class DOOMCore:
                     f"{stdout_clean}\n\n"
                     f"The file passed verification."
                 )
+            elif latest_run.success and not stdout_clean:
+                return f"Done. I created {file_ref} and ran it successfully (no output produced)."
             elif not latest_run.success:
-                err_msg = latest_run.stderr or latest_run.output
-                return f"I created {file_ref}, but execution failed with: {err_msg}"
+                err_msg = (latest_run.stderr or latest_run.output or "unknown error").strip()
+                return (
+                    f"I created {file_ref}, but execution failed:\n\n"
+                    f"{err_msg}\n\n"
+                    f"The file exists on disk but could not be verified as executed."
+                )
 
-        # NEVER use LLM response for tool-based operations - it hallucinates filenames
-        # Always synthesize from structured observations only
+        # ── CASE 2: File created but NOT executed ────────────────────────────
+        # V3.3 CRITICAL: Do NOT say "Done" or "Successfully created and verified"
+        # when execution step was blocked or never attempted
+        if unique_files and not executed_runs:
+            file_ref = unique_files[0]
+            verif_status = verification.get("status", "UNKNOWN")
+            if verif_status == "COMPLETED":
+                # File created and only creation was required
+                return f"Done. I created and verified {file_ref} on disk."
+            else:
+                # PARTIAL: File created but execution/verification incomplete
+                return (
+                    f"Partially completed. I created {file_ref} on disk, "
+                    f"but could not complete execution — no capable provider was available to run it. "
+                    f"The task is paused and can be resumed when a provider is available."
+                )
 
-        # Build clean summary based on verification
-        if unique_files:
-            return f"Done. Successfully created and verified {unique_files[0]}."
+        # ── CASE 3: Execution without file creation (e.g. code snippet) ──────
+        if executed_runs and not unique_files:
+            latest_run = executed_runs[-1]
+            stdout_clean = latest_run.stdout.strip() if latest_run.stdout else ""
+            if latest_run.success and stdout_clean:
+                return f"Done. Executed successfully:\n\n{stdout_clean}"
+            elif not latest_run.success:
+                err_msg = (latest_run.stderr or latest_run.output or "unknown error").strip()
+                return f"Execution failed: {err_msg}"
 
-        # Fallback to single primary tool output if clean
-        primary_outputs = [o.stdout or o.output for o in real_obs if o.success and o.output and not o.output.startswith("Successfully")]
-        if primary_outputs:
-            return primary_outputs[-1].strip()
+        # ── CASE 4: Failed actions only ───────────────────────────────────────
+        if failed_actions and not unique_files and not executed_runs:
+            reasons = [f.stderr or f.output or f.error_type or "unknown" for f in failed_actions[:2]]
+            return f"The task could not be completed. Reason: {'; '.join(reasons)}"
 
-        return "Goal executed and verified successfully, Boss."
+        # ── CASE 5: Mixed success/failure ─────────────────────────────────────
+        if real_obs:
+            succeeded = [o for o in real_obs if o.success]
+            failed = [o for o in real_obs if not o.success]
+            if succeeded and failed:
+                return (
+                    f"Partially completed. {len(succeeded)} action(s) succeeded, "
+                    f"{len(failed)} could not be completed. "
+                    f"The task checkpoint has been saved."
+                )
+            if succeeded:
+                # No file or execution context - use clean output
+                primary_outputs = [o.stdout or o.output for o in succeeded if o.output and not o.output.startswith("Successfully")]
+                if primary_outputs:
+                    return primary_outputs[-1].strip()
+
+        # ── CASE 6: LLM conversational response (no tool-based side effects) ─
+        if last_llm_text and not real_obs:
+            return last_llm_text.strip()
+
+        # ── CASE 7: Safe ambiguous fallback — never falsely claim COMPLETED ──
+        verif_status = verification.get("status", "UNKNOWN")
+        if verif_status == "COMPLETED":
+            return "Goal verified and completed, Boss."
+        elif verif_status == "PARTIAL_SUCCESS":
+            return "Partially completed. Some steps succeeded but not all. The task checkpoint has been saved."
+        else:
+            return "The task could not be fully completed. The checkpoint has been saved for resumption."
 
     def _finalize_and_log(
         self,
@@ -497,7 +575,8 @@ class DOOMCore:
         perf: Dict[str, float],
         termination_reason: TerminationReason = TerminationReason.COMPLETED
     ) -> str:
-        """Completes task, updates Memory 2.0, logs telemetry & PostgreSQL."""
+        """Completes task, updates Memory 2.0, logs telemetry & PostgreSQL.
+        Uses verification gates to determine true completion status."""
         spoken_text = self.verifier.polish_response(final_text, observations)
         duration_ms = (time.time() - start_time) * 1000.0
         perf["total_ms"] = duration_ms
@@ -510,6 +589,7 @@ class DOOMCore:
             f"Tools: {perf.get('tool_ms', 0):.1f}ms | "
             f"Verify: {perf.get('verification_ms', 0):.1f}ms | "
             f"Synth: {perf.get('synthesis_ms', 0):.1f}ms | "
+            f"Checkpoint: {perf.get('checkpoint_ms', 0):.1f}ms | "
             f"Total: {duration_ms:.1f}ms | "
             f"Termination: {termination_reason.value}"
         )
@@ -523,10 +603,23 @@ class DOOMCore:
         except Exception as ve:
             print(f"[VOICE] Deferred voice output: {ve}")
 
-        # Complete task in Task Engine with termination reason
+        # V3.3: Determine final response status based on verification gates
+        final_response_status = self._determine_final_response_status(
+            observations, verification, termination_reason
+        )
+
+        # Complete task in Task Engine with appropriate status
         try:
             used_tool_names = [o.tool for o in observations if o.action != "skip_redundant"]
-            task_engine.complete_task(spoken_text)
+            
+            if final_response_status == FinalResponseStatus.SUCCESS:
+                task_engine.complete_task(spoken_text, final_response_status, termination_reason.value)
+            elif final_response_status == FinalResponseStatus.PARTIAL_SUCCESS:
+                task_engine.complete_task_partial(spoken_text, termination_reason.value)
+            elif final_response_status == FinalResponseStatus.BLOCKED:
+                task_engine.pause_task(termination_reason.value)
+            else:
+                task_engine.fail_task(spoken_text)
         except Exception as te_err:
             print(f"[TASK ENGINE NOTICE] {te_err}")
 
@@ -561,6 +654,65 @@ class DOOMCore:
         except Exception:
             pass
         return spoken_text
+
+    def _determine_final_response_status(
+        self,
+        observations: List[CanonicalToolResult],
+        verification: Dict[str, Any],
+        termination_reason: TerminationReason
+    ) -> FinalResponseStatus:
+        """V3.3: Verification gates - determines true completion status from ground truth."""
+        from tools.base import FinalResponseStatus
+        
+        # Check if all required steps completed successfully
+        real_obs = [o for o in observations if o.action != "skip_redundant"]
+        
+        # Count expected vs completed steps
+        expected_actions = set()
+        completed_actions = set()
+        failed_actions = set()
+        
+        for o in real_obs:
+            if o.action in ("create_file", "execute_file", "execute_code"):
+                expected_actions.add(o.action)
+                if o.success:
+                    completed_actions.add(o.action)
+                else:
+                    failed_actions.add(o.action)
+        
+        # Verification gate: all required verifications must pass
+        verification_passed = verification.get("verified", False)
+        verification_status = verification.get("status", "FAILED")
+        
+        # Termination reason gates
+        if termination_reason == TerminationReason.COMPLETED:
+            if verification_passed and verification_status == "COMPLETED" and not failed_actions:
+                return FinalResponseStatus.SUCCESS
+            elif verification_status == "PARTIAL_SUCCESS" or (completed_actions and failed_actions):
+                return FinalResponseStatus.PARTIAL_SUCCESS
+            elif failed_actions and not completed_actions:
+                return FinalResponseStatus.FAILED
+        
+        if termination_reason == TerminationReason.TIMEOUT:
+            return FinalResponseStatus.FAILED
+        if termination_reason == TerminationReason.MAX_RETRIES_REACHED:
+            return FinalResponseStatus.FAILED
+        if termination_reason == TerminationReason.USER_APPROVAL_REQUIRED:
+            return FinalResponseStatus.BLOCKED
+        if termination_reason == TerminationReason.MAX_STEPS_REACHED:
+            if completed_actions and not failed_actions:
+                return FinalResponseStatus.PARTIAL_SUCCESS
+            return FinalResponseStatus.FAILED
+        if termination_reason == TerminationReason.UNRECOVERABLE_ERROR:
+            return FinalResponseStatus.FAILED
+        
+        # Default fallback
+        if verification_passed:
+            return FinalResponseStatus.SUCCESS
+        elif completed_actions:
+            return FinalResponseStatus.PARTIAL_SUCCESS
+        else:
+            return FinalResponseStatus.FAILED
 
 
 doom_core = DOOMCore()

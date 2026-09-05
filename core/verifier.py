@@ -123,3 +123,4 @@ class Verifier:
 
 
 verifier = Verifier()
+GroundTruthVerifier = Verifier

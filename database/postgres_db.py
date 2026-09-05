@@ -145,6 +145,30 @@ class PostgresManager:
                 latency_ms REAL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
+            """,
+            # V3.3: Task checkpoints for resume/recovery
+            """
+            CREATE TABLE IF NOT EXISTS task_checkpoints (
+                task_id VARCHAR(100) PRIMARY KEY,
+                goal TEXT NOT NULL,
+                task_type VARCHAR(50),
+                status VARCHAR(50),
+                current_step TEXT,
+                completed_steps JSONB,
+                remaining_steps JSONB,
+                failed_steps JSONB,
+                blocked_steps JSONB,
+                artifacts JSONB,
+                tool_results JSONB,
+                verification_results JSONB,
+                models_used JSONB,
+                retry_counts JSONB,
+                termination_reason VARCHAR(100),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                final_response_status VARCHAR(50),
+                resume_available BOOLEAN DEFAULT TRUE
+            );
             """
         ]
 
@@ -225,7 +249,8 @@ class PostgresManager:
                         (SELECT COUNT(*) FROM episodic_memory) AS episode_count,
                         (SELECT COUNT(*) FROM semantic_facts) AS fact_count,
                         (SELECT COUNT(*) FROM system_telemetry) AS telemetry_count,
-                        (SELECT COUNT(*) FROM command_logs) AS log_count;
+                        (SELECT COUNT(*) FROM command_logs) AS log_count,
+                        (SELECT COUNT(*) FROM task_checkpoints) AS checkpoint_count;
                 """)
                 counts = cur.fetchone()
 
@@ -445,20 +470,133 @@ class PostgresManager:
             self.release_connection(conn)
 
     def get_table_counts(self) -> Dict[str, int]:
-        """Returns row counts for all 5 core tables."""
+        """Returns row counts for all core tables including checkpoints."""
         conn = self.get_connection()
         if not conn:
             return {}
         try:
             with conn.cursor() as cur:
                 counts = {}
-                for tbl in ["user_profiles", "episodic_memory", "semantic_facts", "system_telemetry", "command_logs"]:
+                for tbl in ["user_profiles", "episodic_memory", "semantic_facts", "system_telemetry", "command_logs", "task_checkpoints"]:
                     cur.execute(f"SELECT COUNT(*) FROM {tbl};")
                     counts[tbl] = cur.fetchone()[0]
                 return counts
         except Exception as e:
             print(f"[POSTGRES ERROR] Failed to fetch table counts: {e}")
             return {}
+        finally:
+            self.release_connection(conn)
+
+    # -------------------------------------------------------------
+    # V3.3: Task Checkpoint Operations
+    # -------------------------------------------------------------
+    def save_checkpoint(self, checkpoint: Dict[str, Any]):
+        """Saves or updates a task checkpoint to PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO task_checkpoints (
+                        task_id, goal, task_type, status, current_step,
+                        completed_steps, remaining_steps, failed_steps, blocked_steps,
+                        artifacts, tool_results, verification_results,
+                        models_used, retry_counts, termination_reason,
+                        final_response_status, resume_available, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (task_id) DO UPDATE SET
+                        goal = EXCLUDED.goal,
+                        task_type = EXCLUDED.task_type,
+                        status = EXCLUDED.status,
+                        current_step = EXCLUDED.current_step,
+                        completed_steps = EXCLUDED.completed_steps,
+                        remaining_steps = EXCLUDED.remaining_steps,
+                        failed_steps = EXCLUDED.failed_steps,
+                        blocked_steps = EXCLUDED.blocked_steps,
+                        artifacts = EXCLUDED.artifacts,
+                        tool_results = EXCLUDED.tool_results,
+                        verification_results = EXCLUDED.verification_results,
+                        models_used = EXCLUDED.models_used,
+                        retry_counts = EXCLUDED.retry_counts,
+                        termination_reason = EXCLUDED.termination_reason,
+                        final_response_status = EXCLUDED.final_response_status,
+                        resume_available = EXCLUDED.resume_available,
+                        updated_at = CURRENT_TIMESTAMP;
+                """, (
+                    checkpoint.get("task_id"),
+                    checkpoint.get("goal"),
+                    checkpoint.get("task_type"),
+                    checkpoint.get("status"),
+                    checkpoint.get("current_step"),
+                    json.dumps(checkpoint.get("completed_steps", [])),
+                    json.dumps(checkpoint.get("remaining_steps", [])),
+                    json.dumps(checkpoint.get("failed_steps", [])),
+                    json.dumps(checkpoint.get("blocked_steps", [])),
+                    json.dumps(checkpoint.get("artifacts", [])),
+                    json.dumps(checkpoint.get("tool_results", [])),
+                    json.dumps(checkpoint.get("verification_results", [])),
+                    json.dumps(checkpoint.get("models_used", [])),
+                    json.dumps(checkpoint.get("retry_counts", {})),
+                    checkpoint.get("termination_reason"),
+                    checkpoint.get("final_response_status", "success"),
+                    checkpoint.get("resume_available", True),
+                ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Failed to save checkpoint: {e}")
+        finally:
+            self.release_connection(conn)
+
+    def load_checkpoint(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Loads a task checkpoint from PostgreSQL."""
+        conn = self.get_connection()
+        if not conn:
+            return None
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM task_checkpoints WHERE task_id = %s;", (task_id,))
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+                return None
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Failed to load checkpoint: {e}")
+            return None
+        finally:
+            self.release_connection(conn)
+
+    def delete_checkpoint(self, task_id: str) -> bool:
+        """Deletes a task checkpoint after successful completion."""
+        conn = self.get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM task_checkpoints WHERE task_id = %s;", (task_id,))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES ERROR] Failed to delete checkpoint: {e}")
+            return False
+        finally:
+            self.release_connection(conn)
+
+    def get_recent_checkpoints(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Retrieves recent checkpoints for dashboard."""
+        conn = self.get_connection()
+        if not conn:
+            return []
+        try:
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("SELECT task_id, goal, status, current_step, updated_at FROM task_checkpoints ORDER BY updated_at DESC LIMIT %s;", (limit,))
+                rows = cur.fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            print(f"[POSTGRES ERROR] Failed to fetch recent checkpoints: {e}")
+            return []
         finally:
             self.release_connection(conn)
 

@@ -5,10 +5,49 @@ from models import (
 )
 
 
+from enum import Enum
+
+class ModelCapability(str, Enum):
+    CODING = "coding"
+    REASONING = "reasoning"
+    MULTI_STEP = "multi_step"
+    VISION = "vision"
+    WEB_RESEARCH = "web_research"
+    FAST_CONVERSATION = "fast_conversation"
+    GENERAL = "general"
+    OFFLINE = "offline"
+
+
+class NoCapableProviderError(Exception):
+    """Raised when no provider with required capability is available."""
+    def __init__(self, task_type: str, available_providers: List[str]):
+        self.task_type = task_type
+        self.available_providers = available_providers
+        super().__init__(f"No capable provider for '{task_type}'. Available: {available_providers}")
+
+
+class CapabilityFailoverManager:
+    """Helper for capability-preserving provider failover."""
+    def __init__(self, router: Optional['ModelRouter'] = None):
+        self._router = router
+
+    @property
+    def router(self) -> 'ModelRouter':
+        return self._router or model_router
+
+    def get_next_provider(self, capability: Any, exclude: Optional[List[str]] = None) -> BaseLLMProvider:
+        cap_str = capability.value if hasattr(capability, 'value') else str(capability)
+        exclude = exclude or []
+        capable = [p for p in self.router._get_capable_providers(cap_str) if p not in exclude]
+        if not capable:
+            raise NoCapableProviderError(cap_str, [p for p in self.router.providers.keys() if p not in exclude])
+        return self.router.providers[capable[0]]
+
+
 class ModelRouter:
     """
-    Intelligent Capability-Based Model Router for DOOM V3.
-    Matches task requirements to model capabilities with automatic multi-tier failover.
+    Intelligent Capability-Based Model Router for DOOM V3.3.
+    Matches task requirements to model capabilities with automatic capability-preserving failover.
     """
     def __init__(self):
         self.providers: Dict[str, BaseLLMProvider] = {
@@ -21,16 +60,60 @@ class ModelRouter:
             "fallback": FallbackProvider()  # Zero-config local rule engine
         }
 
-        self.capability_priorities = {
-            "coding": ["groq", "bedrock", "openai", "gemini", "ollama", "fallback"],
-            "reasoning": ["groq", "bedrock", "openai", "gemini", "ollama", "fallback"],
-            "multi_step": ["groq", "bedrock", "openai", "gemini", "fallback"],
-            "vision": ["gemini", "openai", "bedrock", "groq", "fallback"],
-            "web_research": ["gemini", "groq", "openai", "bedrock", "fallback"],
-            "fast_conversation": ["groq", "gemini", "openai", "bedrock", "ollama", "fallback"],
-            "general": ["groq", "bedrock", "openai", "gemini", "ollama", "fallback"],
-            "offline": ["ollama", "fallback"]
+        # Capability requirements per task type
+        self.capability_requirements = {
+            "coding": ["tool_calling", "code_generation"],
+            "reasoning": ["reasoning", "tool_calling"],
+            "multi_step": ["tool_calling", "reasoning", "code_generation"],
+            "vision": ["vision", "tool_calling"],
+            "web_research": ["web_search", "tool_calling"],
+            "fast_conversation": ["fast_inference"],
+            "general": ["tool_calling"],
+            "offline": ["offline"],
         }
+
+        # Provider capabilities
+        self.provider_capabilities = {
+            "groq": ["tool_calling", "code_generation", "reasoning", "fast_inference", "coding"],
+            "nim": ["tool_calling", "code_generation", "reasoning", "coding"],
+            "bedrock": ["tool_calling", "code_generation", "reasoning", "vision", "coding"],
+            "openai": ["tool_calling", "code_generation", "reasoning", "vision", "web_search", "coding"],
+            "gemini": ["tool_calling", "code_generation", "reasoning", "vision", "web_search", "coding"],
+            "ollama": ["tool_calling", "code_generation", "reasoning", "offline", "coding"],
+            "fallback": ["deterministic_dispatch"],  # No actual LLM capabilities
+        }
+
+        for name, p in self.providers.items():
+            setattr(p, "capabilities", self.provider_capabilities.get(name, []))
+
+        self.capability_priorities = {
+            "coding": ["groq", "bedrock", "openai", "gemini", "ollama"],
+            "reasoning": ["groq", "bedrock", "openai", "gemini", "ollama"],
+            "multi_step": ["groq", "bedrock", "openai", "gemini"],
+            "vision": ["gemini", "openai", "bedrock", "groq"],
+            "web_research": ["gemini", "groq", "openai", "bedrock"],
+            "fast_conversation": ["groq", "gemini", "openai", "bedrock", "ollama"],
+            "general": ["groq", "bedrock", "openai", "gemini", "ollama"],
+            "offline": ["ollama"],
+        }
+
+    def _has_capability(self, provider_name: str, required_capabilities: List[str]) -> bool:
+        """Check if a provider has all required capabilities."""
+        provider_caps = self.provider_capabilities.get(provider_name, [])
+        return all(cap in provider_caps for cap in required_capabilities)
+
+    def _get_capable_providers(self, task_type: str) -> List[str]:
+        """Get list of available providers that have the required capability."""
+        key = (task_type or "general").lower()
+        required_caps = self.capability_requirements.get(key, ["tool_calling"])
+        priorities = self.capability_priorities.get(key, self.capability_priorities["general"])
+        
+        capable = []
+        for name in priorities:
+            p = self.providers.get(name)
+            if p and p.is_available() and self._has_capability(name, required_caps):
+                capable.append(name)
+        return capable
 
     def route(self, task_type: str = "general") -> BaseLLMProvider:
         """Finds the optimal online provider based on task capabilities."""
@@ -51,16 +134,22 @@ class ModelRouter:
         provider_override: Optional[str] = None
     ) -> LLMResponse:
         """
-        Executes generation with automatic failover.
-        If the primary routed provider throws an exception, tries the next in the cascade.
+        Executes generation with capability-preserving failover.
+        If the primary routed provider throws an exception, tries the next CAPABLE provider.
+        Raises NoCapableProviderError if no capable provider is available.
         """
         key = (task_type or "general").lower()
+        required_caps = self.capability_requirements.get(key, ["tool_calling"])
+        
         if provider_override and provider_override in self.providers and self.providers[provider_override].is_available():
             cascade = [provider_override] + [p for p in self.capability_priorities.get(key, self.capability_priorities["general"]) if p != provider_override]
         else:
             cascade = self.capability_priorities.get(key, self.capability_priorities["general"])
-
-        for name in cascade:
+        
+        # Filter cascade to only capable providers
+        capable_cascade = [name for name in cascade if self._has_capability(name, required_caps)]
+        
+        for name in capable_cascade:
             provider = self.providers.get(name)
             if not provider or not provider.is_available():
                 continue
@@ -69,11 +158,18 @@ class ModelRouter:
                 if response and (response.text or response.tool_calls):
                     return response
             except Exception as e:
-                print(f"[MODEL ROUTER] Provider '{name}' failed ({e}). Attempting failover...")
+                print(f"[MODEL ROUTER] Provider '{name}' failed ({e}). Attempting capability-preserving failover...")
                 continue
-
-        # Last resort: guaranteed local fallback
-        return self.providers["fallback"].generate(prompt=prompt, system_prompt=system_prompt, tools=tools)
+        
+        # No capable provider available - raise exception for orchestrator to handle
+        available_providers = [name for name in self.capability_priorities.get(key, []) 
+                              if self.providers.get(name) and self.providers[name].is_available()]
+        if available_providers:
+            # Providers available but none with required capability
+            raise NoCapableProviderError(task_type, available_providers)
+        
+        # No providers available at all - this is a hard outage
+        raise NoCapableProviderError(task_type, [])
 
     def get_provider_status(self) -> Dict[str, bool]:
         return {name: p.is_available() for name, p in self.providers.items()}
