@@ -4,10 +4,12 @@ import time
 import psutil
 from tools.base import BaseTool, ToolResult
 
+
 class OpenApplicationTool(BaseTool):
     name = "computer_open_app"
     description = "Launches any application on Windows (e.g. notepad, chrome, vscode, calc, spotify, excel)"
     permission_level = "safe"
+    timeout = 10
     parameters = {
         "type": "object",
         "properties": {
@@ -19,7 +21,7 @@ class OpenApplicationTool(BaseTool):
         "required": ["app_name"]
     }
 
-    def execute(self, app_name: str, **kwargs) -> ToolResult:
+    def _execute_impl(self, app_name: str, **kwargs) -> ToolResult:
         app_map = {
             "notepad": "notepad",
             "calculator": "calc",
@@ -44,14 +46,16 @@ class OpenApplicationTool(BaseTool):
         target = app_map.get(app_name.lower().strip(), f"start {app_name}")
         try:
             subprocess.run(target, shell=True, check=False)
-            return ToolResult(success=True, output=f"Successfully launched {app_name}, Sujal.")
+            return ToolResult(success=True, output=f"Successfully launched {app_name}, Sujal.", action="open_app", target=target)
         except Exception as e:
-            return ToolResult(success=False, output=f"Failed to launch {app_name}", error=str(e))
+            return ToolResult(success=False, output=f"Failed to launch {app_name}", error=str(e), action="open_app", target=target)
+
 
 class CloseApplicationTool(BaseTool):
     name = "computer_close_app"
     description = "Closes a running application or process on Windows"
     permission_level = "moderate"
+    timeout = 10
     parameters = {
         "type": "object",
         "properties": {
@@ -63,7 +67,7 @@ class CloseApplicationTool(BaseTool):
         "required": ["app_name"]
     }
 
-    def execute(self, app_name: str, **kwargs) -> ToolResult:
+    def _execute_impl(self, app_name: str, **kwargs) -> ToolResult:
         app_lower = app_name.lower().replace(".exe", "")
         killed = False
         for proc in psutil.process_iter(['name']):
@@ -74,13 +78,15 @@ class CloseApplicationTool(BaseTool):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         if killed:
-            return ToolResult(success=True, output=f"Closed {app_name} successfully.")
-        return ToolResult(success=False, output=f"No active process matching '{app_name}' found to close.")
+            return ToolResult(success=True, output=f"Closed {app_name} successfully.", action="close_app", target=app_name)
+        return ToolResult(success=False, output=f"No active process matching '{app_name}' found to close.", action="close_app", target=app_name)
+
 
 class ControlMediaTool(BaseTool):
     name = "computer_control_media"
     description = "Controls system media playback (play, pause, next, previous, volume up, volume down, mute)"
     permission_level = "safe"
+    timeout = 5
     parameters = {
         "type": "object",
         "properties": {
@@ -93,7 +99,7 @@ class ControlMediaTool(BaseTool):
         "required": ["action"]
     }
 
-    def execute(self, action: str, **kwargs) -> ToolResult:
+    def _execute_impl(self, action: str, **kwargs) -> ToolResult:
         try:
             import pyautogui
             action_map = {
@@ -108,14 +114,16 @@ class ControlMediaTool(BaseTool):
             }
             key = action_map.get(action.lower().strip(), "playpause")
             pyautogui.press(key)
-            return ToolResult(success=True, output=f"Media action '{action}' executed successfully.")
+            return ToolResult(success=True, output=f"Media action '{action}' executed successfully.", action="control_media", target=action)
         except Exception as e:
-            return ToolResult(success=False, output=f"Media control failed: {e}", error=str(e))
+            return ToolResult(success=False, output=f"Media control failed: {e}", error=str(e), action="control_media", target=action)
+
 
 class StreamYouTubeTool(BaseTool):
     name = "computer_stream_youtube"
     description = "Searches and streams any song, artist, video, or soundtrack directly on YouTube"
     permission_level = "safe"
+    timeout = 15
     parameters = {
         "type": "object",
         "properties": {
@@ -127,7 +135,7 @@ class StreamYouTubeTool(BaseTool):
         "required": ["query"]
     }
 
-    def execute(self, query: str, **kwargs) -> ToolResult:
+    def _execute_impl(self, query: str, **kwargs) -> ToolResult:
         if not query or query.strip() in ["music", "song", "media", "something"]:
             query = "cyberpunk synthwave radio"
         
@@ -147,9 +155,9 @@ class StreamYouTubeTool(BaseTool):
         try:
             import pywhatkit
             pywhatkit.playonyt(clean_query)
-            return ToolResult(success=True, output=f"Streaming '{clean_query}' on YouTube, Boss Sujal.")
+            return ToolResult(success=True, output=f"Streaming '{clean_query}' on YouTube, Boss Sujal.", action="stream_youtube", target=clean_query)
         except Exception:
             # Fallback to direct web browser query search
             url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_query)}"
             webbrowser.open(url)
-            return ToolResult(success=True, output=f"Opened YouTube search for '{clean_query}', Boss Sujal.")
+            return ToolResult(success=True, output=f"Opened YouTube search for '{clean_query}', Boss Sujal.", action="stream_youtube", target=clean_query)

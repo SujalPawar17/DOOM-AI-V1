@@ -74,6 +74,21 @@ class UserProfile:
     def get_role(self) -> str:
         return self.data.get("role", "Boss and Creator")
 
+    def get_title(self) -> str:
+        return self.data.get("title", "Sir")
+
+    def get_access_level(self) -> str:
+        return self.data.get("access_level", "Root / Level 10")
+
+    def get_preferences(self) -> Dict[str, Any]:
+        return self.data.get("preferences", {})
+
+    def get_projects(self) -> List[Dict[str, Any]]:
+        return self.data.get("projects", [])
+
+    def get_custom_notes(self) -> Dict[str, Any]:
+        return self.data.get("custom_notes", {})
+
     def set_preference(self, key: str, value: Any):
         self.data["preferences"][key] = value
         self.save()

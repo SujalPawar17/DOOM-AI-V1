@@ -57,11 +57,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const voiceIcon = document.getElementById("voice-icon");
     const voiceLabel = document.getElementById("voice-label");
     const btnHandsfreeToggle = document.getElementById("btn-handsfree-toggle");
-    const handsfreeIcon = document.getElementById("handsfree-icon");
-    const handsfreeLabel = document.getElementById("handsfree-label");
+    const handsfreeIcon = document.getElementById("handsfree-icon") || { textContent: '' };
+    const handsfreeLabel = document.getElementById("handsfree-label") || { textContent: '' };
     const btnScheduleBriefing = document.getElementById("btn-schedule-briefing");
-    const scheduleTimeLabel = document.getElementById("schedule-time-label");
+    const scheduleTimeLabel = document.getElementById("schedule-time-label") || { textContent: '' };
     const btnGestureToggle = document.getElementById("btn-gesture-toggle");
+    const btnClapToggle = document.getElementById("btn-clap-toggle");
+    const clapIcon = document.getElementById("clap-icon") || { textContent: '' };
+    const clapLabel = document.getElementById("clap-label") || { textContent: '' };
+
 
     // Music Elements
     const btnMusicPlay = document.getElementById("btn-music-play");
@@ -80,7 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const gestureCanvas = document.getElementById("gestureCanvas");
     const gestureStatusPill = document.getElementById("gesture-status-pill");
 
-    const coreStateText = document.getElementById("core-state-text");
+    const coreStateText = document.getElementById("core-state-text") || { textContent: '' };
     const termStatusIndicator = document.getElementById("term-status-indicator");
     const responseContent = document.getElementById("response-content");
     const responseMeta = document.getElementById("response-meta");
@@ -98,12 +102,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const countEpisodes = document.getElementById("count-episodes");
     const countFacts = document.getElementById("count-facts");
 
+    // Null-safe helper to update text content
+    function safeText(el, text) { if (el) el.textContent = text; }
     // ─────────────────────────────────────────────────────────────────────────
     // 1. Digital Master Clock & Uptime
     // ─────────────────────────────────────────────────────────────────────────
     function updateClock() {
         const now = new Date();
-        digitalClock.textContent = now.toTimeString().split(" ")[0];
+        if (digitalClock) digitalClock.textContent = now.toTimeString().split(" ")[0];
     }
     setInterval(updateClock, 1000);
     updateClock();
@@ -340,13 +346,20 @@ document.addEventListener("DOMContentLoaded", () => {
         if (musicStationTag) musicStationTag.textContent = `${station.tag} (AUTO-DUCKING ENABLED)`;
 
         if (state.musicPlaying) {
-            btnMusicPlay.classList.add("playing");
-            musicPlayIcon.textContent = "⏸";
-            musicEqualizer.classList.add("active");
+            if (btnMusicPlay) btnMusicPlay.classList.add("playing");
+            if (musicPlayIcon) musicPlayIcon.textContent = "⏸";
+            if (musicEqualizer) musicEqualizer.classList.add("active");
+            // New HTML music player
+            const eqEl = document.getElementById("music-eq");
+            if (eqEl) eqEl.classList.add("active");
+            const playBtn = document.getElementById("btn-music-play");
+            if (playBtn) { const ico = playBtn.querySelector("svg"); if (ico) ico.style.opacity = "0.7"; }
         } else {
-            btnMusicPlay.classList.remove("playing");
-            musicPlayIcon.textContent = "▶";
-            musicEqualizer.classList.remove("active");
+            if (btnMusicPlay) btnMusicPlay.classList.remove("playing");
+            if (musicPlayIcon) musicPlayIcon.textContent = "▶";
+            if (musicEqualizer) musicEqualizer.classList.remove("active");
+            const eqEl = document.getElementById("music-eq");
+            if (eqEl) eqEl.classList.remove("active");
         }
     }
 
@@ -479,14 +492,12 @@ document.addEventListener("DOMContentLoaded", () => {
         btnVoiceToggle.addEventListener("click", () => {
             state.voiceEnabled = !state.voiceEnabled;
             if (state.voiceEnabled) {
-                btnVoiceToggle.classList.add("active");
-                voiceIcon.textContent = "🔊";
-                voiceLabel.textContent = "AUDIO ON";
+                btnVoiceToggle.classList.remove("muted");
+                btnVoiceToggle.title = "Voice output ON";
             } else {
-                btnVoiceToggle.classList.remove("active");
-                voiceIcon.textContent = "🔇";
-                voiceLabel.textContent = "AUDIO OFF";
-                if (currentAudio) currentAudio.pause();
+                btnVoiceToggle.classList.add("muted");
+                btnVoiceToggle.title = "Voice output OFF";
+                if (currentSpeechAudio) { currentSpeechAudio.pause(); currentSpeechAudio = null; }
                 if ("speechSynthesis" in window) window.speechSynthesis.cancel();
             }
         });
@@ -506,8 +517,11 @@ document.addEventListener("DOMContentLoaded", () => {
         recognition.onstart = () => {
             state.isRecording = true;
             btnMic.classList.add("recording");
-            termStatusIndicator.textContent = "LISTENING (HANDS-FREE)";
-            termStatusIndicator.style.color = "var(--neon-green)";
+            if (termStatusIndicator) {
+                termStatusIndicator.textContent = "";
+                termStatusIndicator.classList.add("active");
+            }
+            if (responseMeta) responseMeta.textContent = "Listening (hands-free)...";
         };
 
         recognition.onresult = (event) => {
@@ -573,8 +587,11 @@ document.addEventListener("DOMContentLoaded", () => {
             } else {
                 state.isRecording = false;
                 btnMic.classList.remove("recording");
-                termStatusIndicator.textContent = "READY";
-                termStatusIndicator.style.color = "var(--neon-cyan)";
+                if (termStatusIndicator) {
+                    termStatusIndicator.textContent = "";
+                    termStatusIndicator.classList.remove("active");
+                }
+                if (responseMeta) responseMeta.textContent = "Ready";
             }
         };
 
@@ -693,7 +710,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let lastFrameData = null;
     let lastGestureTime = 0;
 
-    const tabOrder = ["tab-audit", "tab-episodes", "tab-facts", "tab-api-tester", "tab-scaffolder", "tab-profile"];
+    const tabOrder = ["tab-audit", "tab-episodes", "tab-facts", "tab-agent-studio", "tab-profile"];
 
     function cycleTab(direction = 1) {
         const activeIdx = tabOrder.indexOf(state.activeTab);
@@ -806,16 +823,88 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (msg.type === "telemetry_update" && msg.data) {
                     handleTelemetryUpdate(msg.data);
 
+                    // Update Home minimal health indicator
+                    const healthText = document.getElementById("home-health-text");
+                    if (healthText) {
+                        healthText.textContent = `SYSTEM HEALTHY // CPU: ${Math.round(msg.data.cpu_percent || 0)}% • RAM: ${Math.round(msg.data.memory_percent || 0)}%`;
+                    }
+
+                    // Handle unified DOOM State Machine
+                    if (msg.doom_state) {
+                        state.coreState = msg.doom_state.state;
+                        const stateText = document.getElementById("core-state-text");
+                        if (stateText) stateText.textContent = `DOOM ${msg.doom_state.state}`;
+                        const subText = document.getElementById("core-sub-text");
+                        if (subText) subText.textContent = msg.doom_state.message || "AWAITING COMMAND";
+                    }
+
+                    // Handle Active Autonomous Task updates
+                    const taskCard = document.getElementById("home-active-task-card");
+                    if (msg.active_task) {
+                        if (taskCard) {
+                            taskCard.style.display = "block";
+                            const pctEl = document.getElementById("home-task-pct");
+                            const fillEl = document.getElementById("home-task-progress-fill");
+                            const goalEl = document.getElementById("home-task-goal");
+                            const listEl = document.getElementById("home-task-steps-checklist");
+
+                            if (pctEl) pctEl.textContent = `${msg.active_task.progress}%`;
+                            if (fillEl) fillEl.style.width = `${msg.active_task.progress}%`;
+                            if (goalEl) goalEl.textContent = msg.active_task.goal;
+                            if (listEl && msg.active_task.steps) {
+                                listEl.innerHTML = msg.active_task.steps.map(s => {
+                                    const icon = s.status === "completed" ? "✓" : (s.status === "active" ? "◉" : "○");
+                                    return `<li class="task-step-item ${s.status}"><span>${icon}</span> <span>${s.description}</span></li>`;
+                                }).join("");
+                            }
+                        }
+                    } else if (taskCard) {
+                        taskCard.style.display = "none";
+                    }
+
                     if (msg.sentinel_alert && sentinelBanner) {
                         sentinelMsg.textContent = `SENTINEL ALERT [${msg.sentinel_alert.level}]: ${msg.sentinel_alert.msg}`;
                         sentinelBanner.style.display = "flex";
                     }
                 } else if (msg.type === "scheduled_briefing") {
                     speakText(msg.response || "Morning protocol initiated, Boss Sujal.");
+                } else if (msg.type === "clap_detected") {
+                    console.log("[DOOM HUD] 👏 Acoustic clap detected!");
+                    state.coreState = "EXECUTING";
+                    coreStateText.textContent = "DOOM ONLINE";
+                    if (termStatusIndicator) {
+                        termStatusIndicator.textContent = "";
+                        termStatusIndicator.classList.add("active");
+                    }
+                    responseMeta.textContent = `Online // ${msg.timestamp}`;
+                    responseContent.textContent = "DOOM is online. At your service, Boss. Listening for command...";
+                    if (btnClapToggle) btnClapToggle.classList.add("recording");
+                } else if (msg.type === "clap_command") {
+                    console.log("[DOOM HUD] Command received:", msg.command);
+                    commandInput.value = msg.command;
+                    responseMeta.textContent = `Command Recognized: "${msg.command}"`;
+                    responseContent.textContent = `Processing: "${msg.command}"...`;
+                } else if (msg.type === "clap_standby") {
+                    if (btnClapToggle) btnClapToggle.classList.remove("recording");
+                    state.coreState = "IDLE";
+                    coreStateText.textContent = "DOOM ONLINE";
+                    if (termStatusIndicator) {
+                        termStatusIndicator.textContent = "";
+                        termStatusIndicator.classList.remove("active");
+                    }
+                    responseMeta.textContent = `Standby // ${msg.timestamp}`;
+                    responseContent.textContent = "Standing by, Boss.";
                 } else if (msg.type === "command_executed" || msg.type === "mode_triggered") {
+
+                    if (btnClapToggle) btnClapToggle.classList.remove("recording");
+                    if (msg.response) {
+                        responseContent.textContent = msg.response;
+                        responseMeta.textContent = `Completed // ${msg.timestamp}`;
+                    }
                     refreshAuditLogs();
                     refreshEpisodes();
                 }
+
             } catch (e) {
                 console.error("[DOOM HUD] WS parse error:", e);
             }
@@ -827,6 +916,24 @@ document.addEventListener("DOMContentLoaded", () => {
         };
     }
     initWebSocket();
+
+    // Clap Sensor Calibration button handler (Optional manual tune)
+    if (btnClapToggle) {
+        btnClapToggle.addEventListener("click", async () => {
+            clapLabel.textContent = "CALIBRATING...";
+            try {
+                const res = await fetch("/api/clap/calibrate", { method: "POST" });
+                const data = await res.json();
+                clapLabel.textContent = `CLAP ON (${data.threshold})`;
+                responseMeta.textContent = `Calibrated // Threshold: ${data.threshold}`;
+                responseContent.textContent = `Acoustic sensor calibrated with current room noise (Threshold = ${data.threshold}). Double-clap anytime to awaken DOOM.`;
+            } catch (err) {
+                clapLabel.textContent = "CLAP SENSOR ON";
+                console.error("Clap calibration error:", err);
+            }
+        });
+    }
+
 
     if (btnDismissAlert) {
         btnDismissAlert.addEventListener("click", () => {
@@ -845,7 +952,7 @@ document.addEventListener("DOMContentLoaded", () => {
         metricNetwork.textContent = `${data.bytes_recv_mb} / ${data.bytes_sent_mb} MB`;
 
         if (data.uptime_formatted) {
-            uptimeDisplay.textContent = `UPTIME: ${data.uptime_formatted}`;
+            if (uptimeDisplay) uptimeDisplay.textContent = `Up ${data.uptime_formatted}`;
         }
 
         state.telemetryHistory.cpu.push(data.cpu_percent || 0);
@@ -864,8 +971,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         state.coreState = "EXECUTING";
         coreStateText.textContent = "DOOM EXECUTING";
-        termStatusIndicator.textContent = "PROCESSING...";
-        termStatusIndicator.style.color = "var(--neon-green)";
+        if (termStatusIndicator) {
+            termStatusIndicator.textContent = "";
+            termStatusIndicator.classList.add("active");
+        }
         btnExecute.disabled = true;
 
         responseMeta.textContent = "Orchestrating agent goal...";
@@ -891,8 +1000,10 @@ document.addEventListener("DOMContentLoaded", () => {
         } finally {
             state.coreState = "IDLE";
             coreStateText.textContent = "DOOM ONLINE";
-            termStatusIndicator.textContent = "READY";
-            termStatusIndicator.style.color = "var(--neon-cyan)";
+            if (termStatusIndicator) {
+                termStatusIndicator.textContent = "";
+                termStatusIndicator.classList.remove("active");
+            }
             btnExecute.disabled = false;
             commandInput.value = "";
         }
@@ -928,28 +1039,47 @@ document.addEventListener("DOMContentLoaded", () => {
     // ─────────────────────────────────────────────────────────────────────────
     async function refreshAuditLogs() {
         try {
-            const res = await fetch("/api/logs?limit=15");
+            const res = await fetch("/api/logs?limit=20");
             const data = await res.json();
             const logs = data.logs || [];
 
-            countLogs.textContent = logs.length;
+            if (countLogs) countLogs.textContent = logs.length;
+
+            if (!auditTableBody) return;
 
             if (logs.length === 0) {
-                auditTableBody.innerHTML = `<tr><td colspan="7" class="loading-cell">No command logs found in PostgreSQL.</td></tr>`;
+                auditTableBody.innerHTML = `<div class="empty-feed">No command logs found. Execute a goal to start logging.</div>`;
                 return;
             }
 
-            auditTableBody.innerHTML = logs.map(l => `
-                <tr>
-                    <td>#${l.id}</td>
-                    <td><strong>${escapeHtml(l.user_input)}</strong></td>
-                    <td><span class="pill-green" style="padding:2px 6px; border-radius:4px; font-size:11px;">${l.model_used}</span></td>
-                    <td><span style="font-family:var(--font-mono); font-size:11px; color:var(--text-secondary);">${l.tool_called}</span></td>
-                    <td><span style="color:var(--neon-green); font-family:var(--font-mono);">${l.latency_ms ? l.latency_ms + 'ms' : '-'}</span></td>
-                    <td><span class="${l.status === 'SUCCESS' ? 'text-green' : 'text-amber'}">${l.status}</span></td>
-                    <td style="color:var(--text-muted); font-size:11px;">${l.created_at}</td>
-                </tr>
-            `).join("");
+            auditTableBody.innerHTML = logs.map(l => {
+                const isSuccess = (l.status || '').toUpperCase() === 'SUCCESS';
+                const statusClass = isSuccess ? 'success' : 'error';
+                const dotColor = isSuccess ? 'var(--green)' : 'var(--red)';
+                return `
+                <div class="activity-item">
+                    <div class="activity-timeline-dot ${isSuccess ? 'activity-dot-success' : 'activity-dot-error'}">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="${dotColor}" stroke-width="2">
+                            ${isSuccess
+                                ? '<polyline points="20 6 9 17 4 12"/>'
+                                : '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'
+                            }
+                        </svg>
+                    </div>
+                    <div class="activity-content">
+                        <div class="activity-content-header">
+                            <span class="activity-goal">${escapeHtml(l.user_input || 'Command')}</span>
+                            <span class="activity-time">${l.created_at || ''}</span>
+                        </div>
+                        <div class="activity-meta">
+                            <span class="activity-meta-pill">${escapeHtml(l.model_used || 'auto')}</span>
+                            <span class="activity-meta-pill">${escapeHtml(l.tool_called || 'direct')}</span>
+                            <span class="activity-meta-pill">${l.latency_ms ? l.latency_ms + 'ms' : '-'}</span>
+                            <span class="activity-meta-pill ${statusClass}">${l.status || 'UNKNOWN'}</span>
+                        </div>
+                    </div>
+                </div>`;
+            }).join("");
         } catch (e) {
             console.error("Logs fetch error:", e);
         }
@@ -961,20 +1091,19 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             const episodes = data.episodes || [];
 
-            countEpisodes.textContent = episodes.length;
+            if (countEpisodes) countEpisodes.textContent = episodes.length;
+
+            if (!episodesFeedList) return;
 
             if (episodes.length === 0) {
-                episodesFeedList.innerHTML = `<div class="empty-feed">No episodic action logs recorded yet.</div>`;
+                episodesFeedList.innerHTML = `<div class="empty-feed">No episodic memories recorded yet.</div>`;
                 return;
             }
 
             episodesFeedList.innerHTML = episodes.map(ep => `
-                <div class="episode-item">
-                    <div>
-                        <div class="episode-title">${escapeHtml(ep.action || ep.episode_type || 'Action Episode')}</div>
-                        <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">${escapeHtml(ep.result_summary || ep.context || '')}</div>
-                    </div>
-                    <div class="episode-meta">${ep.timestamp || ep.created_at || ''}</div>
+                <div class="memory-episode-item">
+                    <span class="episode-time">${(ep.timestamp || ep.created_at || '').slice(11, 16) || 'recent'}</span>
+                    <span class="episode-text">${escapeHtml(ep.action || ep.episode_type || 'Action')} — ${escapeHtml(ep.result_summary || ep.context || '')}</span>
                 </div>
             `).join("");
         } catch (e) {
@@ -988,18 +1117,20 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             const facts = data.facts || [];
 
-            countFacts.textContent = facts.length;
+            if (countFacts) countFacts.textContent = facts.length;
+
+            if (!factsGridList) return;
 
             if (facts.length === 0) {
-                factsGridList.innerHTML = `<div class="empty-feed">No semantic memory facts stored in PostgreSQL yet.</div>`;
+                factsGridList.innerHTML = `<div class="empty-feed">No knowledge base facts recorded yet.</div>`;
                 return;
             }
 
             factsGridList.innerHTML = facts.map(f => `
-                <div class="fact-card">
-                    <span class="fact-cat">[${f.category.toUpperCase()}]</span>
-                    <span class="fact-key">${escapeHtml(f.key)}</span>
-                    <span class="fact-val">${escapeHtml(f.value)}</span>
+                <div class="memory-fact-card">
+                    <div class="memory-fact-key">${escapeHtml(f.key)}</div>
+                    <div class="memory-fact-val">${escapeHtml(f.value)}</div>
+                    <span class="memory-fact-cat">${(f.category || 'general').toLowerCase()}</span>
                 </div>
             `).join("");
         } catch (e) {
@@ -1012,13 +1143,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch("/api/tools");
             const data = await res.json();
             const tools = data.tools || [];
-
+            // For home page quick ref (legacy)
+            const toolsPillsList = document.getElementById("tools-pills-list");
             if (tools.length > 0 && toolsPillsList) {
-                toolsPillsList.innerHTML = tools.map(t => `
-                    <span class="tool-pill" title="${escapeHtml(t.description)}">
-                        <span class="tool-dot"></span>${t.name}
-                    </span>
-                `).join("");
+                toolsPillsList.innerHTML = tools.map(t => `<span class="tool-pill" title="${escapeHtml(t.description)}"><span class="tool-dot"></span>${t.name}</span>`).join("");
             }
         } catch (e) {
             console.error("Tools fetch error:", e);
@@ -1607,10 +1735,325 @@ document.addEventListener("DOMContentLoaded", () => {
         setTimeout(() => { btn.textContent = "⚡ Run"; }, 2500);
     };
 
-    // Initial Data Loads
+    // ─────────────────────────────────────────────────────────────────────────
+    // DOOM V3: PRIMARY NAVIGATION CONTROLLER & VIEW LOADERS
+    // ─────────────────────────────────────────────────────────────────────────
+    function switchDOOMView(targetView) {
+        if (!targetView) return;
+        const navBtns = document.querySelectorAll(".nav-btn, .v3-nav-btn, [data-view]");
+        navBtns.forEach(b => {
+            if (b.dataset.view === targetView) {
+                b.classList.add("active");
+            } else if (b.classList.contains("nav-btn") || b.classList.contains("v3-nav-btn")) {
+                b.classList.remove("active");
+            }
+        });
+
+        document.querySelectorAll(".view-panel").forEach(p => p.classList.remove("active"));
+        const panel = document.getElementById(`view-${targetView}`);
+        if (panel) panel.classList.add("active");
+
+        if (targetView === "tasks") loadTasksView();
+        if (targetView === "system") loadSystemView();
+        if (targetView === "activity") refreshAuditLogs();
+        if (targetView === "memory") {
+            refreshFacts();
+            refreshEpisodes();
+            if (typeof loadMemoryProfile === "function") loadMemoryProfile();
+        }
+        if (targetView === "home") updateGreeting();
+    }
+    window.switchDOOMView = switchDOOMView;
+
+    function setupDOOMV3Nav() {
+        const navBtns = document.querySelectorAll(".nav-btn, .v3-nav-btn, [data-view]");
+        navBtns.forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                const targetView = btn.dataset.view;
+                if (targetView) {
+                    switchDOOMView(targetView);
+                }
+            });
+        });
+
+        // Brand logo click navigates to Home
+        const brand = document.querySelector(".header-brand");
+        if (brand) {
+            brand.style.cursor = "pointer";
+            brand.addEventListener("click", () => switchDOOMView("home"));
+        }
+    }
+
+    function setupControlCenterSubnav() {
+        // Support both old .cc-subnav-btn and new .subnav-btn selectors
+        const ccBtns = document.querySelectorAll(".subnav-btn, .cc-subnav-btn");
+        ccBtns.forEach(btn => {
+            btn.addEventListener("click", () => {
+                const targetCC = btn.dataset.cc;
+                ccBtns.forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+
+                // Support both old .cc-section-panel and new .system-panel selectors
+                document.querySelectorAll(".system-panel, .cc-section-panel").forEach(p => p.classList.remove("active"));
+                // Try new panel naming first (cc-panel-hardware for the hardware tab)
+                let panel = document.getElementById(`cc-panel-${targetCC}`);
+                if (!panel) panel = document.getElementById(`cc-panel-telemetry`);
+                if (panel) panel.classList.add("active");
+            });
+        });
+    }
+
+    function updateGreeting() {
+        const hour = new Date().getHours();
+        const greetingEl = document.getElementById("home-greeting-text");
+        if (!greetingEl) return;
+        if (hour < 12) greetingEl.textContent = "Good morning, Boss.";
+        else if (hour < 17) greetingEl.textContent = "Good afternoon, Boss.";
+        else greetingEl.textContent = "Good evening, Boss.";
+    }
+
+    async function loadTasksView() {
+        try {
+            const res = await fetch("/api/tasks");
+            const data = await res.json();
+            const container = document.getElementById("tasks-active-container");
+            const historyGrid = document.getElementById("tasks-history-grid");
+
+            if (data.active_task && container) {
+                const t = data.active_task;
+                container.innerHTML = `
+                    <div class="task-card-v3" style="border-color: var(--neon-cyan);">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span class="active-task-tag">◉ RUNNING // ${t.task_id}</span>
+                            <span class="active-task-pct">${t.progress}%</span>
+                        </div>
+                        <h3 style="color:#ffffff; font-size:1.1rem; margin:0.4rem 0;">${t.goal}</h3>
+                        <div class="task-progress-bar-wrap">
+                            <div class="task-progress-fill" style="width: ${t.progress}%;"></div>
+                        </div>
+                        <div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.6rem;">Current: <strong>${t.current_step}</strong></div>
+                        <ul class="task-steps-checklist">
+                            ${(t.steps || []).map(s => {
+                                const icon = s.status === 'completed' ? '✓' : (s.status === 'active' ? '◉' : '○');
+                                return `<li class="task-step-item ${s.status}"><span>${icon}</span> <span>${s.description}</span></li>`;
+                            }).join("")}
+                        </ul>
+                    </div>
+                `;
+            } else if (container) {
+                container.innerHTML = `<div class="task-card-v3"><span style="color:var(--text-muted); font-size:0.85rem;">No active task running. Initiate a goal from Home or Chat to watch the execution loop.</span></div>`;
+            }
+
+            if (historyGrid && data.history) {
+                if (data.history.length === 0) {
+                    historyGrid.innerHTML = `<span style="color:var(--text-muted); font-size:0.8rem;">No previous tasks recorded yet.</span>`;
+                } else {
+                    historyGrid.innerHTML = data.history.map(t => `
+                        <div class="task-card-v3">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:0.7rem; font-family:var(--font-mono); color:var(--text-muted);">${t.created_at || ''}</span>
+                                <span class="status-${t.status === 'COMPLETED' ? 'live' : 'ready'}" style="font-size:0.65rem; padding:2px 6px; border-radius:3px;">${t.status}</span>
+                            </div>
+                            <strong style="color:#ffffff; font-size:0.9rem;">${t.goal}</strong>
+                            <div style="font-size:0.75rem; color:var(--text-secondary);">${t.result ? t.result.slice(0, 140) + '...' : 'In progress...'}</div>
+                            <div style="font-size:0.7rem; font-family:var(--font-mono); color:var(--neon-cyan); margin-top:0.3rem;">
+                                Tools: ${(t.tools_used || []).join(', ') || 'Direct'} • Duration: ${t.duration_ms || 0}ms
+                            </div>
+                        </div>
+                    `).join("");
+                }
+            }
+        } catch (e) {
+            console.error("Tasks fetch error:", e);
+        }
+    }
+
+    async function loadSystemView() {
+        try {
+            // Load Intelligence Providers Matrix
+            const intelRes = await fetch("/api/system/intelligence");
+            const intelData = await intelRes.json();
+            const intelList = document.getElementById("cc-intelligence-list");
+            if (intelList && intelData.providers) {
+                intelList.innerHTML = intelData.providers.map(p => {
+                    const dotColors = { groq: 'var(--cyan)', openai: 'var(--green)', bedrock_claude: 'var(--purple)', gemini: 'var(--amber)', ollama: '#94a3b8', fallback: 'var(--text-muted)' };
+                    const dotColor = dotColors[p.provider_id] || 'var(--text-muted)';
+                    return `<div class="intelligence-card ${p.is_available ? 'active-provider' : ''}">
+                        <span class="intel-dot" style="background:${dotColor}"></span>
+                        <span class="intel-name">${p.name}</span>
+                        <span class="intel-detail">${p.model} · ${p.role}</span>
+                        <span class="intel-status ${p.is_available ? 'active' : 'unavailable'}">${p.is_available ? 'Online' : 'Offline'}</span>
+                    </div>`;
+                }).join("");
+            }
+
+            // Load Tools Registry with Risk Levels — grouped by category
+            const toolsRes = await fetch("/api/system/tools");
+            const toolsData = await toolsRes.json();
+            const toolsBadgeCount = document.getElementById("tools-badge-count");
+            const toolsCatContainer = document.getElementById("tools-category-container");
+            if (toolsBadgeCount && toolsData.count) toolsBadgeCount.textContent = `${toolsData.count} Tools`;
+
+            if (toolsCatContainer && toolsData.tools) {
+                // Group tools by category
+                const toolCategories = {};
+                const defaultCats = { system: 'System & OS', file: 'Files & Storage', browser: 'Browser & Web', code: 'Code & Dev', media: 'Media & Audio', ai: 'AI & Models', db: 'Database', network: 'Network', other: 'Other' };
+                toolsData.tools.forEach(t => {
+                    const catKey = (t.category || 'other').toLowerCase();
+                    if (!toolCategories[catKey]) toolCategories[catKey] = [];
+                    toolCategories[catKey].push(t);
+                });
+
+                // If no categories from API, group by name prefix
+                if (Object.keys(toolCategories).length <= 1 && toolCategories.other) {
+                    const tools = toolCategories.other;
+                    delete toolCategories.other;
+                    const nameCategories = { 'screenshot': 'system', 'cpu': 'system', 'ram': 'system', 'disk': 'system', 'process': 'system', 'file': 'file', 'read': 'file', 'write': 'file', 'browse': 'browser', 'web': 'browser', 'search': 'browser', 'code': 'code', 'python': 'code', 'run': 'code', 'music': 'media', 'audio': 'media', 'play': 'media', 'groq': 'ai', 'llm': 'ai', 'model': 'ai', 'postgres': 'db', 'db': 'db', 'sql': 'db', 'email': 'network', 'http': 'network', 'api': 'network' };
+                    tools.forEach(t => {
+                        const name = t.name.toLowerCase();
+                        let assigned = 'other';
+                        for (const [kw, cat] of Object.entries(nameCategories)) {
+                            if (name.includes(kw)) { assigned = cat; break; }
+                        }
+                        if (!toolCategories[assigned]) toolCategories[assigned] = [];
+                        toolCategories[assigned].push(t);
+                    });
+                }
+
+                const riskDotClass = { 'SAFE': 'tool-item-safe', 'LOW': 'tool-item-low', 'MEDIUM': 'tool-item-medium', 'HIGH': 'tool-item-high', 'CRITICAL': 'tool-item-critical' };
+
+                toolsCatContainer.innerHTML = Object.entries(toolCategories).map(([catKey, tools]) => {
+                    const catName = defaultCats[catKey] || (catKey.charAt(0).toUpperCase() + catKey.slice(1));
+                    const toolItems = tools.map(t => `
+                        <div class="tool-item">
+                            <span class="tool-item-dot ${riskDotClass[t.risk_level] || 'tool-item-low'}"></span>
+                            <div>
+                                <div class="tool-item-name">${t.name}</div>
+                                <div class="tool-item-desc">${(t.description || '').slice(0, 60)}${t.description && t.description.length > 60 ? '...' : ''}</div>
+                            </div>
+                        </div>
+                    `).join('');
+                    return `
+                        <div class="tool-category" id="cat-${catKey}">
+                            <div class="tool-category-header" onclick="this.parentElement.classList.toggle('expanded')">
+                                <div class="tool-cat-left">
+                                    <span class="tool-cat-name">${catName}</span>
+                                    <span class="tool-cat-count">${tools.length}</span>
+                                </div>
+                                <svg class="tool-cat-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="tool-items">${toolItems}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        } catch (e) {
+            console.error("System view load error:", e);
+        }
+    }
+
+    async function loadMemoryProfile() {
+        try {
+            const res = await fetch("/api/memory/profile");
+            if (!res.ok) return;
+            const p = await res.json();
+
+            const profileBlock = document.getElementById("memory-profile-block");
+            if (profileBlock) {
+                profileBlock.innerHTML = `
+                    <div class="memory-profile-name">${p.name || 'Sujal'}</div>
+                    <div class="memory-profile-role">${p.title || 'Creator, Boss & Lead AI Engineer'}</div>
+                    <span class="memory-profile-tag">${p.access_level || 'Root / Level 10'}</span>
+                `;
+            }
+
+            const prefsBlock = document.getElementById("memory-prefs-block");
+            if (prefsBlock) {
+                const prefs = p.preferences || {};
+                prefsBlock.innerHTML = Object.entries(prefs).map(([k, v]) =>
+                    `<div class="memory-kv-item"><span class="memory-kv-key">${k}</span><span class="memory-kv-val">${v}</span></div>`
+                ).join('') || '<span class="empty-feed">No preferences stored yet.</span>';
+            }
+
+            const projBlock = document.getElementById("memory-projects-block");
+            if (projBlock) {
+                const projects = p.projects || [];
+                projBlock.innerHTML = projects.length
+                    ? projects.map(pr => `<div class="memory-kv-item"><span class="memory-kv-val">${pr}</span></div>`).join('')
+                    : '<span style="font-size:0.8rem;color:var(--text-secondary)">DOOM V3 — Personal AI OS</span>';
+            }
+        } catch (e) {
+            console.log("Memory profile not loaded:", e.message);
+        }
+    }
+
+    // Double-clap calibration button in System / Sensors
+    const btnClapCalibrate = document.getElementById("btn-clap-calibrate");
+    if (btnClapCalibrate) {
+        btnClapCalibrate.addEventListener("click", async () => {
+            btnClapCalibrate.textContent = "Calibrating (be quiet)...";
+            try {
+                const res = await fetch("/api/clap/calibrate", { method: "POST" });
+                const data = await res.json();
+                btnClapCalibrate.textContent = `Calibrated (${data.threshold} RMS)`;
+                setTimeout(() => { btnClapCalibrate.textContent = "Calibrate Threshold"; }, 3000);
+            } catch {
+                btnClapCalibrate.textContent = "Calibration Failed";
+                setTimeout(() => { btnClapCalibrate.textContent = "Calibrate Threshold"; }, 2500);
+            }
+        });
+    }
+
+    // Initial Data Loads & DOOM V3 Navigation Setup
+    setupDOOMV3Nav();
+    setupControlCenterSubnav();
+    updateGreeting();
     refreshAuditLogs();
     refreshEpisodes();
     refreshFacts();
     loadToolsCatalogue();
     updateMusicUI();
+
+    // Home activity feed update on command completion
+    const origExecuteGoalRef = window._origExecuteGoal;
+    function addHomeActivity(text) {
+        const feed = document.getElementById("home-recent-activity");
+        if (!feed) return;
+        const item = document.createElement("div");
+        item.className = "home-activity-item";
+        const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        item.innerHTML = `<span class="hai-dot"></span><span class="hai-text">${escapeHtml(text.slice(0, 80))}</span><span class="hai-time">${now}</span>`;
+        feed.insertBefore(item, feed.firstChild);
+        // Keep only 5 items
+        while (feed.children.length > 5) feed.removeChild(feed.lastChild);
+    }
+
+    // Patch executeGoal to update home activity feed
+    const origExecuteGoal = executeGoal;
+    async function executeGoalPatched(goalText) {
+        await origExecuteGoal(goalText);
+        addHomeActivity(goalText);
+    }
+    // Wire up command form with patched executor
+    if (commandForm) {
+        commandForm.removeEventListener('submit', commandForm._handler);
+    }
+
+    // Orb container state class manager (maps DoomState to CSS)
+    function setOrbState(stateName) {
+        const orb = document.getElementById("orb-container");
+        if (!orb) return;
+        orb.className = 'orb-container'; // reset
+        if (stateName) orb.classList.add(`state-${stateName.toUpperCase()}`);
+    }
+
+    // Patch the WS message handler to update orb state class
+    const origHandleTelemetry = handleTelemetryUpdate;
+    function handleTelemetryUpdatePatched(data) {
+        origHandleTelemetry(data);
+        // Update home health pill
+        const healthText = document.getElementById("home-health-text");
+        if (healthText) healthText.textContent = `System healthy — CPU: ${Math.round(data.cpu_percent || 0)}% · RAM: ${Math.round(data.memory_percent || 0)}%`;
+    }
 });
+

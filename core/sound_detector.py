@@ -16,16 +16,16 @@ class DOOMSoundDetector:
     """Acoustic sound & double-clap detector for waking DOOM like Iron Man.
 
     Auto-calibrates threshold from ambient noise on first run.
-    Default threshold=200 (tuned for laptop/desktop microphones at ~1m distance).
-    Clap window: two peaks within 0.10–1.20s triggers wake.
+    Default threshold=75 (prevents background noise from false-triggering).
+    Clap window: two sharp peaks within 0.20–1.00s triggers wake.
     """
 
     def __init__(
         self,
-        threshold: int = 200,             # was 1200 — WAY too high for most mics
-        clap_window_min: float = 0.10,
-        clap_window_max: float = 1.20,    # was 0.95 — extended for natural clapping
-        auto_calibrate: bool = True,      # NEW: measure ambient noise and adjust threshold
+        threshold: int = 75,              # Tuned floor: high enough above ambient, sensitive to claps
+        clap_window_min: float = 0.20,    # 200ms minimum to reject echoes/reverb of the same clap
+        clap_window_max: float = 1.00,    # Natural two-clap rhythm window
+        auto_calibrate: bool = True,
     ):
         self.threshold = threshold
         self.clap_window_min = clap_window_min
@@ -36,6 +36,8 @@ class DOOMSoundDetector:
         self.thread: Optional[threading.Thread] = None
         self.callback: Optional[Callable[[], None]] = None
         self._calibrated = False
+        self.is_paused = False             # Set to True while DOOM is speaking/listening to avoid feedback loop
+
 
     # ─────────────────────────────────────────────
     # Utilities
@@ -105,13 +107,13 @@ class DOOMSoundDetector:
                 time.sleep(0.01)
 
             if clap_peak > ambient * 1.5:
-                # Set threshold to midpoint between ambient and clap peak
-                new_threshold = max(20, int((ambient + clap_peak) / 2))
+                # Set threshold to midpoint between ambient and clap peak, minimum 65
+                new_threshold = max(65, int((ambient + clap_peak) / 2))
                 print(f"[CLAP SENSOR] Clap peak RMS = {clap_peak:.1f} -> threshold set to {new_threshold}")
             else:
-                # No clear clap — fallback to 3x ambient, minimum 20
-                new_threshold = max(20, min(400, int(ambient * 3)))
-                print(f"[CLAP SENSOR] No clap detected, fallback threshold = {new_threshold}")
+                # Fallback to 3.5x ambient, minimum 65 to avoid room noise false positives
+                new_threshold = max(65, min(500, int(ambient * 3.5)))
+                print(f"[CLAP SENSOR] Ambient only ({ambient:.1f}), threshold set to {new_threshold}")
 
             self.threshold = new_threshold
             self._calibrated = True
@@ -120,6 +122,7 @@ class DOOMSoundDetector:
         except Exception as e:
             print(f"[CLAP SENSOR] Calibration warning: {e}. Using default threshold={self.threshold}")
             return self.threshold
+
         finally:
             if stream:
                 try:
@@ -232,6 +235,11 @@ class DOOMSoundDetector:
                     print(f"[CLAP SENSOR] Listening for double claps... (threshold={self.threshold})")
 
                     while self.is_listening:
+                        if self.is_paused:
+                            first_clap_time = 0.0
+                            time.sleep(0.05)
+                            continue
+
                         data = stream.read(chunk, exception_on_overflow=False)
                         rms = self._calculate_rms(data)
 
@@ -241,8 +249,7 @@ class DOOMSoundDetector:
                             if first_clap_time == 0.0:
                                 # First peak detected
                                 first_clap_time = current_time
-                                print(f"[CLAP SENSOR] First clap! RMS={rms:.0f} — waiting for second...")
-                                time.sleep(0.06)  # small debounce
+                                time.sleep(0.08)  # 80ms debounce so the same clap doesn't count twice
 
                             else:
                                 interval = current_time - first_clap_time
@@ -250,18 +257,18 @@ class DOOMSoundDetector:
                                 if self.clap_window_min <= interval <= self.clap_window_max:
                                     print(f"\n[ACOUSTIC] ** Double clap! ** gap={interval:.2f}s, rms={rms:.0f}")
                                     first_clap_time = 0.0
-                                    # Trigger callback in a separate thread so detector keeps running
+                                    # Trigger callback in a separate thread
                                     if self.callback:
                                         t = threading.Thread(target=self.callback, daemon=True)
                                         t.start()
-                                    time.sleep(1.5)  # cooldown to avoid re-triggering
+                                    time.sleep(2.5)  # 2.5s cooldown to avoid speaker audio or echoes re-triggering
 
                                 elif interval > self.clap_window_max:
                                     # Second clap came too late — treat as new first clap
-                                    print(f"[CLAP SENSOR] Clap too slow ({interval:.2f}s > {self.clap_window_max}s), resetting...")
                                     first_clap_time = current_time
 
                         time.sleep(0.008)  # tighter polling for better responsiveness
+
 
                 except Exception as e:
                     # Don't silently swallow — log it so we know what broke
@@ -310,6 +317,6 @@ class DOOMSoundDetector:
         }
 
 
-# Global instance — threshold=30 (works for low-gain laptop mics), auto-calibrate=True
-sound_detector = DOOMSoundDetector(threshold=30, auto_calibrate=True)
+# Global instance — threshold=75 (tuned to reject ambient sounds and only catch real double claps)
+sound_detector = DOOMSoundDetector(threshold=75, auto_calibrate=True)
 

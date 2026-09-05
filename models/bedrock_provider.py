@@ -93,7 +93,7 @@ class BedrockProvider(BaseLLMProvider):
         now = time.time()
         if self._verified is not None:
             cache_age = now - getattr(self, "_verified_at", 0)
-            if cache_age < 300:  # 5-minute cache
+            if cache_age < 3600:  # 1-hour negative cache (plan V3.2 spec: eliminate 10-15s STS timeout overhead)
                 return self._verified
 
         try:

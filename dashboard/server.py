@@ -1,10 +1,16 @@
 import os
+import sys
 import json
 import asyncio
 import time
 import psutil
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
+
+# Ensure DOOM root directory is on sys.path
+DOOM_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if DOOM_ROOT not in sys.path:
+    sys.path.insert(0, DOOM_ROOT)
 
 load_dotenv()
 
@@ -17,10 +23,16 @@ from pydantic import BaseModel
 from database.postgres_db import postgres_manager
 from core.orchestrator import doom_core
 from core.model_router import model_router
+from core.state_machine import state_machine, DoomState
+from core.task_engine import task_engine
+from core.tool_registry import tool_registry
+from memory import user_profile
 from tools import ALL_TOOLS
 from tools.workstation_modes import CodeModeTool, DailyBriefingTool, StandupReportTool, LockdownTool, ScreenVisionTool
+from core.sound_detector import sound_detector
+from core.listen import listen_for_command
 
-app = FastAPI(title="DOOM V2 — Holographic Control HUD", version="2.0.0")
+app = FastAPI(title="DOOM V3 — Personal AI Operating System", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,6 +43,114 @@ app.add_middleware(
 )
 
 connected_clients: List[WebSocket] = []
+dashboard_loop = None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Acoustic Clap Awakening System for Dashboard
+# ─────────────────────────────────────────────────────────────────────────────
+is_clap_processing = False
+
+@app.on_event("startup")
+async def on_server_startup():
+    global dashboard_loop
+    dashboard_loop = asyncio.get_running_loop()
+    print("[DASHBOARD] Initializing DOOM Acoustic Clap Sensor...")
+    try:
+        import threading
+        threading.Thread(target=lambda: sound_detector.start_background_detector(on_dashboard_clap), daemon=True).start()
+        print("[DASHBOARD] [OK] Acoustic Clap Detector initializing in background thread!")
+    except Exception as e:
+        print(f"[DASHBOARD] Acoustic Clap Sensor warning: {e}")
+
+@app.on_event("shutdown")
+async def on_server_shutdown():
+    try:
+        sound_detector.stop_detector()
+        print("[DASHBOARD] Acoustic Clap Sensor stopped.")
+    except Exception:
+        pass
+
+
+def broadcast_hud_event(event_dict: dict):
+    """Safely broadcast event to all connected dashboard WebSockets."""
+    for client in list(connected_clients):
+        try:
+            asyncio.run_coroutine_threadsafe(
+                client.send_text(json.dumps(event_dict)),
+                dashboard_loop
+            )
+        except Exception:
+            pass
+
+def on_dashboard_clap():
+    """Triggered on physical double-clap while Dashboard is running."""
+    global is_clap_processing
+    if is_clap_processing:
+        return
+    is_clap_processing = True
+    sound_detector.is_paused = True  # Pause detector while speaking & processing to prevent feedback loop
+    print("\n[CLAP SENSOR] ACOUSTIC DOUBLE-CLAP DETECTED! Awakening DOOM...")
+
+    try:
+        from core.cinematic_voice import speak
+
+        # 1. Alert Dashboard HUD via WebSocket
+        broadcast_hud_event({
+            "type": "clap_detected",
+            "message": "DOOM is online. At your service, Boss.",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+
+        # 2. Vocalize Iron Man JARVIS wake greeting
+        try:
+            speak("DOOM is online. At your service, Boss.")
+        except Exception as se:
+            print(f"[DASHBOARD] Voice error: {se}")
+
+        # 3. Listen for voice command immediately
+        cmd = listen_for_command()
+        if cmd and cmd.strip():
+            print(f"[DASHBOARD] Command received: '{cmd}'")
+            broadcast_hud_event({
+                "type": "clap_command",
+                "command": cmd,
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+            # 4. Execute through DOOM Core
+            response = doom_core.process_request(cmd)
+            broadcast_hud_event({
+                "type": "command_executed",
+                "goal": cmd,
+                "response": response,
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+            # 5. Speak the response out loud (Single audio channel)
+            try:
+                speak(response)
+            except Exception as se:
+                print(f"[DASHBOARD] Voice response error: {se}")
+        else:
+            print("[DASHBOARD] Standing by.")
+            broadcast_hud_event({
+                "type": "clap_standby",
+                "message": "Standing by, Boss.",
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+            try:
+                speak("Standing by, Boss.")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[DASHBOARD] Clap processing error: {e}")
+    finally:
+        time.sleep(1.0)
+        sound_detector.is_paused = False
+        is_clap_processing = False
+
+
+
+
+
 
 class CommandRequest(BaseModel):
     goal: str
@@ -80,21 +200,32 @@ def get_live_telemetry() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 # REST Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/clap/status")
+async def get_clap_status():
+    """Returns real-time acoustic clap sensor diagnostics."""
+    return sound_detector.get_status()
+
+@app.post("/api/clap/calibrate")
+async def trigger_clap_calibration():
+    """Triggers ambient noise calibration for the microphone."""
+    new_thresh = sound_detector.calibrate_threshold()
+    return {"status": "CALIBRATED", "threshold": new_thresh}
+
 @app.get("/api/status")
 async def get_system_status():
-    """Returns general DOOM V2 state, DB health, and Model Router state."""
-    db_online = postgres_manager.is_connected()
-    db_counts = postgres_manager.get_table_counts() if db_online else {}
+    """Returns general DOOM V2 state, Memory health, and Model Router state."""
+    memory_online = postgres_manager.is_connected()
+    memory_counts = postgres_manager.get_table_counts() if memory_online else {}
     provider_status = model_router.get_provider_status()
 
     return {
         "status": "OPERATIONAL",
         "system": "DOOM V2 Personal AI OS",
         "creator": "Sujal",
-        "database": {
-            "connected": db_online,
-            "database_name": getattr(postgres_manager, "dbname", "Doom"),
-            "tables": db_counts
+        "clap_sensor": sound_detector.get_status(),
+        "memory": {
+            "connected": memory_online,
+            "stores": memory_counts
         },
         "models": provider_status,
         "tools_count": len(ALL_TOOLS),
@@ -103,15 +234,15 @@ async def get_system_status():
 
 @app.get("/api/memory/episodes")
 async def get_recent_episodes(limit: int = 15):
-    """Fetches recent action episodes from PostgreSQL."""
+    """Fetches recent action episodes from Memory 2.0."""
     if not postgres_manager.is_connected():
         return {"episodes": [], "source": "offline"}
     episodes = postgres_manager.get_recent_episodes(limit=limit)
-    return {"episodes": episodes, "source": "postgres", "count": len(episodes)}
+    return {"episodes": episodes, "source": "memory", "count": len(episodes)}
 
 @app.get("/api/memory/facts")
 async def get_semantic_facts():
-    """Fetches long-term semantic knowledge facts from PostgreSQL."""
+    """Fetches long-term semantic knowledge facts from Memory 2.0."""
     if not postgres_manager.is_connected():
         return {"facts": [], "source": "offline"}
     query = "SELECT key, value, category, updated_at FROM semantic_facts ORDER BY updated_at DESC LIMIT 50;"
@@ -126,11 +257,11 @@ async def get_semantic_facts():
                     "value": str(r.get("value", "")),
                     "updated_at": str(r.get("updated_at", ""))
                 })
-    return {"facts": facts, "source": "postgres", "count": len(facts)}
+    return {"facts": facts, "source": "memory", "count": len(facts)}
 
 @app.get("/api/logs")
 async def get_command_logs(limit: int = 20):
-    """Fetches command audit logs with latency benchmarks from PostgreSQL."""
+    """Fetches command audit logs with latency benchmarks from Memory 2.0."""
     if not postgres_manager.is_connected():
         return {"logs": []}
     query = "SELECT id, user_command, response_text, tools_used, latency_ms, created_at FROM command_logs ORDER BY created_at DESC LIMIT %s;"
@@ -155,15 +286,54 @@ async def get_command_logs(limit: int = 20):
 
 @app.get("/api/tools")
 async def list_tools():
-    """Returns the full catalogue of 30 autonomous tools."""
-    tools_data = []
-    for t in ALL_TOOLS:
-        tools_data.append({
-            "name": t.name,
-            "description": t.description,
-            "category": t.name.split("_")[0] if "_" in t.name else "general"
-        })
-    return {"tools": tools_data, "total": len(tools_data)}
+    """Returns the full catalogue of autonomous tools."""
+    return {"tools": tool_registry.get_tools_catalog(), "total": len(tool_registry.get_all_tools())}
+
+@app.get("/api/tasks")
+async def get_tasks():
+    """Fetches active task status and execution history for the Tasks UI."""
+    return {
+        "active_task": task_engine.get_active_task_dict(),
+        "history": task_engine.get_history_dicts(limit=15)
+    }
+
+@app.post("/api/tasks/{task_id}/approve")
+async def approve_task_action(task_id: str):
+    """User authorization for HIGH / CRITICAL risk tool execution."""
+    task = task_engine.active_task
+    if not task or task.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Active task requiring approval not found")
+    task.user_approval_required = False
+    state_machine.transition_to(DoomState.EXECUTING, "Action approved by Boss.", task_id=task_id)
+    return {"status": "APPROVED", "task_id": task_id}
+
+@app.get("/api/system/intelligence")
+async def get_system_intelligence():
+    """Returns full intelligence providers and routing capability matrix."""
+    return {
+        "active_model": model_router.route("general").name,
+        "providers": model_router.get_intelligence_matrix()
+    }
+
+@app.get("/api/system/tools")
+async def get_system_tools():
+    """Returns tools catalogue with permissions and risk levels for Control Center."""
+    return {
+        "tools": tool_registry.get_tools_catalog(),
+        "count": len(tool_registry.get_all_tools())
+    }
+
+@app.get("/api/memory/profile")
+async def get_memory_profile():
+    """Returns human-readable personal profile and preferences for Personal DOOM Memory UI."""
+    return {
+        "name": user_profile.get_name(),
+        "role": user_profile.get_role(),
+        "title": user_profile.get_title(),
+        "preferences": user_profile.get_preferences(),
+        "projects": user_profile.get_projects(),
+        "custom_notes": user_profile.get_custom_notes()
+    }
 
 @app.post("/api/command")
 async def execute_command(req: CommandRequest):
@@ -514,11 +684,10 @@ async def agent_chat_endpoint(req: AgentChatRequest):
         try:
             if postgres_manager.is_connected():
                 postgres_manager.log_command(
-                    user_input=req.prompt,
-                    model_used=selected_model_name.upper(),
-                    tool_called="agent_studio_chat",
-                    latency_ms=duration_ms,
-                    status="SUCCESS"
+                    user_command=req.prompt,
+                    response_text=raw_response,
+                    tools_used=["agent_studio_chat"],
+                    latency_ms=duration_ms
                 )
         except Exception as db_err:
             print(f"[AGENT STUDIO] DB log error (non-fatal): {db_err}")
@@ -602,12 +771,6 @@ class IDEChatRequest(BaseModel):
     file_path: str = ""
     file_content: str = ""
     language: str = ""
-
-@app.get("/ide")
-async def serve_ide():
-    ide_path = os.path.join(os.path.dirname(__file__), "static", "ide.html")
-    with open(ide_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
 
 @app.get("/api/ide/files")
 async def ide_list_files(path: str = ""):
@@ -790,7 +953,9 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
             payload = {
                 "type": "telemetry_update",
                 "data": telemetry,
-                "sentinel_alert": alert
+                "sentinel_alert": alert,
+                "doom_state": state_machine.get_status_payload(),
+                "active_task": task_engine.get_active_task_dict()
             }
             await websocket.send_text(json.dumps(payload))
             await asyncio.sleep(1.5)
@@ -809,4 +974,199 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 if not os.path.exists(static_dir):
     os.makedirs(static_dir, exist_ok=True)
 
+@app.get("/", response_class=HTMLResponse)
+async def serve_dashboard_root():
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return HTMLResponse(content="<h1>DOOM HUD static file missing</h1>", status_code=404)
+
+@app.get("/css/style.css")
+async def serve_style_css():
+    css_path = os.path.join(static_dir, "css", "style.css")
+    if os.path.exists(css_path):
+        with open(css_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="text/css", headers={"Cache-Control": "no-cache"})
+    return Response(content="/* CSS missing */", status_code=404, media_type="text/css")
+
+@app.get("/js/app.js")
+async def serve_app_js():
+    js_path = os.path.join(static_dir, "js", "app.js")
+    if os.path.exists(js_path):
+        with open(js_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+    return Response(content="// JS missing", status_code=404, media_type="application/javascript")
+
+@app.get("/ide", response_class=HTMLResponse)
+async def serve_ide():
+    """Serves the DOOM Integrated Code Editor (CodeMirror 6)."""
+    ide_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DOOM Cyber IDE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:#050b14;color:#e0f2fe;font-family:'Inter',sans-serif;overflow:hidden}
+.ide-layout{display:flex;flex-direction:column;height:100vh}
+.ide-toolbar{display:flex;align-items:center;gap:0.75rem;padding:0.5rem 1rem;background:#0a1628;border-bottom:1px solid rgba(0,240,255,0.12);flex-shrink:0}
+.ide-brand{font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:#00f0ff;letter-spacing:2px;opacity:0.85}
+.ide-file-name{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:#94a3b8;background:rgba(0,240,255,0.06);border:1px solid rgba(0,240,255,0.15);border-radius:4px;padding:0.25rem 0.6rem;min-width:200px}
+.ide-toolbar-actions{display:flex;gap:0.5rem;margin-left:auto}
+.ide-btn{font-family:'JetBrains Mono',monospace;font-size:0.72rem;letter-spacing:0.5px;padding:0.3rem 0.75rem;border-radius:4px;border:1px solid rgba(0,240,255,0.2);background:rgba(0,240,255,0.05);color:#00f0ff;cursor:pointer;transition:all 0.2s}
+.ide-btn:hover{background:rgba(0,240,255,0.12);border-color:rgba(0,240,255,0.4)}
+.ide-btn.run-btn{border-color:rgba(0,255,157,0.3);background:rgba(0,255,157,0.07);color:#00ff9d}
+.ide-btn.run-btn:hover{background:rgba(0,255,157,0.15);border-color:rgba(0,255,157,0.5)}
+.ide-btn.clear-btn{border-color:rgba(255,51,102,0.3);color:rgba(255,100,130,0.9)}
+.ide-main{display:flex;flex:1;overflow:hidden}
+.ide-sidebar{width:180px;background:#080f20;border-right:1px solid rgba(0,240,255,0.08);padding:0.75rem;flex-shrink:0;overflow-y:auto}
+.sidebar-section-title{font-size:0.62rem;letter-spacing:1.5px;color:#64748b;text-transform:uppercase;margin-bottom:0.5rem;padding-bottom:0.25rem;border-bottom:1px solid rgba(255,255,255,0.04)}
+.sidebar-file{font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:#94a3b8;padding:0.3rem 0.5rem;border-radius:4px;cursor:pointer;transition:all 0.15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar-file:hover{background:rgba(0,240,255,0.07);color:#e0f2fe}
+.sidebar-file.active{background:rgba(0,240,255,0.1);color:#00f0ff}
+.ide-editor-panel{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.ide-editor-wrap{flex:1;position:relative;overflow:auto}
+#editor{width:100%;height:100%;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.65;background:#060d1c;color:#e0f2fe;border:none;outline:none;resize:none;padding:1rem 1rem 1rem 3.5rem;tab-size:4;caret-color:#00f0ff}
+.line-numbers{position:absolute;left:0;top:0;width:3rem;height:100%;background:#060d1c;border-right:1px solid rgba(255,255,255,0.05);text-align:right;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.65;color:#3a4a5c;padding:1rem 0.5rem 1rem 0;pointer-events:none;user-select:none;overflow:hidden}
+.ide-output-panel{height:160px;border-top:1px solid rgba(0,240,255,0.1);background:#04090f;display:flex;flex-direction:column;flex-shrink:0}
+.output-header{display:flex;align-items:center;gap:0.5rem;padding:0.4rem 1rem;border-bottom:1px solid rgba(0,240,255,0.08)}
+.output-header-label{font-size:0.68rem;letter-spacing:1.5px;color:#64748b;text-transform:uppercase}
+.output-status{font-size:0.68rem;font-family:'JetBrains Mono',monospace;color:#00ff9d;margin-left:auto}
+#output-console{flex:1;font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:#94a3b8;padding:0.75rem 1rem;overflow-y:auto;line-height:1.6}
+.output-line-ok{color:#00ff9d}.output-line-err{color:#ff3366}.output-line-info{color:#00f0ff}
+.status-bar{display:flex;align-items:center;gap:1rem;padding:0.2rem 1rem;background:#030810;border-top:1px solid rgba(0,240,255,0.06);font-size:0.65rem;font-family:'JetBrains Mono',monospace;color:#3a4a5c;flex-shrink:0}
+.status-item{display:flex;align-items:center;gap:0.3rem}.status-dot{width:6px;height:6px;border-radius:50%;background:#00ff9d}
+</style>
+</head>
+<body>
+<div class="ide-layout">
+  <div class="ide-toolbar">
+    <span class="ide-brand">DOOM IDE</span>
+    <input class="ide-file-name" id="file-name-input" value="untitled.py" placeholder="filename.py">
+    <div class="ide-toolbar-actions">
+      <button class="ide-btn run-btn" id="btn-run">&#9654; Run</button>
+      <button class="ide-btn" id="btn-save">&#8659; Save</button>
+      <button class="ide-btn clear-btn" id="btn-clear">&#215; Clear</button>
+    </div>
+  </div>
+  <div class="ide-main">
+    <div class="ide-sidebar">
+      <div class="sidebar-section-title">Files</div>
+      <div class="sidebar-file active" data-file="untitled.py">untitled.py</div>
+      <div class="sidebar-file" data-file="doom.py">doom.py</div>
+      <div class="sidebar-file" data-file="test.py">test.py</div>
+      <div class="sidebar-section-title" style="margin-top:1rem">Snippets</div>
+      <div class="sidebar-file" data-snippet="hello">Hello World</div>
+      <div class="sidebar-file" data-snippet="status">System Status</div>
+      <div class="sidebar-file" data-snippet="profile">User Profile</div>
+    </div>
+    <div class="ide-editor-panel">
+      <div class="ide-editor-wrap">
+        <div class="line-numbers" id="line-numbers"></div>
+        <textarea id="editor" spellcheck="false"># DOOM V3 — Cyber IDE
+# Type your Python code here and click Run
+
+def greet(name):
+    return f"Online, {name}. DOOM IDE ready."
+
+print(greet("Boss"))
+</textarea>
+      </div>
+      <div class="ide-output-panel">
+        <div class="output-header">
+          <span class="output-header-label">Output</span>
+          <span class="output-status" id="run-status">Ready</span>
+        </div>
+        <div id="output-console"><span class="output-line-info">&gt; DOOM Cyber IDE initialized. Ready to execute.</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="status-bar">
+    <span class="status-item"><span class="status-dot"></span> Python 3.11</span>
+    <span class="status-item" id="cursor-pos">Ln 1, Col 1</span>
+    <span class="status-item" id="char-count">0 chars</span>
+    <span style="margin-left:auto">DOOM V3 // Cyber Workspace</span>
+  </div>
+</div>
+<script>
+const editor = document.getElementById('editor');
+const lineNumbers = document.getElementById('line-numbers');
+const output = document.getElementById('output-console');
+const runStatus = document.getElementById('run-status');
+const cursorPos = document.getElementById('cursor-pos');
+const charCount = document.getElementById('char-count');
+
+const snippets = {
+  hello: '# Hello World\\nprint("Hello, Boss!")',
+  status: 'import psutil\\nc=psutil.cpu_percent()\\nm=psutil.virtual_memory().percent\\nprint(f"CPU: {c}%  RAM: {m}%")',
+  profile: 'import json\\nwith open("memory_profile.json") as f:\\n    p=json.load(f)\\n    print("Name:", p["name"])\\n    print("Role:", p["role"])'
+};
+
+function updateLineNumbers() {
+  const lines = editor.value.split('\\n').length;
+  lineNumbers.innerHTML = Array.from({length:lines},(_,i)=>i+1).join('<br>');
+}
+function updateStats() {
+  const lines = editor.value.split('\\n');
+  const lineIdx = editor.value.substr(0, editor.selectionStart).split('\\n');
+  cursorPos.textContent = `Ln ${lineIdx.length}, Col ${lineIdx[lineIdx.length-1].length+1}`;
+  charCount.textContent = `${editor.value.length} chars`;
+}
+editor.addEventListener('input', () => { updateLineNumbers(); updateStats(); });
+editor.addEventListener('keydown', e => {
+  if (e.key === 'Tab') { e.preventDefault(); const s=editor.selectionStart; editor.value=editor.value.substring(0,s)+'    '+editor.value.substring(editor.selectionEnd); editor.selectionStart=editor.selectionEnd=s+4; updateLineNumbers(); }
+  if (e.key === 'Enter') { setTimeout(updateLineNumbers, 0); }
+});
+editor.addEventListener('click', updateStats);
+editor.addEventListener('keyup', updateStats);
+
+document.getElementById('btn-clear').addEventListener('click', () => { editor.value = ''; updateLineNumbers(); output.innerHTML = '<span class="output-line-info">> Editor cleared.</span>'; });
+
+document.getElementById('btn-save').addEventListener('click', () => {
+  const fname = document.getElementById('file-name-input').value || 'untitled.py';
+  const blob = new Blob([editor.value], {type:'text/plain'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; a.click();
+  output.innerHTML += '<br><span class="output-line-ok">> Saved as ' + fname + '</span>';
+});
+
+document.getElementById('btn-run').addEventListener('click', async () => {
+  const code = editor.value.trim();
+  if (!code) return;
+  runStatus.textContent = 'Running...'; runStatus.style.color = '#ffaa00';
+  output.innerHTML = '<span class="output-line-info">> Executing via DOOM backend...</span>';
+  try {
+    const res = await fetch('/api/command', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal:'Run this Python code and show output: ' + code.substring(0,500)})});
+    const data = await res.json();
+    runStatus.textContent = 'Done'; runStatus.style.color = '#00ff9d';
+    output.innerHTML = '<span class="output-line-ok">> ' + (data.response || 'Executed.').replace(/\\n/g,'<br>> ') + '</span>';
+  } catch(e) {
+    runStatus.textContent = 'Error'; runStatus.style.color = '#ff3366';
+    output.innerHTML = '<span class="output-line-err">> Error: ' + e.message + '</span>';
+  }
+});
+
+document.querySelectorAll('.sidebar-file').forEach(el => {
+  el.addEventListener('click', () => {
+    const snippet = el.dataset.snippet;
+    if (snippet && snippets[snippet]) { editor.value = snippets[snippet]; updateLineNumbers(); return; }
+    document.querySelectorAll('.sidebar-file').forEach(f=>f.classList.remove('active'));
+    el.classList.add('active');
+  });
+});
+
+updateLineNumbers(); updateStats();
+</script>
+</body>
+</html>"""
+    return HTMLResponse(content=ide_html)
+
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    print("[*] Starting DOOM V3 OS Dashboard on http://localhost:8000 ...")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

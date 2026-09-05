@@ -3,899 +3,748 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DOOM V2 — Holographic Control HUD</title>
-    <meta name="description" content="DOOM V2 Autonomous Personal AI Operating System Holographic Control Center & HUD">
-    <!-- Google Fonts: Orbitron (Futuristic Display) & Inter (Modern UI) -->
+    <title>DOOM V3 — Personal AI Operating System</title>
+    <meta name="description" content="DOOM V3 — Autonomous Personal AI Operating System by Sujal">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css?v=3.3">
+    <style>
+        :root { --bg-void: #050b14; --text-primary: #e2eaf5; }
+        html, body {
+            background-color: #050b14 !important;
+            color: #e2eaf5 !important;
+            font-family: 'Inter', -apple-system, sans-serif;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+        }
+    </style>
 </head>
-<body class="cyber-body">
-    <!-- Background Animated Cyber Grid & Ambient Glows -->
-    <div class="cyber-grid-bg"></div>
-    <div class="ambient-glow glow-cyan"></div>
-    <div class="ambient-glow glow-purple"></div>
-    <div class="scanlines"></div>
+<body>
+    <!-- Ambient Background -->
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-cyan" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-purple" aria-hidden="true"></div>
 
-    <!-- MAIN APP CONTAINER -->
-    <div class="hud-container">
-        
-        <!-- PROACTIVE SENTINEL ALERT BANNER -->
-        <div class="sentinel-alert-banner" id="sentinel-banner" style="display: none;">
-            <div class="sentinel-alert-content">
-                <span class="sentinel-icon">⚠️</span>
-                <span class="sentinel-msg" id="sentinel-msg">SENTINEL: All systems nominal.</span>
-            </div>
-            <button class="btn-dismiss-alert" id="btn-dismiss-alert">ACKNOWLEDGE</button>
+    <!-- SENTINEL ALERT BANNER -->
+    <div class="sentinel-banner" id="sentinel-banner" role="alert" style="display:none">
+        <div class="sentinel-inner">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span id="sentinel-msg">System alert.</span>
         </div>
+        <button class="sentinel-dismiss" id="btn-dismiss-alert">Dismiss</button>
+    </div>
 
-        <!-- TOP HUD HEADER BAR -->
-        <header class="hud-header">
-            <div class="brand-block">
-                <div class="brand-icon-wrapper">
-                    <div class="brand-pulse"></div>
-                    <span class="brand-glyph">⬡</span>
-                </div>
-                <div>
-                    <h1 class="hud-title">DOOM <span class="accent-text">V2.0</span></h1>
-                    <p class="hud-subtitle">AUTONOMOUS PERSONAL AI OS // CREATOR: <span class="creator-tag">SUJAL</span></p>
-                </div>
-            </div>
+    <div class="app-shell">
 
-            <!-- Central Live Indicators -->
-            <div class="header-badges">
-                <div class="status-badge" id="system-status-badge">
-                    <span class="badge-dot pulse-green"></span>
-                    <span class="badge-label">SYSTEM</span>
-                    <span class="badge-val" id="badge-system-val">ONLINE</span>
+        <!-- ═══════════════════════════════════════════
+             HEADER
+        ═══════════════════════════════════════════ -->
+        <header class="app-header" role="banner">
+            <!-- Brand -->
+            <div class="header-brand">
+                <div class="brand-orb" aria-hidden="true">
+                    <div class="brand-orb-pulse"></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
                 </div>
-
-                <div class="status-badge" id="postgres-badge">
-                    <span class="badge-dot pulse-cyan"></span>
-                    <span class="badge-label">POSTGRES</span>
-                    <span class="badge-val" id="badge-db-val">CONNECTED</span>
-                </div>
-
-                <div class="status-badge" id="model-badge">
-                    <span class="badge-dot pulse-purple"></span>
-                    <span class="badge-label">BRAIN</span>
-                    <span class="badge-val" id="badge-model-val">GROQ (500 T/S)</span>
-                </div>
-
-                <div class="status-badge" id="tools-badge">
-                    <span class="badge-dot pulse-amber"></span>
-                    <span class="badge-label">TOOLS</span>
-                    <span class="badge-val" id="badge-tools-val">30 ACTIVE</span>
+                <div class="brand-text">
+                    <span class="brand-name">DOOM</span>
+                    <span class="brand-sub">Personal AI OS</span>
                 </div>
             </div>
 
-            <!-- Header Controls: Gestures, Morning Schedule, Hands-Free Mic, Voice & Clock -->
-            <div class="header-right-block">
-                <button class="voice-toggle-btn" id="btn-gesture-toggle" title="Toggle Iron Man Webcam Gesture Controls">
-                    <span class="voice-icon" id="gesture-icon">🖐️</span>
-                    <span class="voice-label" id="gesture-label">GESTURES</span>
+            <!-- Primary Navigation -->
+            <nav class="primary-nav" id="primary-nav" role="navigation">
+                <button class="nav-btn active" data-view="home" id="nav-home" aria-label="Home">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    <span>Home</span>
                 </button>
-
-                <button class="voice-toggle-btn" id="btn-schedule-briefing" title="Set Scheduled Morning Briefing Alarm">
-                    <span class="voice-icon">⏰</span>
-                    <span class="voice-label" id="schedule-time-label">09:00 AM</span>
+                <button class="nav-btn" data-view="chat" id="nav-chat" aria-label="Chat">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                    <span>Chat</span>
                 </button>
-
-                <button class="voice-toggle-btn hands-free-btn active" id="btn-handsfree-toggle" title="Continuous Hands-Free Listening (Say 'Hey DOOM')">
-                    <span class="voice-icon" id="handsfree-icon">🎙️</span>
-                    <span class="voice-label" id="handsfree-label">HANDS-FREE ON</span>
+                <button class="nav-btn" data-view="tasks" id="nav-tasks" aria-label="Tasks">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                    <span>Tasks</span>
                 </button>
-
-                <button class="voice-toggle-btn active" id="btn-voice-toggle" title="Toggle Neural Voice Audio Output">
-                    <span class="voice-icon" id="voice-icon">🔊</span>
-                    <span class="voice-label" id="voice-label">AUDIO ON</span>
+                <button class="nav-btn" data-view="memory" id="nav-memory" aria-label="Memory">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+                    <span>Memory</span>
                 </button>
+                <button class="nav-btn" data-view="workspace" id="nav-workspace" aria-label="Workspace">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                    <span>Workspace</span>
+                </button>
+                <button class="nav-btn" data-view="activity" id="nav-activity" aria-label="Activity">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    <span>Activity</span>
+                </button>
+                <button class="nav-btn" data-view="system" id="nav-system" aria-label="System">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+                    <span>System</span>
+                </button>
+            </nav>
 
-                <div class="clock-block">
-                    <div class="digital-time" id="digital-clock">00:00:00</div>
-                    <div class="uptime-label" id="uptime-display">UPTIME: 0h 0m</div>
+            <!-- Header Right -->
+            <div class="header-right">
+                <div class="status-indicator">
+                    <span class="status-dot" id="ws-status-dot"></span>
+                    <span class="status-label" id="ws-status-label">Online</span>
+                </div>
+                <button class="header-icon-btn" id="btn-voice-toggle" title="Toggle voice output" aria-label="Toggle voice">
+                    <svg id="voice-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+                </button>
+                <div class="header-clock">
+                    <div class="clock-time" id="digital-clock">00:00:00</div>
+                    <div class="clock-uptime" id="uptime-display">Uptime: 0h</div>
                 </div>
             </div>
         </header>
 
-        <!-- WORKSTATION MODES ACTION BAR (IRON MAN MACROS) -->
-        <section class="modes-action-bar">
-            <span class="modes-label">⚡ WORKSTATION MODES:</span>
-            <button class="mode-btn mode-code" data-mode="code" id="btn-mode-code">
-                <span class="mode-glyph">💻</span>
-                <div class="mode-text-wrap">
-                    <span class="mode-title">CODE MODE</span>
-                    <span class="mode-sub">Antigravity • Cursor • VS Code</span>
-                </div>
-            </button>
-            <button class="mode-btn mode-briefing" data-mode="briefing" id="btn-mode-briefing">
-                <span class="mode-glyph">☀️</span>
-                <div class="mode-text-wrap">
-                    <span class="mode-title">DAILY BRIEFING</span>
-                    <span class="mode-sub">Health • Day Intelligence</span>
-                </div>
-            </button>
-            <button class="mode-btn mode-standup" data-mode="standup" id="btn-mode-standup">
-                <span class="mode-glyph">📊</span>
-                <div class="mode-text-wrap">
-                    <span class="mode-title">STANDUP REPORT</span>
-                    <span class="mode-sub">Past 24h SQL Audit</span>
-                </div>
-            </button>
-            <button class="mode-btn mode-scaffold" data-mode="scaffold" id="btn-mode-scaffold">
-                <span class="mode-glyph">🏗️</span>
-                <div class="mode-text-wrap">
-                    <span class="mode-title">SCAFFOLD</span>
-                    <span class="mode-sub">FastAPI • React • Next.js</span>
-                </div>
-            </button>
-            <button class="mode-btn mode-vision" data-mode="vision" id="btn-mode-vision">
-                <span class="mode-glyph">👁️</span>
-                <div class="mode-text-wrap">
-                    <span class="mode-title">SCREEN EYE</span>
-                    <span class="mode-sub">Look at My Screen</span>
-                </div>
-            </button>
-            <button class="mode-btn mode-lock" data-mode="lockdown" id="btn-mode-lock">
-                <span class="mode-glyph">🔒</span>
-                <div class="mode-text-wrap">
-                    <span class="mode-title">LOCKDOWN</span>
-                    <span class="mode-sub">Secure & Audit Log</span>
-                </div>
-            </button>
-        </section>
+        <!-- ═══════════════════════════════════════════
+             VIEWS CONTAINER
+        ═══════════════════════════════════════════ -->
+        <main class="views-container" role="main">
 
-        <!-- CYBERPUNK AMBIENT MUSIC DJ & YOUTUBE BAR -->
-        <section class="cyber-music-bar" id="music-player-bar">
-            <div class="music-left-info">
-                <button class="btn-music-play" id="btn-music-play" title="Play / Pause Ambient Focus Music">
-                    <span id="music-play-icon">▶</span>
-                </button>
-                <div class="music-equalizer" id="music-equalizer">
-                    <span class="eq-bar eq-1"></span>
-                    <span class="eq-bar eq-2"></span>
-                    <span class="eq-bar eq-3"></span>
-                    <span class="eq-bar eq-4"></span>
-                </div>
-                <div class="music-meta-wrap">
-                    <span class="music-track-title" id="music-track-title">NEON OVERDRIVE // CYBERPUNK SYNTHWAVE</span>
-                    <span class="music-station-tag" id="music-station-tag">FOCUS HIGH (AUTO-DUCKING ENABLED)</span>
-                </div>
-            </div>
+            <!-- ─────────────────────────────────────
+                 VIEW: HOME
+            ───────────────────────────────────── -->
+            <section class="view-panel active" id="view-home">
+                <div class="home-layout">
 
-            <div class="music-controls-right">
-                <!-- YouTube Instant Search Bar -->
-                <form id="yt-search-form" class="yt-search-form" onsubmit="return false;">
-                    <span class="yt-glyph">📺</span>
-                    <input type="text" id="yt-search-input" class="yt-input" placeholder="Search & Stream YouTube song (e.g. 'Interstellar', 'Believer')...">
-                    <button type="submit" id="btn-yt-play" class="btn-yt-submit">STREAM ▶</button>
-                </form>
-
-                <button class="btn-music-skip" id="btn-music-prev" title="Previous Station">⏮</button>
-                <button class="btn-music-skip" id="btn-music-next" title="Next Station">⏭</button>
-                <div class="volume-slider-wrap">
-                    <span class="vol-icon">🔉</span>
-                    <input type="range" id="music-volume" class="cyber-range" min="0" max="1" step="0.05" value="0.7">
-                </div>
-            </div>
-        </section>
-
-        <!-- WEBCAM GESTURE HUD WINDOW OVERLAY (TOGGLEABLE) -->
-        <div class="gesture-hud-overlay" id="gesture-hud-overlay" style="display: none;">
-            <div class="gesture-hud-header">
-                <div class="card-title-wrap">
-                    <span class="card-icon">🖐️</span>
-                    <span class="gesture-hud-title">IRON MAN VISION GESTURE SENSOR</span>
-                </div>
-                <button class="btn-close-gesture" id="btn-close-gesture">✕</button>
-            </div>
-            <div class="gesture-video-wrapper">
-                <video id="gestureVideo" autoplay playsinline muted width="320" height="240"></video>
-                <canvas id="gestureCanvas" width="320" height="240" class="gesture-canvas-overlay"></canvas>
-                <div class="gesture-crosshair"></div>
-                <div class="gesture-targeting-box"></div>
-            </div>
-            <div class="gesture-status-bar">
-                <span class="gesture-pill" id="gesture-status-pill">SENSOR READY</span>
-                <span class="gesture-hint" id="gesture-hint">Wave hand to cycle tabs • Palm for Briefing • Fist for Lockdown</span>
-            </div>
-        </div>
-
-        <!-- MAIN 3-COLUMN WORKSPACE -->
-        <main class="hud-main-grid">
-            
-            <!-- LEFT COLUMN: LIVE TELEMETRY & HARDWARE GAUGES -->
-            <section class="hud-card telemetry-card" id="telemetry-section">
-                <div class="card-header">
-                    <div class="card-title-wrap">
-                        <span class="card-icon">⚡</span>
-                        <h2 class="card-title">SYSTEM TELEMETRY</h2>
+                    <!-- Greeting -->
+                    <div class="home-greeting">
+                        <h2 class="greeting-title" id="home-greeting-text">Good afternoon, Boss.</h2>
+                        <p class="greeting-sub" id="home-sub-greeting">DOOM Personal AI OS — Standing by</p>
                     </div>
-                    <span class="live-tag">LIVE WS</span>
-                </div>
 
-                <!-- Hardware Gauge Circular Ring Meters -->
-                <div class="gauges-row">
-                    <!-- CPU Gauge -->
-                    <div class="gauge-item">
-                        <div class="gauge-circle" data-metric="cpu">
-                            <svg viewBox="0 0 100 100" class="gauge-svg">
-                                <circle class="gauge-track" cx="50" cy="50" r="40"></circle>
-                                <circle class="gauge-bar" id="cpu-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="180"></circle>
-                            </svg>
-                            <div class="gauge-center-val">
-                                <span class="gauge-number" id="cpu-val">0</span><span class="gauge-unit">%</span>
+                    <!-- Orb -->
+                    <div class="orb-stage" id="orb-stage">
+                        <div class="orb-container" id="orb-container">
+                            <div class="orb-ring orb-ring-outer"></div>
+                            <div class="orb-ring orb-ring-mid"></div>
+                            <div class="orb-ring orb-ring-inner"></div>
+                            <canvas id="coreCanvas" width="200" height="200" class="orb-canvas"></canvas>
+                            <div class="orb-labels">
+                                <div class="orb-state-label" id="core-state-text">DOOM ONLINE</div>
+                                <div class="orb-state-sub" id="core-sub-text">Awaiting command</div>
                             </div>
                         </div>
-                        <span class="gauge-label">CPU LOAD</span>
                     </div>
 
-                    <!-- RAM Gauge -->
-                    <div class="gauge-item">
-                        <div class="gauge-circle" data-metric="ram">
-                            <svg viewBox="0 0 100 100" class="gauge-svg">
-                                <circle class="gauge-track" cx="50" cy="50" r="40"></circle>
-                                <circle class="gauge-bar bar-purple" id="ram-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="120"></circle>
-                            </svg>
-                            <div class="gauge-center-val">
-                                <span class="gauge-number" id="ram-val">0</span><span class="gauge-unit">%</span>
+                    <!-- Command Input -->
+                    <div class="command-zone" id="command-zone">
+                        <form class="command-form" id="command-form" onsubmit="return false;">
+                            <div class="command-input-wrap" id="command-input-wrap">
+                                <button type="button" class="cmd-mic-btn" id="btn-mic" aria-label="Voice input" title="Speak to DOOM">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                                </button>
+                                <input
+                                    type="text"
+                                    id="command-input"
+                                    class="command-input"
+                                    placeholder="Ask DOOM anything..."
+                                    autocomplete="off"
+                                    aria-label="Command input"
+                                >
+                                <button type="submit" class="cmd-execute-btn" id="btn-execute" aria-label="Execute command">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                    <span id="btn-execute-label">Send</span>
+                                </button>
+                            </div>
+                        </form>
+
+                        <!-- Quick Actions -->
+                        <div class="quick-actions">
+                            <span class="quick-label">Quick:</span>
+                            <button class="quick-chip" data-cmd="Who am I?">Who am I?</button>
+                            <button class="quick-chip" data-cmd="Daily briefing">Briefing</button>
+                            <button class="quick-chip" data-cmd="Standup report">Standup</button>
+                            <button class="quick-chip" data-cmd="System status">System</button>
+                            <button class="quick-chip" data-cmd="Take screenshot">Screenshot</button>
+                        </div>
+                    </div>
+
+                    <!-- Active Task Card (conditionally shown) -->
+                    <div class="active-task-card" id="home-active-task-card" style="display:none">
+                        <div class="atc-header">
+                            <div class="atc-tag">
+                                <span class="atc-dot"></span>
+                                <span>Active Task</span>
+                            </div>
+                            <span class="atc-pct" id="home-task-pct">0%</span>
+                        </div>
+                        <div class="atc-goal" id="home-task-goal">Initializing...</div>
+                        <div class="atc-progress-track">
+                            <div class="atc-progress-fill" id="home-task-progress-fill" style="width:0%"></div>
+                        </div>
+                        <ul class="atc-steps" id="home-task-steps-checklist"></ul>
+                    </div>
+
+                    <!-- Response Area -->
+                    <div class="response-card" id="response-box">
+                        <div class="response-card-header">
+                            <div class="response-card-title">
+                                <span class="rc-pulse" id="term-status-indicator"></span>
+                                <span>DOOM Intelligence</span>
+                            </div>
+                            <span class="response-meta" id="response-meta">Ready</span>
+                        </div>
+                        <div class="response-body" id="response-content">
+                            Standing by, Boss. Give me a command or ask a question.
+                        </div>
+                    </div>
+
+                    <!-- Recent Activity -->
+                    <div class="home-activity-section">
+                        <div class="section-label">Recent Activity</div>
+                        <div class="home-activity-feed" id="home-recent-activity">
+                            <div class="home-activity-item">
+                                <span class="hai-dot"></span>
+                                <span class="hai-text">System initialized and connected</span>
+                                <span class="hai-time">Just now</span>
                             </div>
                         </div>
-                        <span class="gauge-label">RAM USAGE</span>
                     </div>
 
-                    <!-- DISK Gauge -->
-                    <div class="gauge-item">
-                        <div class="gauge-circle" data-metric="disk">
-                            <svg viewBox="0 0 100 100" class="gauge-svg">
-                                <circle class="gauge-track" cx="50" cy="50" r="40"></circle>
-                                <circle class="gauge-bar bar-amber" id="disk-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="60"></circle>
-                            </svg>
-                            <div class="gauge-center-val">
-                                <span class="gauge-number" id="disk-val">0</span><span class="gauge-unit">%</span>
-                            </div>
-                        </div>
-                        <span class="gauge-label">STORAGE</span>
+                    <!-- System Health Pill -->
+                    <div class="health-pill" id="home-system-health">
+                        <span class="health-pill-dot"></span>
+                        <span id="home-health-text">System healthy — CPU: 0% · RAM: 0%</span>
                     </div>
-                </div>
 
-                <!-- Hardware Detailed Metrics Grid -->
-                <div class="metric-tiles-grid">
-                    <div class="metric-tile">
-                        <span class="metric-tile-label">RAM USED</span>
-                        <span class="metric-tile-val" id="metric-ram-used">0 GB / 0 GB</span>
-                    </div>
-                    <div class="metric-tile">
-                        <span class="metric-tile-label">STORAGE FREE</span>
-                        <span class="metric-tile-val" id="metric-disk-free">0 GB</span>
-                    </div>
-                    <div class="metric-tile">
-                        <span class="metric-tile-label">PROCESSES</span>
-                        <span class="metric-tile-val text-cyan" id="metric-processes">0 ACTIVE</span>
-                    </div>
-                    <div class="metric-tile">
-                        <span class="metric-tile-label">NET I/O (RX/TX)</span>
-                        <span class="metric-tile-val text-green" id="metric-network">0 / 0 MB</span>
-                    </div>
-                </div>
-
-                <!-- Rolling Live Canvas Telemetry Chart -->
-                <div class="chart-wrapper">
-                    <div class="chart-header">
-                        <span class="chart-title">REAL-TIME LOAD STREAM</span>
-                        <div class="chart-legend">
-                            <span class="legend-dot dot-cyan"></span> CPU
-                            <span class="legend-dot dot-purple"></span> RAM
-                        </div>
-                    </div>
-                    <canvas id="telemetryCanvas" width="400" height="130"></canvas>
                 </div>
             </section>
 
-            <!-- CENTER COLUMN: HOLOGRAPHIC ARC REACTOR & VOICE/ACTION CONSOLE -->
-            <section class="hud-card center-card" id="core-reactor-section">
-                
-                <!-- Holographic Arc Reactor Visualizer -->
-                <div class="reactor-container">
-                    <div class="reactor-ring ring-outer"></div>
-                    <div class="reactor-ring ring-middle"></div>
-                    <div class="reactor-ring ring-inner"></div>
-                    <canvas id="coreCanvas" width="220" height="220" class="reactor-core-canvas"></canvas>
-                    
-                    <div class="core-text-overlay">
-                        <div class="core-status-text" id="core-state-text">DOOM ONLINE</div>
-                        <div class="core-sub-text">WE ARE DOOM // AWAITING COMMAND</div>
+
+            <!-- ─────────────────────────────────────
+                 VIEW: CHAT
+            ───────────────────────────────────── -->
+            <section class="view-panel" id="view-chat">
+                <div class="chat-layout">
+                    <div class="chat-window">
+                        <div class="chat-window-header">
+                            <div class="chat-window-brand">
+                                <div class="cwb-orb">
+                                    <div class="cwb-orb-pulse"></div>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+                                </div>
+                                <div>
+                                    <div class="cwb-title">DOOM</div>
+                                    <div class="cwb-sub">Personal Autonomous Intelligence</div>
+                                </div>
+                            </div>
+                            <div class="chat-header-actions">
+                                <button class="header-action-btn" id="btn-agent-new-chat">New Chat</button>
+                                <button class="header-action-btn danger-btn" id="btn-clear-agent-chat-v2">Clear</button>
+                            </div>
+                        </div>
+
+                        <div class="chat-messages" id="agent-chat-feed">
+                            <div class="chat-msg chat-msg-ai">
+                                <div class="msg-avatar msg-avatar-ai">D</div>
+                                <div class="msg-content">
+                                    <div class="msg-meta">
+                                        <span class="msg-sender">DOOM</span>
+                                        <span class="msg-time" id="welcome-ts"></span>
+                                    </div>
+                                    <div class="msg-text">
+                                        Greetings, <strong>Boss Sujal</strong>. I am online and ready — research, coding, automation, or reasoning. What shall we build?
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="chat-typing" id="agent-typing-indicator" style="display:none">
+                            <div class="msg-avatar msg-avatar-ai">D</div>
+                            <div class="typing-wrap">
+                                <span class="typing-label" id="typing-label-text">DOOM is reasoning</span>
+                                <div class="typing-dots"><span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span></div>
+                            </div>
+                        </div>
+
+                        <div class="chat-input-zone">
+                            <div class="chat-input-row">
+                                <div class="chat-textarea-wrap">
+                                    <textarea id="agent-prompt-input" class="chat-textarea" placeholder="Message DOOM..." rows="2"></textarea>
+                                    <div class="chat-input-footer">
+                                        <span class="chat-hint">Ctrl+Enter to send</span>
+                                        <div class="chat-input-actions">
+                                            <button class="chat-icon-btn" id="btn-agent-mic" aria-label="Voice input">
+                                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+                                            </button>
+                                            <button class="chat-send-btn" id="btn-agent-send">
+                                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                                <span id="agent-send-label">Send</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chat Sidebar -->
+                    <div class="chat-sidebar">
+                        <div class="sidebar-card">
+                            <div class="sidebar-card-title">Routed Model</div>
+                            <div class="model-list" id="agent-model-list">
+                                <div class="model-option active" data-model="auto">
+                                    <span class="model-dot model-dot-multi"></span>
+                                    <div class="model-info">
+                                        <span class="model-name">Auto-Router</span>
+                                        <span class="model-sub">Capability-based</span>
+                                    </div>
+                                    <span class="model-badge badge-smart">Smart</span>
+                                </div>
+                                <div class="model-option" data-model="groq">
+                                    <span class="model-dot model-dot-cyan"></span>
+                                    <div class="model-info">
+                                        <span class="model-name">Groq LPU</span>
+                                        <span class="model-sub">LLaMA 3.3 · 500 T/s</span>
+                                    </div>
+                                    <span class="model-badge badge-fast">Fast</span>
+                                </div>
+                                <div class="model-option" data-model="bedrock_claude">
+                                    <span class="model-dot model-dot-purple"></span>
+                                    <div class="model-info">
+                                        <span class="model-name">Claude Sonnet</span>
+                                        <span class="model-sub">AWS Bedrock · Reasoning</span>
+                                    </div>
+                                    <span class="model-badge badge-deep">Deep</span>
+                                </div>
+                                <div class="model-option" data-model="gemini">
+                                    <span class="model-dot model-dot-amber"></span>
+                                    <div class="model-info">
+                                        <span class="model-name">Gemini 2.0</span>
+                                        <span class="model-sub">Google · Multimodal</span>
+                                    </div>
+                                    <span class="model-badge badge-vision">Vision</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sidebar-card">
+                            <div class="sidebar-card-title">Specialist Mode</div>
+                            <div class="mode-list" id="agent-mode-list">
+                                <div class="mode-option active" data-agent-mode="pair_programmer">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                                    <span>Pair Programmer</span>
+                                </div>
+                                <div class="mode-option" data-agent-mode="architect">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                                    <span>Architect</span>
+                                </div>
+                                <div class="mode-option" data-agent-mode="debugger">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                    <span>Debugger</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
+            </section>
 
-                <!-- Interactive Command Terminal Form with Live Mic -->
-                <div class="command-terminal-box">
-                    <div class="terminal-header">
-                        <span class="term-prompt-label">SUJAL@DOOM-OS:~$</span>
-                        <span class="term-status-indicator" id="term-status-indicator">READY</span>
+
+            <!-- ─────────────────────────────────────
+                 VIEW: TASKS
+            ───────────────────────────────────── -->
+            <section class="view-panel" id="view-tasks">
+                <div class="view-content-wrap">
+                    <div class="view-header">
+                        <div class="view-title-block">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                            <h2 class="view-title">Autonomous Task Engine</h2>
+                        </div>
+                        <span class="live-badge">Live</span>
                     </div>
 
-                    <form id="command-form" class="command-input-row" onsubmit="return false;">
-                        <button type="button" id="btn-mic" class="btn-mic" title="Speak to DOOM (Click to Talk)">
-                            <span class="mic-icon">🎙️</span>
+                    <div class="tasks-section-label">Active Task</div>
+                    <div id="tasks-active-container">
+                        <div class="tasks-empty-state" id="tasks-empty-state">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                            <p>No active task. Initiate a goal from Home or Chat.</p>
+                        </div>
+                    </div>
+
+                    <div class="tasks-section-label" style="margin-top:2rem">History</div>
+                    <div class="tasks-history-list" id="tasks-history-grid"></div>
+                </div>
+            </section>
+
+
+            <!-- ─────────────────────────────────────
+                 VIEW: MEMORY
+            ───────────────────────────────────── -->
+            <section class="view-panel" id="view-memory">
+                <div class="view-content-wrap">
+                    <div class="view-header">
+                        <div class="view-title-block">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+                            <h2 class="view-title">Memory 2.0</h2>
+                        </div>
+                        <span class="live-badge">PostgreSQL + JSON</span>
+                    </div>
+
+                    <div class="memory-grid">
+                        <!-- About You -->
+                        <div class="memory-card memory-card-featured">
+                            <div class="memory-card-header">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                <span>About You</span>
+                            </div>
+                            <div class="memory-profile-content" id="memory-profile-block">
+                                <div class="skeleton-line" style="width:60%"></div>
+                                <div class="skeleton-line" style="width:80%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Preferences -->
+                        <div class="memory-card">
+                            <div class="memory-card-header">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+                                <span>Preferences</span>
+                            </div>
+                            <div id="memory-prefs-block" class="memory-kv-list">
+                                <div class="skeleton-line" style="width:70%"></div>
+                                <div class="skeleton-line" style="width:55%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Active Projects -->
+                        <div class="memory-card">
+                            <div class="memory-card-header">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                                <span>Active Projects</span>
+                            </div>
+                            <div id="memory-projects-block" class="memory-kv-list">
+                                <div class="skeleton-line" style="width:75%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Knowledge Base -->
+                    <div class="memory-section-divider">
+                        <span>Knowledge Base</span>
+                    </div>
+                    <div class="memory-facts-grid" id="facts-grid-list">
+                        <div class="facts-skeleton">
+                            <div class="skeleton-line" style="width:50%"></div>
+                            <div class="skeleton-line" style="width:70%"></div>
+                            <div class="skeleton-line" style="width:60%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Memories -->
+                    <div class="memory-section-divider">
+                        <span>Recent Memories</span>
+                    </div>
+                    <div class="memory-episodes-list" id="episodes-feed-list">
+                        <div class="facts-skeleton">
+                            <div class="skeleton-line" style="width:80%"></div>
+                            <div class="skeleton-line" style="width:65%"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- ─────────────────────────────────────
+                 VIEW: WORKSPACE
+            ───────────────────────────────────── -->
+            <section class="view-panel" id="view-workspace">
+                <div class="workspace-layout">
+                    <div class="workspace-toolbar">
+                        <div class="workspace-title-block">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                            <span>DOOM Cyber IDE</span>
+                        </div>
+                        <button class="workspace-fullscreen-btn" onclick="window.open('/ide','_blank')" aria-label="Open fullscreen">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                            Fullscreen
                         </button>
-                        <input 
-                            type="text" 
-                            id="command-input" 
-                            class="cyber-input" 
-                            placeholder="Ask or speak a goal (e.g. 'Play music', 'Daily briefing', 'Code mode', 'Calc 2**16')..." 
-                            autocomplete="off"
-                            required
-                        >
-                        <button type="submit" id="btn-execute" class="btn-cyber-primary">
-                            <span class="btn-text">EXECUTE</span>
-                            <span class="btn-glyph">▶</span>
+                    </div>
+                    <iframe src="/ide" class="workspace-frame" id="workspace-ide-frame" title="DOOM Cyber IDE"></iframe>
+                </div>
+            </section>
+
+
+            <!-- ─────────────────────────────────────
+                 VIEW: ACTIVITY
+            ───────────────────────────────────── -->
+            <section class="view-panel" id="view-activity">
+                <div class="view-content-wrap">
+                    <div class="view-header">
+                        <div class="view-title-block">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                            <h2 class="view-title">Execution Timeline</h2>
+                        </div>
+                        <span class="live-badge">PostgreSQL Audit</span>
+                    </div>
+
+                    <div class="activity-timeline" id="audit-table-body">
+                        <!-- Skeleton loaders -->
+                        <div class="activity-skeleton">
+                            <div class="skeleton-circle"></div>
+                            <div class="activity-skeleton-lines">
+                                <div class="skeleton-line" style="width:55%"></div>
+                                <div class="skeleton-line" style="width:35%"></div>
+                            </div>
+                        </div>
+                        <div class="activity-skeleton">
+                            <div class="skeleton-circle"></div>
+                            <div class="activity-skeleton-lines">
+                                <div class="skeleton-line" style="width:70%"></div>
+                                <div class="skeleton-line" style="width:40%"></div>
+                            </div>
+                        </div>
+                        <div class="activity-skeleton">
+                            <div class="skeleton-circle"></div>
+                            <div class="activity-skeleton-lines">
+                                <div class="skeleton-line" style="width:45%"></div>
+                                <div class="skeleton-line" style="width:30%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- ─────────────────────────────────────
+                 VIEW: SYSTEM
+            ───────────────────────────────────── -->
+            <section class="view-panel" id="view-system">
+                <div class="system-layout">
+                    <!-- System Sub-Navigation -->
+                    <div class="system-subnav" role="tablist">
+                        <button class="subnav-btn active" data-cc="hardware" role="tab">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                            Hardware
                         </button>
-                    </form>
-
-                    <!-- Quick Action Command Chips -->
-                    <div class="quick-chips-row">
-                        <span class="chip-label">QUICK:</span>
-                        <button type="button" class="quick-chip" data-cmd="Who am I?">Who am I?</button>
-                        <button type="button" class="quick-chip" data-cmd="Daily briefing">Briefing</button>
-                        <button type="button" class="quick-chip" data-cmd="Standup report">Standup</button>
-                        <button type="button" class="quick-chip" data-cmd="Play synthwave music">Play Music 🎵</button>
-                        <button type="button" class="quick-chip" data-cmd="database telemetry">Hardware Logs</button>
+                        <button class="subnav-btn" data-cc="intelligence" role="tab">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+                            Intelligence
+                        </button>
+                        <button class="subnav-btn" data-cc="tools" role="tab">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+                            Tools
+                        </button>
+                        <button class="subnav-btn" data-cc="sensors" role="tab">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/></svg>
+                            Voice & Sensors
+                        </button>
+                        <button class="subnav-btn" data-cc="database" role="tab">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                            Database
+                        </button>
+                        <button class="subnav-btn" data-cc="media" role="tab">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                            Media
+                        </button>
                     </div>
 
-                    <!-- AI Orchestrator Realtime Response Box -->
-                    <div class="response-display-box" id="response-box">
-                        <div class="response-header">
-                            <span class="response-title">DOOM RESPONSE</span>
-                            <span class="response-meta" id="response-meta">Ready for command</span>
-                        </div>
-                        <div class="response-content" id="response-content">
-                            Greetings, Boss Sujal. DOOM V2 Holographic OS is online, fully synced with PostgreSQL 'Doom' database, and standing by for your instructions. We are DOOM.
+                    <!-- Panel: Hardware -->
+                    <div class="system-panel active" id="cc-panel-hardware">
+                        <div class="system-card">
+                            <div class="system-card-header">
+                                <h3 class="system-card-title">Workstation Telemetry</h3>
+                                <span class="live-badge">Live</span>
+                            </div>
+                            <div class="gauges-row">
+                                <div class="gauge-item">
+                                    <div class="gauge-wrap">
+                                        <svg viewBox="0 0 100 100" class="gauge-svg">
+                                            <circle class="gauge-track" cx="50" cy="50" r="40"/>
+                                            <circle class="gauge-fill" id="cpu-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251"/>
+                                        </svg>
+                                        <div class="gauge-val"><span id="cpu-val">0</span><span class="gauge-unit">%</span></div>
+                                    </div>
+                                    <span class="gauge-label">CPU</span>
+                                </div>
+                                <div class="gauge-item">
+                                    <div class="gauge-wrap">
+                                        <svg viewBox="0 0 100 100" class="gauge-svg">
+                                            <circle class="gauge-track" cx="50" cy="50" r="40"/>
+                                            <circle class="gauge-fill gauge-fill-purple" id="ram-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251"/>
+                                        </svg>
+                                        <div class="gauge-val"><span id="ram-val">0</span><span class="gauge-unit">%</span></div>
+                                    </div>
+                                    <span class="gauge-label">RAM</span>
+                                </div>
+                                <div class="gauge-item">
+                                    <div class="gauge-wrap">
+                                        <svg viewBox="0 0 100 100" class="gauge-svg">
+                                            <circle class="gauge-track" cx="50" cy="50" r="40"/>
+                                            <circle class="gauge-fill gauge-fill-amber" id="disk-gauge-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251"/>
+                                        </svg>
+                                        <div class="gauge-val"><span id="disk-val">0</span><span class="gauge-unit">%</span></div>
+                                    </div>
+                                    <span class="gauge-label">Disk</span>
+                                </div>
+                            </div>
+                            <div class="metrics-row">
+                                <div class="metric-tile"><span class="metric-label">RAM Used</span><span class="metric-val" id="metric-ram-used">0 / 0 GB</span></div>
+                                <div class="metric-tile"><span class="metric-label">Storage Free</span><span class="metric-val" id="metric-disk-free">0 GB</span></div>
+                                <div class="metric-tile"><span class="metric-label">Processes</span><span class="metric-val" id="metric-processes">0</span></div>
+                                <div class="metric-tile"><span class="metric-label">Network</span><span class="metric-val" id="metric-network">0 / 0 MB</span></div>
+                            </div>
+                            <div class="telemetry-chart-wrap">
+                                <div class="chart-legend">
+                                    <span class="legend-dot legend-cyan"></span><span>CPU</span>
+                                    <span class="legend-dot legend-purple" style="margin-left:1rem"></span><span>RAM</span>
+                                </div>
+                                <canvas id="telemetryCanvas" width="600" height="110"></canvas>
+                            </div>
                         </div>
                     </div>
+
+                    <!-- Panel: Intelligence -->
+                    <div class="system-panel" id="cc-panel-intelligence">
+                        <div class="system-card">
+                            <div class="system-card-header">
+                                <h3 class="system-card-title">Intelligence Matrix</h3>
+                            </div>
+                            <div id="cc-intelligence-list" class="intelligence-list"></div>
+                        </div>
+                    </div>
+
+                    <!-- Panel: Tools -->
+                    <div class="system-panel" id="cc-panel-tools">
+                        <div class="system-card">
+                            <div class="system-card-header">
+                                <h3 class="system-card-title">Autonomous Tool Registry</h3>
+                                <span class="live-badge" id="tools-badge-count">33 Tools</span>
+                            </div>
+                            <div id="tools-category-container" class="tools-categories"></div>
+                        </div>
+                    </div>
+
+                    <!-- Panel: Sensors -->
+                    <div class="system-panel" id="cc-panel-sensors">
+                        <div class="system-card">
+                            <div class="system-card-header">
+                                <h3 class="system-card-title">Voice & Acoustic Sensors</h3>
+                            </div>
+                            <div class="sensor-list">
+                                <div class="sensor-item">
+                                    <div class="sensor-info">
+                                        <span class="sensor-name">Acoustic Double-Clap Detector</span>
+                                        <span class="sensor-desc">Awakens DOOM on physical double clap (0.1s–0.95s gap)</span>
+                                    </div>
+                                    <div class="sensor-actions">
+                                        <span class="sensor-status sensor-active">Active</span>
+                                        <button class="doom-btn-sm" id="btn-clap-calibrate">Calibrate</button>
+                                    </div>
+                                </div>
+                                <div class="sensor-item">
+                                    <div class="sensor-info">
+                                        <span class="sensor-name">Voice Wake Words</span>
+                                        <span class="sensor-desc">"Hey DOOM", "Jarvis", "Hello DOOM", "DOOM"</span>
+                                    </div>
+                                    <div class="sensor-actions">
+                                        <span class="sensor-status sensor-active">Active</span>
+                                    </div>
+                                </div>
+                                <div class="sensor-item">
+                                    <div class="sensor-info">
+                                        <span class="sensor-name">Edge TTS Voice Engine</span>
+                                        <span class="sensor-desc">en-GB-RyanNeural — Cinematic British output</span>
+                                    </div>
+                                    <div class="sensor-actions">
+                                        <span class="sensor-status sensor-active">Active</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Panel: Database -->
+                    <div class="system-panel" id="cc-panel-database">
+                        <div class="system-card">
+                            <div class="system-card-header">
+                                <h3 class="system-card-title">PostgreSQL Engine</h3>
+                                <span class="live-badge">DB: Doom</span>
+                            </div>
+                            <div class="db-connection-info">localhost:5432 · Database: Doom · User: postgres</div>
+                            <div class="db-tables-grid">
+                                <div class="db-table-card"><span class="db-table-icon">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                </span><span class="db-table-name">user_profiles</span><span class="db-table-status">Active</span></div>
+                                <div class="db-table-card"><span class="db-table-icon">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+                                </span><span class="db-table-name">episodic_memory</span><span class="db-table-status">Active</span></div>
+                                <div class="db-table-card"><span class="db-table-icon">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                </span><span class="db-table-name">semantic_facts</span><span class="db-table-status">Active</span></div>
+                                <div class="db-table-card"><span class="db-table-icon">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                                </span><span class="db-table-name">command_logs</span><span class="db-table-status">Active</span></div>
+                                <div class="db-table-card"><span class="db-table-icon">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/></svg>
+                                </span><span class="db-table-name">system_telemetry</span><span class="db-table-status">Active</span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Panel: Media -->
+                    <div class="system-panel" id="cc-panel-media">
+                        <div class="system-card" style="margin-bottom:1rem">
+                            <div class="system-card-header">
+                                <h3 class="system-card-title">Workspace Macros</h3>
+                            </div>
+                            <div class="macros-grid">
+                                <button class="macro-btn" data-mode="code" id="btn-mode-code">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                                    Code Mode
+                                </button>
+                                <button class="macro-btn" data-mode="briefing" id="btn-mode-briefing">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/></svg>
+                                    Daily Briefing
+                                </button>
+                                <button class="macro-btn" data-mode="standup" id="btn-mode-standup">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                                    Standup Report
+                                </button>
+                                <button class="macro-btn macro-btn-danger" data-mode="lockdown" id="btn-mode-lock">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                                    Lockdown
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Mini Music Player -->
+                        <div class="system-card music-player-card" id="music-player-bar">
+                            <div class="music-player-row">
+                                <button class="music-play-btn" id="btn-music-play" aria-label="Play/pause">
+                                    <svg id="music-play-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                </button>
+                                <div class="music-eq" id="music-equalizer">
+                                    <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
+                                </div>
+                                <div class="music-meta">
+                                    <span class="music-title" id="music-track-title">NEON OVERDRIVE</span>
+                                    <span class="music-tag" id="music-station-tag">FOCUS HIGH</span>
+                                </div>
+                                <div class="music-controls">
+                                    <button class="music-skip-btn" id="btn-music-prev" aria-label="Previous">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+                                    </button>
+                                    <button class="music-skip-btn" id="btn-music-next" aria-label="Next">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                                    </button>
+                                    <input type="range" id="music-volume" class="volume-range" min="0" max="1" step="0.05" value="0.7" aria-label="Volume">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </section>
 
-            <!-- RIGHT COLUMN: MODEL ROUTER & 30 AUTONOMOUS TOOLS -->
-            <section class="hud-card models-card" id="models-tools-section">
-                
-                <!-- Model Router Matrix -->
-                <div class="card-header">
-                    <div class="card-title-wrap">
-                        <span class="card-icon">🧠</span>
-                        <h2 class="card-title">INTELLIGENCE MATRIX</h2>
-                    </div>
-                    <span class="live-tag">6 PROVIDERS</span>
-                </div>
-
-                <div class="models-grid" id="models-matrix-grid">
-                    <div class="model-tile active" id="provider-groq">
-                        <div class="model-header-row">
-                            <span class="model-name">GROQ CLOUD</span>
-                            <span class="model-pill pill-green">LIVE 500 T/S</span>
-                        </div>
-                        <span class="model-desc">LLaMA 3.3 / GPT-OSS 20B Reasoning</span>
-                    </div>
-
-                    <div class="model-tile" id="provider-bedrock">
-                        <div class="model-header-row">
-                            <span class="model-name">AMAZON BEDROCK</span>
-                            <span class="model-pill pill-cyan">PRIORITY 1</span>
-                        </div>
-                        <span class="model-desc">Claude 3.5 Sonnet / Nova / Grok</span>
-                    </div>
-
-                    <div class="model-tile" id="provider-gemini">
-                        <div class="model-header-row">
-                            <span class="model-name">GOOGLE GEMINI</span>
-                            <span class="model-pill">2.0 FLASH</span>
-                        </div>
-                        <span class="model-desc">Multimodal & Fast Reasoning</span>
-                    </div>
-
-                    <div class="model-tile active" id="provider-fallback">
-                        <div class="model-header-row">
-                            <span class="model-name">LOCAL FALLBACK</span>
-                            <span class="model-pill pill-green">ACTIVE</span>
-                        </div>
-                        <span class="model-desc">Zero-Config Rule & Task Engine</span>
-                    </div>
-                </div>
-
-                <!-- 30 Tools Explorer -->
-                <div class="tools-explorer-block">
-                    <div class="tools-explorer-header">
-                        <div class="card-title-wrap">
-                            <span class="card-icon">🛠️</span>
-                            <h3 class="tools-sub-title">TOOL REGISTRY (30)</h3>
-                        </div>
-                        <span class="tools-count-badge" id="tools-count-pill">30 REGISTERED</span>
-                    </div>
-
-                    <div class="tools-pills-container" id="tools-pills-list">
-                        <!-- Populated dynamically via app.js -->
-                    </div>
-                </div>
-            </section>
         </main>
-
-        <!-- BOTTOM WORKSPACE: POSTGRESQL MEMORY 2.0 & AUDIT TABS -->
-        <footer class="hud-footer-tabs">
-            <div class="tabs-header-bar">
-                <div class="tab-buttons">
-                    <button class="tab-btn active" data-tab="tab-audit" id="btn-tab-audit">
-                        <span class="tab-glyph">📊</span> COMMAND AUDIT LOGS (<span id="count-logs">0</span>)
-                    </button>
-                    <button class="tab-btn" data-tab="tab-episodes" id="btn-tab-episodes">
-                        <span class="tab-glyph">📜</span> EPISODIC MEMORY (<span id="count-episodes">0</span>)
-                    </button>
-                    <button class="tab-btn" data-tab="tab-facts" id="btn-tab-facts">
-                        <span class="tab-glyph">🧠</span> SEMANTIC FACTS (<span id="count-facts">0</span>)
-                    </button>
-                    <button class="tab-btn" data-tab="tab-api-tester" id="btn-tab-api-tester">
-                        <span class="tab-glyph">⚡</span> API TESTER & BENCHMARK
-                    </button>
-                    <button class="tab-btn" data-tab="tab-scaffolder" id="btn-tab-scaffolder">
-                        <span class="tab-glyph">🏗️</span> CODEBASE SCAFFOLDER
-                    </button>
-                    <button class="tab-btn" data-tab="tab-agent-studio" id="btn-tab-agent-studio">
-                        <span class="tab-glyph">🤖</span> AI AGENT STUDIO (PAIR PROGRAMMER)
-                    </button>
-                    <button class="tab-btn" data-tab="tab-profile" id="btn-tab-profile">
-                        <span class="tab-glyph">👑</span> USER PROFILE (SUJAL)
-                    </button>
-                </div>
-
-                <div class="tab-actions">
-                    <button type="button" class="btn-tab-refresh" id="btn-refresh-tabs">
-                        <span>↻ REFRESH DB</span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- TAB CONTENT CONTAINER -->
-            <div class="tab-content-area">
-                
-                <!-- TAB 1: Command Audit Logs with Latency -->
-                <div class="tab-panel active" id="tab-audit">
-                    <div class="table-responsive">
-                        <table class="cyber-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>USER INPUT / GOAL</th>
-                                    <th>MODEL ROUTED</th>
-                                    <th>TOOL EXECUTED</th>
-                                    <th>LATENCY</th>
-                                    <th>STATUS</th>
-                                    <th>TIMESTAMP</th>
-                                </tr>
-                            </thead>
-                            <tbody id="audit-table-body">
-                                <tr><td colspan="7" class="loading-cell">Loading PostgreSQL Command Logs...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- TAB 2: Episodic Memory -->
-                <div class="tab-panel" id="tab-episodes">
-                    <div class="episodes-feed" id="episodes-feed-list">
-                        <div class="empty-feed">Loading PostgreSQL Episodic Records...</div>
-                    </div>
-                </div>
-
-                <!-- TAB 3: Semantic Facts -->
-                <div class="tab-panel" id="tab-facts">
-                    <div class="facts-grid" id="facts-grid-list">
-                        <div class="empty-feed">Loading PostgreSQL Semantic Facts...</div>
-                    </div>
-                </div>
-
-                <!-- TAB 4: API Tester & Latency Benchmarker (Mini Postman) -->
-                <div class="tab-panel" id="tab-api-tester">
-                    <div class="api-tester-layout">
-                        <!-- Request Bar -->
-                        <div class="api-request-bar">
-                            <select id="api-method" class="cyber-select">
-                                <option value="GET">GET</option>
-                                <option value="POST">POST</option>
-                                <option value="PUT">PUT</option>
-                                <option value="DELETE">DELETE</option>
-                                <option value="PATCH">PATCH</option>
-                            </select>
-                            <input type="text" id="api-url" class="cyber-api-input" placeholder="Enter endpoint URL (e.g. https://api.github.com/users/sujal)" value="https://api.github.com/users/sujal">
-                            <button id="btn-api-send" class="btn-api-send">SEND REQUEST ⚡</button>
-                        </div>
-
-                        <div class="api-body-section" id="api-body-wrap" style="display: none;">
-                            <label class="api-label">JSON REQUEST BODY:</label>
-                            <textarea id="api-request-body" class="cyber-textarea" placeholder='{"key": "value"}'></textarea>
-                        </div>
-
-                        <!-- Response Header Bar -->
-                        <div class="api-response-header">
-                            <div class="api-metrics">
-                                <span class="api-metric-item">STATUS: <span id="api-status-pill" class="pill-green">READY</span></span>
-                                <span class="api-metric-item">LATENCY: <span id="api-latency-pill" class="text-cyan">0 ms</span></span>
-                                <span class="api-metric-item">TYPE: <span id="api-type-pill" class="text-purple">-</span></span>
-                            </div>
-                            <div class="api-action-buttons">
-                                <button id="btn-gen-typescript" class="btn-api-sub">📝 Gen TypeScript</button>
-                                <button id="btn-gen-pydantic" class="btn-api-sub">🐍 Gen Pydantic</button>
-                                <button id="btn-copy-json" class="btn-api-sub">📋 Copy JSON</button>
-                            </div>
-                        </div>
-
-                        <!-- Response & Code Split View -->
-                        <div class="api-response-viewer">
-                            <pre id="api-response-json" class="cyber-code-block">// Response JSON or Generated Types will appear here... Click 'SEND REQUEST ⚡' to test.</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- TAB 5: Codebase Scaffolder -->
-                <div class="tab-panel" id="tab-scaffolder">
-                    <div class="scaffolder-layout">
-                        <div class="scaffolder-form">
-                            <div class="form-row">
-                                <label class="scaffold-label">PROJECT NAME:</label>
-                                <input type="text" id="scaffold-project-name" class="cyber-api-input" placeholder="e.g. OrderService" value="OrderService">
-                            </div>
-                            <div class="form-row">
-                                <label class="scaffold-label">TEMPLATE STACK:</label>
-                                <div class="template-grid">
-                                    <label class="template-card active">
-                                        <input type="radio" name="scaffold-template" value="fastapi_postgres" checked>
-                                        <div class="template-info">
-                                            <span class="tpl-title">🚀 FastAPI + PostgreSQL</span>
-                                            <span class="tpl-sub">FastAPI, SQLAlchemy, Docker, Compose, PyTest</span>
-                                        </div>
-                                    </label>
-                                    <label class="template-card">
-                                        <input type="radio" name="scaffold-template" value="react_vite">
-                                        <div class="template-info">
-                                            <span class="tpl-title">⚛️ React + Vite + TypeScript</span>
-                                            <span class="tpl-sub">React 18, Vite, TS, Lucide Icons</span>
-                                        </div>
-                                    </label>
-                                    <label class="template-card">
-                                        <input type="radio" name="scaffold-template" value="nextjs_fullstack">
-                                        <div class="template-info">
-                                            <span class="tpl-title">▲ Next.js 14 Fullstack</span>
-                                            <span class="tpl-sub">App Router, Server Actions, API Routes</span>
-                                        </div>
-                                    </label>
-                                    <label class="template-card">
-                                        <input type="radio" name="scaffold-template" value="flask_microservice">
-                                        <div class="template-info">
-                                            <span class="tpl-title">🐍 Flask Microservice</span>
-                                            <span class="tpl-sub">Flask, PyTest, Gunicorn, Alpine Docker</span>
-                                        </div>
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="form-row">
-                                <label class="scaffold-label">PROJECT REQUIREMENTS & FEATURES (AI CUSTOMIZER):</label>
-                                <textarea id="scaffold-description" class="cyber-textarea" placeholder="Describe specific business logic (e.g. 'Hospital Management API with patient appointment booking, doctor schedules, and JWT auth with PostgreSQL')..."></textarea>
-                            </div>
-                            <div class="form-row">
-                                <label class="scaffold-label">TARGET FOLDER PATH (OPTIONAL):</label>
-                                <input type="text" id="scaffold-target-dir" class="cyber-api-input" placeholder="Defaults to your Desktop">
-                            </div>
-                            <button id="btn-scaffold-generate" class="btn-scaffold-submit">🚀 GENERATE COMPLETE CODEBASE NOW</button>
-                        </div>
-                        <div class="scaffolder-output">
-                            <span class="scaffold-output-title">SCAFFOLDING STATUS & LOGS:</span>
-                            <pre id="scaffold-log-box" class="cyber-code-block">// Select a template above and click 'GENERATE' to autonomously build a complete codebase.</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- TAB 6: AI AGENT STUDIO — DOOM INTELLIGENCE PANEL (ANTIGRAVITY-STYLE) -->
-                <div class="tab-panel" id="tab-agent-studio">
-                    <div class="agent-studio-layout-v2">
-
-                        <!-- LEFT: CHAT MAIN WINDOW -->
-                        <div class="agent-chat-window">
-
-                            <!-- Chat Window Header Bar -->
-                            <div class="agent-window-header">
-                                <div class="agent-window-brand">
-                                    <div class="agent-window-orb">
-                                        <div class="agent-orb-pulse"></div>
-                                        <span class="agent-orb-glyph">⬡</span>
-                                    </div>
-                                    <div>
-                                        <div class="agent-window-title">DOOM</div>
-                                        <div class="agent-window-sub">AI Intelligence Panel</div>
-                                    </div>
-                                </div>
-                                <div class="agent-window-header-actions">
-                                    <button class="agent-header-btn" id="btn-agent-new-chat" title="New Conversation">✦ New Chat</button>
-                                    <button class="agent-header-btn agent-header-btn-danger" id="btn-clear-agent-chat-v2" title="Clear History">✕ Clear</button>
-                                </div>
-                            </div>
-
-                            <!-- Messages Feed -->
-                            <div class="agent-messages-feed" id="agent-chat-feed">
-                                <!-- Welcome Message -->
-                                <div class="agent-msg-v2 agent-msg-ai">
-                                    <div class="agent-msg-avatar">
-                                        <div class="avatar-ai-dot"></div>
-                                        <span>D</span>
-                                    </div>
-                                    <div class="agent-msg-content-wrap">
-                                        <div class="agent-msg-meta-row">
-                                            <span class="agent-msg-sender">DOOM AI</span>
-                                            <span class="agent-msg-timestamp" id="welcome-ts"></span>
-                                        </div>
-                                        <div class="agent-msg-text">
-                                            <p>Greetings, <strong>Boss Sujal</strong>. Your personal AI intelligence panel is online.</p>
-                                            <p style="margin-top:0.5rem; color: var(--text-secondary);">I can help you:</p>
-                                            <ul class="agent-welcome-list">
-                                                <li>⚡ <strong>Write & generate</strong> code, APIs, tests, and entire projects</li>
-                                                <li>🐛 <strong>Debug & fix</strong> errors, trace issues, analyze stack traces</li>
-                                                <li>🏗️ <strong>Architect</strong> systems, plan microservices, design schemas</li>
-                                                <li>📝 <strong>Refactor</strong> and review your existing code files</li>
-                                                <li>🤖 <strong>Automate</strong> anything via DOOM's 30+ autonomous tools</li>
-                                            </ul>
-                                            <p style="margin-top:0.6rem; color: var(--neon-cyan); font-size:0.78rem;">Select a model → type your goal → press Enter. Let's build.</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Typing Indicator (hidden by default) -->
-                            <div class="agent-typing-indicator" id="agent-typing-indicator" style="display:none;">
-                                <div class="agent-msg-avatar">
-                                    <div class="avatar-ai-dot"></div>
-                                    <span>D</span>
-                                </div>
-                                <div class="typing-dots-wrap">
-                                    <span class="typing-label" id="typing-label-text">DOOM is thinking</span>
-                                    <div class="typing-dots">
-                                        <span class="dot dot1"></span>
-                                        <span class="dot dot2"></span>
-                                        <span class="dot dot3"></span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Input Area -->
-                            <div class="agent-input-area">
-                                <!-- Quick Action Chips -->
-                                <div class="agent-quick-chips" id="agent-quick-chips">
-                                    <button class="agent-chip" data-quick="Write a Python FastAPI endpoint for user authentication with JWT">⚡ Auth API</button>
-                                    <button class="agent-chip" data-quick="Debug this code and explain the issue">🐛 Debug Code</button>
-                                    <button class="agent-chip" data-quick="Write unit tests for my code using pytest">🧪 Gen Tests</button>
-                                    <button class="agent-chip" data-quick="Refactor this code to be cleaner and more efficient">✨ Refactor</button>
-                                    <button class="agent-chip" data-quick="Explain this code step by step">📖 Explain</button>
-                                    <button class="agent-chip" data-quick="Write a React component with TypeScript">⚛️ React Comp</button>
-                                </div>
-
-                                <!-- File Context -->
-                                <div class="agent-file-context-bar">
-                                    <span class="file-ctx-label">📁</span>
-                                    <input type="text" id="agent-file-path" class="agent-file-ctx-input" placeholder="Attach file path for context (optional)  e.g. tools/computer_tools.py">
-                                </div>
-
-                                <!-- Main Input Row -->
-                                <div class="agent-main-input-row">
-                                    <div class="agent-input-box">
-                                        <textarea
-                                            id="agent-prompt-input"
-                                            class="agent-textarea-v2"
-                                            placeholder="Ask anything, @ to mention files, / for actions..."
-                                            rows="2"
-                                        ></textarea>
-                                        <div class="agent-input-footer">
-                                            <span class="agent-input-hint">Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to send</span>
-                                            <div class="agent-input-actions">
-                                                <button class="agent-input-action-btn" id="btn-agent-mic" title="Voice Input">🎙️</button>
-                                                <button class="agent-input-action-btn agent-send-btn" id="btn-agent-send">
-                                                    <span id="agent-send-label">Send</span>
-                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Bottom Disclaimer -->
-                                <div class="agent-disclaimer">
-                                    <span>⚠ AI may make mistakes. Double-check all generated code.</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- RIGHT: SIDEBAR (Model + Mode + Context) -->
-                        <div class="agent-sidebar">
-
-                            <!-- Model Selector Panel -->
-                            <div class="agent-sidebar-card">
-                                <div class="sidebar-card-title">
-                                    <span class="sidebar-card-icon">🧠</span>
-                                    AI MODEL
-                                </div>
-                                <div class="agent-model-list" id="agent-model-list">
-                                    <div class="agent-model-option active" data-model="groq">
-                                        <div class="model-option-indicator"></div>
-                                        <div class="model-option-info">
-                                            <span class="model-option-name">Groq LPU</span>
-                                            <span class="model-option-sub">LLaMA 3.3 • 500 T/S</span>
-                                        </div>
-                                        <span class="model-option-badge badge-green">FAST</span>
-                                    </div>
-                                    <div class="agent-model-option" data-model="bedrock_claude">
-                                        <div class="model-option-indicator indicator-purple"></div>
-                                        <div class="model-option-info">
-                                            <span class="model-option-name">Claude 3.5 Sonnet</span>
-                                            <span class="model-option-sub">AWS Bedrock • Priority 1</span>
-                                        </div>
-                                        <span class="model-option-badge badge-purple">SMART</span>
-                                    </div>
-                                    <div class="agent-model-option" data-model="bedrock_nova">
-                                        <div class="model-option-indicator indicator-cyan"></div>
-                                        <div class="model-option-info">
-                                            <span class="model-option-name">Nova Pro</span>
-                                            <span class="model-option-sub">AWS Bedrock • Amazon</span>
-                                        </div>
-                                        <span class="model-option-badge badge-cyan">NOVA</span>
-                                    </div>
-                                    <div class="agent-model-option" data-model="gemini">
-                                        <div class="model-option-indicator indicator-amber"></div>
-                                        <div class="model-option-info">
-                                            <span class="model-option-name">Gemini 2.0 Flash</span>
-                                            <span class="model-option-sub">Google • Multimodal</span>
-                                        </div>
-                                        <span class="model-option-badge badge-amber">VISION</span>
-                                    </div>
-                                    <div class="agent-model-option" data-model="auto">
-                                        <div class="model-option-indicator indicator-multi"></div>
-                                        <div class="model-option-info">
-                                            <span class="model-option-name">DOOM Auto-Router</span>
-                                            <span class="model-option-sub">Best model per task</span>
-                                        </div>
-                                        <span class="model-option-badge badge-multi">AUTO</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Mode Selector -->
-                            <div class="agent-sidebar-card">
-                                <div class="sidebar-card-title">
-                                    <span class="sidebar-card-icon">⚙️</span>
-                                    AGENT MODE
-                                </div>
-                                <div class="agent-mode-list" id="agent-mode-list">
-                                    <div class="agent-mode-option active" data-agent-mode="pair_programmer">
-                                        <span class="mode-option-icon">💻</span>
-                                        <div class="mode-option-text">
-                                            <span class="mode-option-name">Pair Programmer</span>
-                                            <span class="mode-option-sub">Write & build code</span>
-                                        </div>
-                                    </div>
-                                    <div class="agent-mode-option" data-agent-mode="architect">
-                                        <span class="mode-option-icon">🏗️</span>
-                                        <div class="mode-option-text">
-                                            <span class="mode-option-name">Architect</span>
-                                            <span class="mode-option-sub">System design & planning</span>
-                                        </div>
-                                    </div>
-                                    <div class="agent-mode-option" data-agent-mode="debugger">
-                                        <span class="mode-option-icon">🐛</span>
-                                        <div class="mode-option-text">
-                                            <span class="mode-option-name">Bug Hunter</span>
-                                            <span class="mode-option-sub">Debug & fix errors</span>
-                                        </div>
-                                    </div>
-                                    <div class="agent-mode-option" data-agent-mode="reviewer">
-                                        <span class="mode-option-icon">👁️</span>
-                                        <div class="mode-option-text">
-                                            <span class="mode-option-name">Code Reviewer</span>
-                                            <span class="mode-option-sub">Review & refactor</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Live Stats -->
-                            <div class="agent-sidebar-card">
-                                <div class="sidebar-card-title">
-                                    <span class="sidebar-card-icon">📊</span>
-                                    SESSION STATS
-                                </div>
-                                <div class="agent-stats-grid">
-                                    <div class="agent-stat-tile">
-                                        <span class="stat-val" id="stat-messages">0</span>
-                                        <span class="stat-label">MESSAGES</span>
-                                    </div>
-                                    <div class="agent-stat-tile">
-                                        <span class="stat-val text-cyan" id="stat-tokens">0</span>
-                                        <span class="stat-label">TOKENS EST.</span>
-                                    </div>
-                                    <div class="agent-stat-tile">
-                                        <span class="stat-val text-green" id="stat-model-display">GROQ</span>
-                                        <span class="stat-label">ACTIVE MODEL</span>
-                                    </div>
-                                    <div class="agent-stat-tile">
-                                        <span class="stat-val text-purple" id="stat-mode-display">PAIR</span>
-                                        <span class="stat-label">MODE</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Provider Status -->
-                            <div class="agent-sidebar-card">
-                                <div class="sidebar-card-title">
-                                    <span class="sidebar-card-icon">🔗</span>
-                                    API PROVIDERS
-                                </div>
-                                <div class="agent-provider-list">
-                                    <div class="provider-row">
-                                        <span class="provider-dot provider-dot-green"></span>
-                                        <span class="provider-name">Groq Cloud</span>
-                                        <span class="provider-status status-live">LIVE</span>
-                                    </div>
-                                    <div class="provider-row">
-                                        <span class="provider-dot provider-dot-cyan"></span>
-                                        <span class="provider-name">AWS Bedrock</span>
-                                        <span class="provider-status status-live">LIVE</span>
-                                    </div>
-                                    <div class="provider-row">
-                                        <span class="provider-dot provider-dot-amber"></span>
-                                        <span class="provider-name">Google Gemini</span>
-                                        <span class="provider-status status-ready">READY</span>
-                                    </div>
-                                    <div class="provider-row">
-                                        <span class="provider-dot provider-dot-muted"></span>
-                                        <span class="provider-name">Local Ollama</span>
-                                        <span class="provider-status status-offline">OFFLINE</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                    </div>
-                </div>
-
-                <!-- TAB 7: User Profile (Sujal) -->
-                <div class="tab-panel" id="tab-profile">
-                    <div class="profile-card-layout">
-                        <div class="profile-avatar-box">
-                            <div class="avatar-ring">
-                                <span class="avatar-glyph">👑</span>
-                            </div>
-                            <h3 class="profile-name">SUJAL</h3>
-                            <span class="profile-role">CREATOR & LEAD AI ENGINEER</span>
-                        </div>
-                        <div class="profile-fields-grid">
-                            <div class="profile-field">
-                                <span class="field-title">AUTHORIZATION LEVEL</span>
-                                <span class="field-value text-cyan">LEVEL 10 (FULL ROOT)</span>
-                            </div>
-                            <div class="profile-field">
-                                <span class="field-title">PREFERRED VOICE</span>
-                                <span class="field-value text-purple">British Neural (Ryan)</span>
-                            </div>
-                            <div class="profile-field">
-                                <span class="field-title">ACOUSTIC TRIGGER</span>
-                                <span class="field-value text-green">Double-Clap Sensor [Active]</span>
-                            </div>
-                            <div class="profile-field">
-                                <span class="field-title">PERSISTENCE STORAGE</span>
-                                <span class="field-value text-amber">Dual-Sync (JSON + PostgreSQL 'Doom')</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </footer>
     </div>
 
-    <!-- MAIN JAVASCRIPT LOGIC -->
-    <script src="js/app.js"></script>
+    <script src="/js/app.js?v=3.3"></script>
 </body>
 </html>

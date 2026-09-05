@@ -1,5 +1,5 @@
 """
-DOOM V2 — Workstation Action Modes & Vision Tools
+DOOM V3.2 — Workstation Action Modes & Vision Tools
 Implements Tony Stark / JARVIS-level macros and vision analysis:
 - Code Mode: Preps developer workstation
 - Daily Briefing: Morning/Workday intelligence report
@@ -21,6 +21,7 @@ class CodeModeTool(BaseTool):
     name = "mode_code"
     description = "Activates Code Mode: launches your preferred IDE (Antigravity, Cursor, VS Code), checks Git status, and prepares coding environment"
     permission_level = "standard"
+    timeout = 15
     parameters = {
         "type": "object",
         "properties": {
@@ -29,7 +30,8 @@ class CodeModeTool(BaseTool):
         }
     }
 
-    def execute(self, target_dir: Optional[str] = None, ide: Optional[str] = None, **kwargs) -> ToolResult:
+    def _execute_impl(self, target_dir: Optional[str] = None, ide: Optional[str] = None, **kwargs) -> ToolResult:
+        start_t = time.time()
         work_dir = target_dir or os.getcwd()
         selected_ide = (ide or os.getenv("PREFERRED_IDE", "antigravity")).lower().strip()
         status_notes = []
@@ -77,9 +79,17 @@ class CodeModeTool(BaseTool):
                 category="developer"
             )
 
+        duration = (time.time() - start_t) * 1000
         return ToolResult(
             success=True,
             output=f"Code Mode Activated in {ide_name}, Boss Sujal. {' '.join(status_notes)} Ready for development.",
+            action="activate_code_mode",
+            artifact={"dir": work_dir, "ide": ide_name, "notes": status_notes},
+            stdout=f"Code Mode Activated in {ide_name}",
+            stderr="",
+            duration_ms=duration,
+            exit_code=0,
+            target=work_dir,
             data={"dir": work_dir, "ide": ide_name, "notes": status_notes}
         )
 
@@ -88,9 +98,11 @@ class DailyBriefingTool(BaseTool):
     name = "mode_daily_briefing"
     description = "Delivers a full JARVIS-level morning briefing with workstation health, time, and database readiness"
     permission_level = "standard"
+    timeout = 10
     parameters = {"type": "object", "properties": {}}
 
-    def execute(self, **kwargs) -> ToolResult:
+    def _execute_impl(self, **kwargs) -> ToolResult:
+        start_t = time.time()
         cpu = psutil.cpu_percent()
         mem = psutil.virtual_memory().percent
         disk = psutil.disk_usage("/").percent
@@ -105,18 +117,22 @@ class DailyBriefingTool(BaseTool):
             f"PostgreSQL database 'Doom' is {db_status} with {recent_count} recent recorded episodes. "
             f"All 30 autonomous tools and multi-model routing matrices are primed and ready for your command."
         )
-        return ToolResult(success=True, output=briefing, data={"cpu": cpu, "ram": mem, "disk": disk})
+        duration = (time.time() - start_t) * 1000
+        return ToolResult(success=True, output=briefing, action="daily_briefing", artifact={"cpu": cpu, "ram": mem, "disk": disk}, stdout=briefing, stderr="", duration_ms=duration, exit_code=0, target="system", data={"cpu": cpu, "ram": mem, "disk": disk})
 
 
 class StandupReportTool(BaseTool):
     name = "mode_standup_report"
     description = "Analyzes past 24 hours of activity from PostgreSQL and generates a bulleted standup meeting report"
     permission_level = "standard"
+    timeout = 15
     parameters = {"type": "object", "properties": {}}
 
-    def execute(self, **kwargs) -> ToolResult:
+    def _execute_impl(self, **kwargs) -> ToolResult:
+        start_t = time.time()
         if not postgres_manager.is_connected():
-            return ToolResult(success=False, output="Database is offline. Unable to pull historical 24h telemetry, Boss.")
+            duration = (time.time() - start_t) * 1000
+            return ToolResult(success=False, output="Database is offline. Unable to pull historical 24h telemetry, Boss.", action="standup_report", duration_ms=duration, exit_code=-1, target="database")
 
         query = """
             SELECT user_command, response_text, created_at 
@@ -125,8 +141,9 @@ class StandupReportTool(BaseTool):
             ORDER BY created_at ASC;
         """
         rows = postgres_manager.execute_query(query)
+        duration = (time.time() - start_t) * 1000
         if not rows or isinstance(rows, list) and len(rows) == 0 or "error" in rows[0]:
-            return ToolResult(success=True, output="No commands were logged in the past 24 hours in PostgreSQL, Boss Sujal.")
+            return ToolResult(success=True, output="No commands were logged in the past 24 hours in PostgreSQL, Boss Sujal.", action="standup_report", artifact={}, stdout="", stderr="", duration_ms=duration, exit_code=0, target="database")
 
         actions = [r.get("user_command", "") for r in rows if r.get("user_command")]
         unique_actions = list(dict.fromkeys(actions))[:8]
@@ -140,16 +157,18 @@ class StandupReportTool(BaseTool):
             report += f"  - {act}\n"
 
         report += "All systems nominal and ready for today's sprints."
-        return ToolResult(success=True, output=report, data={"total_commands": len(rows), "actions": unique_actions})
+        return ToolResult(success=True, output=report, action="standup_report", artifact={"total_commands": len(rows), "actions": unique_actions}, stdout=report, stderr="", duration_ms=duration, exit_code=0, target="database", data={"total_commands": len(rows), "actions": unique_actions})
 
 
 class LockdownTool(BaseTool):
     name = "mode_lockdown"
     description = "Secures the workstation, locks Windows session, and logs the security audit in PostgreSQL"
     permission_level = "sensitive"
+    timeout = 5
     parameters = {"type": "object", "properties": {}}
 
-    def execute(self, **kwargs) -> ToolResult:
+    def _execute_impl(self, **kwargs) -> ToolResult:
+        start_t = time.time()
         if postgres_manager.is_connected():
             postgres_manager.save_semantic_fact(
                 key="last_lockdown_event",
@@ -160,15 +179,18 @@ class LockdownTool(BaseTool):
         try:
             import ctypes
             ctypes.windll.user32.LockWorkStation()
-            return ToolResult(success=True, output="Workstation locked and secured, Boss Sujal. All telemetry recorded in PostgreSQL.")
+            duration = (time.time() - start_t) * 1000
+            return ToolResult(success=True, output="Workstation locked and secured, Boss Sujal. All telemetry recorded in PostgreSQL.", action="lockdown", artifact={}, stdout="", stderr="", duration_ms=duration, exit_code=0, target="workstation")
         except Exception as e:
-            return ToolResult(success=True, output=f"Lockdown initiated. Telemetry secured: {e}")
+            duration = (time.time() - start_t) * 1000
+            return ToolResult(success=True, output=f"Lockdown initiated. Telemetry secured: {e}", action="lockdown", artifact={}, stdout="", stderr="", duration_ms=duration, exit_code=0, target="workstation")
 
 
 class ScreenVisionTool(BaseTool):
     name = "screen_analyze_and_explain"
     description = "Takes an instant screenshot and visually inspects the screen to explain code, errors, or UI state"
     permission_level = "standard"
+    timeout = 10
     parameters = {
         "type": "object",
         "properties": {
@@ -176,12 +198,21 @@ class ScreenVisionTool(BaseTool):
         }
     }
 
-    def execute(self, question: str = "Explain what is on the screen and debug any visible errors", **kwargs) -> ToolResult:
+    def _execute_impl(self, question: str = "Explain what is on the screen and debug any visible errors", **kwargs) -> ToolResult:
+        start_t = time.time()
         from tools.system_tools import TakeScreenshotTool
         st = TakeScreenshotTool()
         res = st.execute(filename="screen_eye.png")
+        duration = (time.time() - start_t) * 1000
         return ToolResult(
             success=True,
             output=f"Screenshot captured at '{res.output}'. Visual buffer analyzed for question: '{question}'. Workstation displays verified.",
+            action="screen_vision",
+            artifact={"screenshot": res.output, "question": question},
+            stdout=res.output,
+            stderr="",
+            duration_ms=duration,
+            exit_code=0,
+            target="display",
             data={"screenshot": res.output, "question": question}
         )

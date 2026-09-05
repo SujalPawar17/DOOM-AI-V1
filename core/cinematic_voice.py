@@ -5,6 +5,7 @@ import os
 import tempfile
 import asyncio
 from typing import Optional
+from enum import Enum
 
 # Try imports for various high-tech voice backends
 try:
@@ -30,6 +31,12 @@ except ImportError:
 from core.language_manager import get_language_manager
 
 
+class AudioStatus(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+    FAILED = "FAILED"
+
+
 class DOOMCinematicVoice:
     def __init__(self):
         self.engine = None
@@ -40,6 +47,7 @@ class DOOMCinematicVoice:
         self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
         self.elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "")
         self._preferred_backend = self._detect_preferred_backend()
+        self._audio_status = AudioStatus.AVAILABLE
         
         # Language manager for multilingual support
         self.lang_manager = get_language_manager()
@@ -51,14 +59,14 @@ class DOOMCinematicVoice:
                 'hi': ["जरूर, सुजल।", "तुरंत, सुजल।", "मैं कर रहा हूँ, सुजल।", "फौरन, सुजल।", "बिल्कुल, सुजल।"],
                 'mr': ["नक्की, सुजल।", "लवकर, सुजल।", "मी करत आहे, सुजल।", "तात्काळ, सुजल।", "खरंच, सुजल।"],
                 'ta': ["நிச்சயமாக, சூஜல்.", "உடனே, சூஜல்.", "நான் செய்கிறேன், சூஜல்.", "உடனடி, சூஜல்.", "நிச்சயமாக, சூஜல்."],
-                'te': ["అవశ్యం, సుజల్.", "త్వరితంగా, సుజల్.", "నేను చేయుతున్నాను, సుజల్.", "క్షణ 안으로, సుజల్.", "ఖచ్చితంగా, సుజల్."],
+                'te': ["అవశ్యం, సుజల్.", "త్వరితంగా, సుజల్.", "నేను చేయుతున్నాను, సుజల్.", "क्षण 안으로, సుజల్.", "ఖచ్చితంగా, సుజల్."],
             },
             'thinking': {
                 'en': ["Let me analyze that...", "Running calculations...", "Accessing mainframe...", "One moment, Sujal...", "Processing parameters..."],
                 'hi': ["मैं इसका विश्लेषण करता हूँ...", "गणना चल रही है...", "मेनफ्रेम एक्सेस कर रहा हूँ...", "एक पल, सुजल...", "पैरामीटर्स प्रोसेस हो रहे हैं..."],
                 'mr': ["मी याचे विश्लेषण करतो...", "गणना चालू आहे...", "मेनफ्रेम एक्सेस करत आहे...", "एक क्षण, सुजल...", "पॅरामीटर्स प्रोसेस होत आहेत..."],
-                'ta': ["இதை বিশ্লேஷிக்கிறேன்...", "கணக்கீடுகள் நடக்கின்றன...", "மெயின் ஃப்ரேమ్ அணுகப்படுகிறது...", "ஒரு கணம், சூஜல்...", "அம்சங்கள் செயலாக்கப்படுகின்றன..."],
-                'te': ["నేను విశ్లేషిస్తున్నాను...", "లెక్కింపులు நடిస్తున్నాయి...", "మెయిన్ ఫ్రేమ్ యాక్సెస్ చేస్తోంది...", "ఒక నిమిషం, సుజల్...", "ప్యారామೀటర్లు ప్రాసెస్ అవుతున్నాయి..."],
+                'ta': ["இதை বিশ்லேஷிக்கிறேன்...", "கணக்கீடுகள் நடக்கின்றன...", "மெயின் ஃப்ரேம் அணுகப்படுகிறது...", "ஒரு கணம், சூஜல்...", "அம்சங்கள் செயலாக்கப்படுகின்றன..."],
+                'te': ["నేను విశ్లేషిస్తున్నాను...", "లెక్కింపులు நடిస్తున్నాయి...", "మెయిన్ ఫ్రేమ్ యాక్సెస్ చేస్తుంది...", "ఒక నిమిషం, సుజల్...", "ప్యారామೀటర్లు ప్రాసెస్ అవుతున్నాయి..."],
             },
             'completion': {
                 'en': ["Task completed, Sujal.", "Done, Sujal.", "Mission accomplished, Sujal.", "All systems nominal, Sujal.", "Execution finished, Sujal."],
@@ -72,7 +80,7 @@ class DOOMCinematicVoice:
                 'hi': ["मुझे खेद है, सुजल, लेकिन", "मुझे एक विसंगति मिली:", "दुर्भाग्य से,", "सिस्टम अलर्ट:"],
                 'mr': ["मला खेद आहे, सुजल, परंतु", "मला एक विसंगती आढळली:", "दुर्दैवाने,", "सिस्टम सावध:"],
                 'ta': ["மன்னிக்கவும், சூஜல், ஆனால்", "ஒரு விதிமேற்றம் கண்டுபிடிக்கப்பட்டது:", "துரococcமாக,", "நிலையத்திரவ அறிவிப்பு:"],
-                'te': ["క్షమాపణాలు, సుజల్, కానీ", "ఒక అనọమలి ఎదురായി:", "దురద్యోగంగా,", "సిస్టమ్ అలెర్ట్:"],
+                'te': ["క్షమాపణాలు, సుజల్, కానీ", "ఒక अनొమలి ఎదురాయి:", "దురద్యోగంగా,", "సిస్టమ్ అలెర్ట్:"],
             },
             'greeting': {
                 'en': ["Good day, Sujal. Systems are online and ready.", "At your service, Sujal. What are our objectives today?", "DOOM online. How may I assist you, Sujal?", "Standing by for your command, Sujal."],
@@ -140,7 +148,6 @@ class DOOMCinematicVoice:
             import pygame
             if pygame.mixer.get_init():
                 pygame.mixer.music.stop()
-                pygame.mixer.quit()
         except Exception:
             pass
         
@@ -163,27 +170,56 @@ class DOOMCinematicVoice:
         processed_text = self.add_personality_to_text(text, context, lang)
         self.speak_immediate(processed_text, lang)
 
-    def speak_immediate(self, text: str, lang: Optional[str] = None):
-        """Speak using ONLY the preferred backend (single voice)"""
+    def get_audio_status(self) -> AudioStatus:
+        """Returns current audio system status."""
+        return self._audio_status
+
+    def speak_immediate(self, text: str, lang: Optional[str] = None) -> AudioStatus:
+        """Speak using preferred backend with automatic graceful fallback on device error.
+        Returns AudioStatus indicating the result."""
         if not text:
-            return
+            return AudioStatus.UNAVAILABLE
 
         try:
             print(f"\n[DOOM]: {text}")
         except UnicodeEncodeError:
             print(f"\n[DOOM]: {text.encode('ascii', 'replace').decode('ascii')}")
 
+        if os.getenv("DOOM_HEADLESS") == "1":
+            return AudioStatus.UNAVAILABLE
+
         with self.speech_lock:
             self.is_speaking = True
             try:
+                spoken = False
                 if self._preferred_backend == "elevenlabs":
-                    self._speak_with_elevenlabs(text, lang)
+                    spoken = self._speak_with_elevenlabs(text, lang)
                 elif self._preferred_backend == "edge_tts":
-                    self._speak_with_edge_tts(text, lang)
-                elif self._preferred_backend == "pyttsx3":
-                    self._speak_with_pyttsx3(text, lang)
-                elif self._preferred_backend == "gtts":
+                    spoken = self._speak_with_edge_tts(text, lang)
+
+                # Fallback to pyttsx3 if preferred backend or audio device failed
+                if not spoken and PYTTSX3_AVAILABLE and not self.stop_event.is_set():
+                    try:
+                        self._speak_with_pyttsx3(text, lang)
+                        spoken = True
+                    except Exception as fb_err:
+                        # Non-fatal: text output is already displayed to user
+                        pass
+                elif not spoken and self._preferred_backend == "gtts":
                     self._speak_with_gtts(text, lang)
+                    spoken = True
+                
+                if spoken:
+                    self._audio_status = AudioStatus.AVAILABLE
+                    return AudioStatus.AVAILABLE
+                else:
+                    self._audio_status = AudioStatus.FAILED
+                    return AudioStatus.FAILED
+            except Exception as e:
+                # Absolute safety isolation: voice failure must NEVER fail the task
+                self._audio_status = AudioStatus.FAILED
+                print(f"[VOICE NOTICE] Speech output deferred ({e})")
+                return AudioStatus.FAILED
             finally:
                 self.is_speaking = False
 
@@ -210,12 +246,12 @@ class DOOMCinematicVoice:
         return gtts_map.get(lang, "en")
 
     def _speak_with_edge_tts(self, text: str, lang: Optional[str] = None) -> bool:
-        """Speak using Microsoft Edge Neural TTS with multilingual support"""
+        """Speak using Microsoft Edge Neural TTS with multilingual support and device error isolation"""
         if self.stop_event.is_set():
             return False
-            
+
         voice = self._get_edge_voice(lang)
-        
+
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
             temp_path = tmp_file.name
 
@@ -228,17 +264,23 @@ class DOOMCinematicVoice:
 
             if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
                 import pygame
-                pygame.mixer.init()
+                try:
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init(frequency=24000, size=-16, channels=2, buffer=2048)
+                except Exception as mix_err:
+                    print(f"[VOICE] Audio hardware unavailable ({mix_err}). Switching to fallback.")
+                    return False
+
                 self.current_mixer = pygame.mixer
                 pygame.mixer.music.load(temp_path)
                 pygame.mixer.music.play()
                 while pygame.mixer.music.get_busy() and not self.stop_event.is_set():
                     time.sleep(0.05)
                 pygame.mixer.music.stop()
-                pygame.mixer.quit()
                 return True
         except Exception as e:
-            print(f"[EDGE_TTS ERROR]: {e}")
+            # Cleanly catch and isolate any audio device/playback errors
+            print(f"[VOICE] Audio playback notice: {e}")
             return False
         finally:
             try:
@@ -291,10 +333,10 @@ class DOOMCinematicVoice:
                     pass
         return False
 
-    def _speak_with_gtts(self, text: str, lang: Optional[str] = None):
+    def _speak_with_gtts(self, text: str, lang: Optional[str] = None) -> bool:
         """Speak using gTTS with multilingual support"""
         if self.stop_event.is_set():
-            return
+            return False
             
         gtts_lang = self._get_gtts_lang(lang)
         
@@ -312,23 +354,26 @@ class DOOMCinematicVoice:
                 time.sleep(0.05)
             pygame.mixer.music.stop()
             pygame.mixer.quit()
+            return True
         finally:
             try:
                 os.unlink(temp_path)
             except Exception:
                 pass
+        return False
 
-    def _speak_with_pyttsx3(self, text: str, lang: Optional[str] = None):
+    def _speak_with_pyttsx3(self, text: str, lang: Optional[str] = None) -> bool:
         """Offline pyttsx3 speak (limited multilingual support)"""
         if not self.engine:
             self._init_voice()
         if not self.engine:
-            return
+            return False
         try:
             self.engine.say(text)
             self.engine.runAndWait()
+            return True
         except Exception:
-            pass
+            return False
 
     def add_personality_to_text(self, text: str, context: str = "", lang: Optional[str] = None) -> str:
         """Add JARVIS personality to responses in the appropriate language"""
@@ -364,9 +409,9 @@ def speak(text: str, context: str = "", lang: Optional[str] = None):
     voice = get_voice_instance()
     voice.speak(text, context, lang)
 
-def speak_immediate(text: str, lang: Optional[str] = None):
+def speak_immediate(text: str, lang: Optional[str] = None) -> AudioStatus:
     voice = get_voice_instance()
-    voice.speak_immediate(text, lang)
+    return voice.speak_immediate(text, lang)
 
 def stop_speaking():
     """Global stop function - call this to immediately halt all speech"""
@@ -392,6 +437,11 @@ def get_current_language() -> str:
 def get_current_language_name() -> str:
     voice = get_voice_instance()
     return voice.get_current_language_name()
+
+def get_audio_status() -> AudioStatus:
+    """Get current audio system status."""
+    voice = get_voice_instance()
+    return voice.get_audio_status()
 
 
 # Global hotkey for stop speaking

@@ -23,12 +23,12 @@ def open_browser():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("[DOOM V2] HOLOGRAPHIC JARVIS HUD & WEB DASHBOARD")
+    print("[DOOM V3] PERSONAL AI OPERATING SYSTEM DASHBOARD")
     print("=" * 60)
     print("[*] Starting FastAPI & WebSocket Telemetry Server on Port 8000...")
     
     # Launch browser in background thread
     threading.Thread(target=open_browser, daemon=True).start()
     
-    # Start Uvicorn Server with auto-reload enabled
-    uvicorn.run("dashboard.server:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    # Start Uvicorn Server
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
