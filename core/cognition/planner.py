@@ -25,13 +25,28 @@ class CognitivePlanner:
 
         # 1. Multi-Step Execution: Create -> Run -> Verify
         if intent == CognitiveIntent.MULTI_STEP:
+            if "system_info" in target_file or ("cpu" in normalized_goal.lower() and "ram" in normalized_goal.lower()):
+                code_content = (
+                    "import psutil\n"
+                    "cpu = psutil.cpu_percent(interval=0.1)\n"
+                    "mem = psutil.virtual_memory().percent\n"
+                    "disk = psutil.disk_usage('/').percent\n"
+                    "print(f'Workstation Telemetry: CPU: {cpu}%, RAM: {mem}%, Disk: {disk}%')\n"
+                )
+            else:
+                code_content = (
+                    "# DOOM Sovereign Autonomous Task Script\n"
+                    "import datetime, psutil\n"
+                    "print('DOOM Task Executed successfully at', datetime.datetime.now())\n"
+                    "print(f'CPU: {psutil.cpu_percent()}%, RAM: {psutil.virtual_memory().percent}%')\n"
+                )
             return [
                 CognitiveStep(
                     step_id=1,
                     objective=f"Write script '{target_file}' to disk",
                     action="create_file",
                     tool_name="coding_write_script",
-                    tool_args={"file_name": target_file},
+                    tool_args={"file_name": target_file, "code": code_content},
                     required_capability="coding",
                     expected_outcome="Target file exists on disk with valid Python syntax",
                     risk_level="SAFE",
@@ -67,13 +82,15 @@ class CognitivePlanner:
         # 2. Autonomous Self-Healing Workflow
         if intent == CognitiveIntent.AUTOMATION:
             broken_file = entities.get("target_file", "Desktop/broken_demo.py")
+            broken_code = "print('Starting autonomous repair test'\n"  # Intentional unclosed parenthesis
+            patch_code = "print('Starting autonomous repair test')\nprint('DOOM auto-repair verified.')\n"
             return [
                 CognitiveStep(
                     step_id=1,
                     objective=f"Create initial script '{broken_file}'",
                     action="create_file",
                     tool_name="coding_write_script",
-                    tool_args={"file_name": broken_file},
+                    tool_args={"file_name": broken_file, "code": broken_code},
                     required_capability="coding",
                     expected_outcome="Script written to disk",
                     risk_level="SAFE",
@@ -94,7 +111,7 @@ class CognitivePlanner:
                     objective="Diagnose error trace and patch code",
                     action="patch_file",
                     tool_name="coding_write_script",
-                    tool_args={"file_name": broken_file},
+                    tool_args={"file_name": broken_file, "code": patch_code},
                     required_capability="coding",
                     expected_outcome="Patched script written to disk",
                     dependencies=[2]

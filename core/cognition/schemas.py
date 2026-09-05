@@ -63,6 +63,10 @@ class CognitiveStep:
     result: Optional[str] = None
     error: Optional[str] = None
 
+    @property
+    def description(self) -> str:
+        return self.objective or self.action
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -113,6 +117,8 @@ class CognitiveTelemetry:
     evaluation_ms: float = 0.0
     reflection_ms: float = 0.0
     replanning_ms: float = 0.0
+    checkpoint_ms: float = 0.0
+    verification_ms: float = 0.0
     total_cognitive_ms: float = 0.0
     cognitive_cycles: int = 0
     replan_count: int = 0

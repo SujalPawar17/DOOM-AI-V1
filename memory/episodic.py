@@ -50,7 +50,7 @@ class EpisodicMemory:
     def _save(self):
         try:
             with open(self.storage_path, "w", encoding="utf-8") as f:
-                json.dump(self.episodes, f, indent=2)
+                json.dump(self.episodes, f, indent=2, default=str)
         except Exception as e:
             print(f"[MEMORY ERROR] Could not save episodic memory: {e}")
 

@@ -19,7 +19,7 @@ class SystemStatusTool(BaseTool):
             info = get_system_info()
             duration = (time.time() - start_t) * 1000
             if "error" not in info:
-                out = f"CPU Usage: {info['cpu_percent']}%, Memory: {info['memory'].percent}%, Disk: {info['disk'].percent}%, Processes: {info['processes']}"
+                out = f"CPU Usage: {info['cpu_percent']}%, RAM Usage: {info['memory'].percent}% (Memory), Disk: {info['disk'].percent}%, Processes: {info['processes']}"
                 return ToolResult(success=True, output=out, action="get_status", artifact=info, stdout=out, stderr="", duration_ms=duration, exit_code=0, target="system", data=info)
             return ToolResult(success=False, output="Unable to retrieve system metrics", error=info.get("error"), action="get_status", duration_ms=duration, exit_code=-1, target="system")
         except Exception as e:

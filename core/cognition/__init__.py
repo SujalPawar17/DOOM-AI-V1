@@ -21,10 +21,13 @@ from core.cognition.planner import cognitive_planner, CognitivePlanner
 from core.cognition.observation import observation_engine, ObservationEngine
 from core.cognition.reflection import reflection_engine, ReflectionEngine
 from core.cognition.replanning import cognitive_replanner, CognitiveReplanner
+from core.cognition.bridge import cognitive_bridge, CognitiveBridge
 
 __all__ = [
     "cognitive_engine",
     "CognitiveEngine",
+    "cognitive_bridge",
+    "CognitiveBridge",
     "CognitiveState",
     "CognitiveIntent",
     "CognitiveDecisionType",

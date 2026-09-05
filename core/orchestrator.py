@@ -97,348 +97,89 @@ class DOOMCore:
         self.max_retries_per_action = MAX_RETRIES_PER_ACTION
 
     def process_request(self, user_input: str, lang: Optional[str] = None) -> str:
+        """
+        DOOM V4.1 Master Production Entry Point — Integrated Cognitive Core.
+        Delegates understanding, reasoning, decision, dynamic planning, execution,
+        observation, evaluation, reflection, and adaptive replanning to CognitiveEngine.
+        """
         if not user_input or not user_input.strip():
             state_machine.transition_to(DoomState.IDLE, "Standing by, Boss.")
             return "Standing by, Boss."
 
         start_time = time.time()
-        perf: Dict[str, float] = {
-            "planning_ms": 0.0,
-            "routing_ms": 0.0,
-            "llm_ms": 0.0,
-            "tool_ms": 0.0,
-            "verification_ms": 0.0,
-            "synthesis_ms": 0.0,
-            "checkpoint_ms": 0.0,
-            "total_ms": 0.0
-        }
         user_prompt = user_input.strip()
         print(f"\n[DOOM CORE] [*] Initiating Autonomous Goal: '{user_prompt}' (lang: {lang or 'auto'})")
 
         # Step 1: Record user turn in short-term memory
         short_term_memory.add_user_turn(user_prompt)
 
-        # Step 2: Initialize Task Engine & Planning
-        t_plan_start = time.time()
-        task = task_engine.create_task(user_prompt)
-        plan: ExecutionPlan = self.planner.classify_and_plan(user_prompt)
-        step_descriptions = [s.description for s in plan.steps] if plan.steps else [f"Execute goal: {user_prompt}"]
-        task_engine.set_plan_steps(step_descriptions)
-        perf["planning_ms"] = (time.time() - t_plan_start) * 1000.0
-        print(f"[DOOM CORE] [PLAN] Intent: {plan.type} ({len(step_descriptions)} planned step(s))")
+        # Step 2: Invoke V4 Cognitive Core Lifecycle
+        t_cog_start = time.time()
+        try:
+            cognitive_state = self.cognition.process(user_prompt, context={"lang": lang})
+        except Exception as cog_err:
+            print(f"[DOOM CORE] [COGNITIVE ERROR] {cog_err}")
+            state_machine.transition_to(DoomState.ERROR, str(cog_err))
+            return f"I encountered an anomaly in the cognitive core, Boss: {cog_err}"
 
-        # ─────────────────────────────────────────────────────────────────────
-        # FAST-PATH 1: DIRECT INTENT (Who am I, Identity, Greetings)
-        # ZERO tool calls, instant response from Memory & Persona
-        # ─────────────────────────────────────────────────────────────────────
-        if plan.type == "DIRECT":
-            t_direct = time.time()
-            lower = user_prompt.lower()
-            name = user_profile.get_name()
-            title = user_profile.get_title()
-            access = user_profile.get_access_level()
-            projects = user_profile.get_projects()
-            proj_list = [p["name"] if isinstance(p, dict) and "name" in p else str(p) for p in projects]
-            proj_str = ", ".join(proj_list) if proj_list else "DOOM V3 Personal AI OS"
+        cog_ms = (time.time() - t_cog_start) * 1000.0
+        total_duration_ms = (time.time() - start_time) * 1000.0
 
-            if any(w in lower for w in ["who am i", "what is my name", "my profile"]):
-                role = user_profile.get_role()
-                final_text = (
-                    f"You are {name}, {role}. "
-                    f"You hold {access} security clearance. "
-                    f"Active Focus: {proj_str}. At your command, Boss."
-                )
-            elif any(w in lower for w in ["who are you", "what is your name"]):
-                final_text = f"I am DOOM V3, your sovereign Personal AI Operating System and autonomous companion. Standing by, Boss."
-            else:
-                final_text = f"Greetings, Boss {name}. All systems nominal and awaiting your command."
+        # Telemetry & Performance Profiling
+        print(
+            f"[PERF] Total: {total_duration_ms:.1f}ms | "
+            f"Cognition: {cognitive_state.telemetry.total_cognitive_ms:.1f}ms | "
+            f"Understand: {cognitive_state.telemetry.understanding_ms:.1f}ms | "
+            f"Reason: {cognitive_state.telemetry.reasoning_ms:.1f}ms | "
+            f"Decide: {cognitive_state.telemetry.decision_ms:.1f}ms | "
+            f"Plan: {cognitive_state.telemetry.planning_ms:.1f}ms | "
+            f"Exec: {cognitive_state.telemetry.execution_ms:.1f}ms | "
+            f"Verify: {cognitive_state.telemetry.verification_ms:.1f}ms"
+        )
 
-            perf["direct_ms"] = (time.time() - t_direct) * 1000.0
-            return self._finalize_and_log(
-                task=task,
-                user_prompt=user_prompt,
-                final_text=final_text,
-                observations=[],
-                verification={"verified": True, "status": "COMPLETED", "details": "Direct profile resolution."},
-                start_time=start_time,
-                step_descriptions=step_descriptions,
-                perf=perf,
-                termination_reason=TerminationReason.COMPLETED
+        final_text = cognitive_state.final_response
+        obs_canonical = [
+            CanonicalToolResult(
+                tool=o.tool,
+                success=o.success,
+                stdout=o.stdout,
+                stderr=o.stderr,
+                output=o.output,
+                exit_code=o.exit_code,
+                action=o.action,
+                artifact=o.artifacts[0] if o.artifacts else {}
             )
+            for o in cognitive_state.observations
+        ]
 
-        # ─────────────────────────────────────────────────────────────────────
-        # FAST-PATH 2: DETERMINISTIC TELEMETRY QUERY
-        # "Show my CPU, RAM and disk" -> Direct telemetry, ZERO python scripts!
-        # ─────────────────────────────────────────────────────────────────────
-        if plan.type == "QUERY" and plan.metadata.get("category") == "system_telemetry":
-            t_telemetry = time.time()
-            try:
-                cpu = psutil.cpu_percent(interval=0.1)
-                mem = psutil.virtual_memory().percent
-                disk = psutil.disk_usage("/").percent
-                final_text = (
-                    f"Workstation Telemetry:\n"
-                    f"• CPU Usage: {cpu}%\n"
-                    f"• RAM Usage: {mem}%\n"
-                    f"• Disk Usage: {disk}%\n"
-                    f"All hardware subsystems operating within optimal thermal thresholds, Boss."
+        # Step 3: Polish spoken response for TTS
+        spoken_text = self.verifier.polish_response(final_text, obs_canonical)
+
+        # Non-blocking voice playback in background thread
+        try:
+            import threading
+            from core.cinematic_voice import stop_speaking, speak
+            stop_speaking()
+            threading.Thread(target=speak, args=(spoken_text,), daemon=True).start()
+        except Exception as ve:
+            print(f"[VOICE] Deferred voice output: {ve}")
+
+        # PostgreSQL Audit Log
+        try:
+            from database.postgres_db import postgres_manager
+            if postgres_manager.is_connected():
+                used_tool_names = [o.tool for o in obs_canonical if o.action != "skip_redundant"]
+                postgres_manager.log_command(
+                    user_command=user_prompt,
+                    response_text=spoken_text,
+                    tools_used=used_tool_names,
+                    latency_ms=total_duration_ms
                 )
-            except Exception as e:
-                final_text = f"Workstation Telemetry encountered an error: {e}"
-
-            perf["telemetry_ms"] = (time.time() - t_telemetry) * 1000.0
-            return self._finalize_and_log(
-                task=task,
-                user_prompt=user_prompt,
-                final_text=final_text,
-                observations=[],
-                verification={"verified": True, "status": "COMPLETED", "details": "Direct hardware telemetry query."},
-                start_time=start_time,
-                step_descriptions=step_descriptions,
-                perf=perf,
-                termination_reason=TerminationReason.COMPLETED
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # MULTI-TURN AUTONOMOUS AGENT LOOP WITH LOOP CONTROL & RETRY LOGIC
-        # ─────────────────────────────────────────────────────────────────────
-        system_prompt = self.context_mgr.build_system_prompt()
-        schemas = self.tools.get_schemas()
-
-        if lang and lang != "en":
-            lang_names = {
-                "hi": "Hindi", "mr": "Marathi", "ta": "Tamil", "te": "Telugu",
-                "kn": "Kannada", "ml": "Malayalam", "gu": "Gujarati",
-                "bn": "Bengali", "pa": "Punjabi", "ur": "Urdu"
-            }
-            lang_name = lang_names.get(lang, lang)
-            system_prompt += f"\n\nIMPORTANT: Respond in {lang_name} language. Use native script if applicable."
-
-        observations: List[CanonicalToolResult] = []
-        called_signatures: List[str] = []
-        agent_step = 0
-        total_tool_calls = 0
-        current_context = user_prompt
-        last_llm_text = ""
-        termination_reason = TerminationReason.COMPLETED
-        retry_counts: Dict[str, int] = {}
-        # V3.2: Reset DecisionEngine per-action failure counts for this new task
-        self.decision_eng.reset()
-
-        while agent_step < self.max_agent_steps and total_tool_calls < self.max_tool_calls:
-            agent_step += 1
-            state_machine.transition_to(DoomState.THINKING, f"Reasoning (turn {agent_step})", task_id=task.task_id)
-
-            # Route model
-            t_route_start = time.time()
-            provider = self.router.route(plan.type)
-            perf["routing_ms"] += (time.time() - t_route_start) * 1000.0
-            task_engine.record_tool_call("", model_name=provider.name)
-
-            t_llm = time.time()
-            try:
-                llm_response = self.router.generate(
-                    prompt=current_context,
-                    system_prompt=system_prompt,
-                    tools=schemas,
-                    task_type=plan.type
-                )
-            except NoCapableProviderError as e:
-                # V3.3: No capable provider available - pause task
-                print(f"[DOOM CORE] [PROVIDER OUTAGE] No capable provider for {plan.type}: {e}")
-                task_engine.pause_task(f"NO_CAPABLE_MODEL_AVAILABLE: {e.task_type}")
-                termination_reason = TerminationReason.UNRECOVERABLE_ERROR
-                # Return user-facing response
-                return f"Boss, the task is paused because no capable reasoning provider is currently available for {e.task_type}. The completed work has been saved and the task can resume from the current step when a provider is available."
-            perf["llm_ms"] += (time.time() - t_llm) * 1000.0
-
-            if llm_response.text:
-                last_llm_text = llm_response.text
-
-            # If LLM did not request tools, we have reached the conclusion
-            if not llm_response.tool_calls:
-                break
-
-            # Execute tool calls with Pre-Execution Decision & Idempotency
-            turn_observations = []
-            
-            # Extract expected filename from user prompt for artifact identity enforcement
-            expected_filename = extract_expected_filename(user_prompt)
-            if expected_filename:
-                print(f"[DOOM CORE] [ARTIFACT IDENTITY] Enforcing exact filename: {expected_filename}")
-
-            for tc in llm_response.tool_calls:
-                tool_name = tc.get("name", "")
-                tool_args = tc.get("arguments", {})
-                if not tool_name:
-                    continue
-
-                # Correct filename in tool args to match user's explicit request
-                if expected_filename:
-                    tool_args = correct_tool_filename(tool_name, tool_args, expected_filename)
-
-                tool_obj = self.tools.get_tool(tool_name)
-
-                # 1. Pre-Execution Decision: Check for redundancy and mutual exclusivity
-                should_run, skip_reason = self.decision_eng.should_execute(
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    executed_observations=observations,
-                    already_called_signatures=called_signatures
-                )
-
-                if not should_run:
-                    print(f"[AGENT] Skipping redundant tool: {tool_name}\nReason: {skip_reason}")
-                    skip_obs = CanonicalToolResult(
-                        tool=tool_name,
-                        success=True,
-                        action="skip_redundant",
-                        target="",
-                        output=f"[SKIPPED REDUNDANT] {skip_reason}",
-                        metadata={"skip_reason": skip_reason}
-                    )
-                    observations.append(skip_obs)
-                    turn_observations.append(f"Tool '{tool_name}' skipped: {skip_reason}")
-                    continue
-
-                # 2. Risk check
-                if tool_obj and tool_obj.get_effective_risk() == RiskLevel.CRITICAL:
-                    print(f"[DOOM SECURITY] Tool '{tool_name}' requires explicit authorization.")
-                    task_engine.require_user_approval(tool_name, tool_args)
-                    termination_reason = TerminationReason.USER_APPROVAL_REQUIRED
-                    return f"Action '{tool_name}' requires your authorization, Boss. Please confirm in the DOOM HUD."
-
-                # 3. Execution with retry logic
-                sig = self.decision_eng.compute_action_signature(tool_name, tool_args)
-                called_signatures.append(sig)
-
-                retry_count = 0
-                tool_success = False
-                last_canonical_res = None
-
-                while retry_count <= self.max_retries_per_action and not tool_success:
-                    if retry_count > 0:
-                        print(f"[DOOM CORE] [RETRY {retry_count}/{self.max_retries_per_action}] {tool_name}")
-                        time.sleep(0.5)  # Brief backoff
-
-                    state_machine.transition_to(DoomState.EXECUTING, f"Running: {tool_name} (attempt {retry_count + 1})", task_id=task.task_id)
-                    print(f"[DOOM CORE] [TOOL #{total_tool_calls + 1}] {tool_name} with {tool_args}")
-
-                    t_t_start = time.time()
-                    canonical_res: CanonicalToolResult = self.tools.execute_tool(tool_name, tool_args)
-                    t_duration = (time.time() - t_t_start) * 1000.0
-                    perf["tool_ms"] += t_duration
-
-                    # Check for timeout
-                    if canonical_res.error_type == "TIMEOUT":
-                        retry_count += 1
-                        retry_counts[tool_name] = retry_count
-                        if retry_count > self.max_retries_per_action:
-                            print(f"[DOOM CORE] [TOOL TIMEOUT] {tool_name} exceeded max retries")
-                            termination_reason = TerminationReason.TIMEOUT
-                            last_canonical_res = canonical_res
-                            break
-                        continue
-
-                    # Check for other failures
-                    if not canonical_res.success:
-                        retry_count += 1
-                        retry_counts[tool_name] = retry_count
-                        # V3.2: Notify DecisionEngine so its should_execute() gate fires next time
-                        self.decision_eng.record_failure(sig)
-                        if retry_count > self.max_retries_per_action:
-                            print(f"[DOOM CORE] [TOOL FAILED] {tool_name} exceeded max retries")
-                            termination_reason = TerminationReason.MAX_RETRIES_REACHED
-                            last_canonical_res = canonical_res
-                            break
-                        continue
-
-                    # Success
-                    tool_success = True
-                    total_tool_calls += 1
-                    last_canonical_res = canonical_res
-                    observations.append(canonical_res)
-
-                    # Advance step in task engine with artifact tracking
-                    step_idx = min(agent_step, len(step_descriptions))
-                    artifacts = canonical_res.artifact if canonical_res.artifact else None
-                    task_engine.advance_step(
-                        step_index=step_idx,
-                        tool_name=tool_name,
-                        output=canonical_res.output,
-                        success=canonical_res.success,
-                        artifacts=[artifacts] if artifacts else None
-                    )
-
-                    # V3.3: Save checkpoint after each tool execution
-                    t_cp_start = time.time()
-                    task_engine._save_checkpoint()
-                    perf["checkpoint_ms"] += (time.time() - t_cp_start) * 1000.0
-
-                    # Format structured observation for model context
-                    obs_summary = canonical_res.stdout or canonical_res.output
-                    if not canonical_res.success and canonical_res.stderr:
-                        obs_summary = f"ERROR: {canonical_res.stderr}"
-                    turn_observations.append(f"Tool '{tool_name}' result: {obs_summary}")
-
-                if not tool_success and last_canonical_res:
-                    observations.append(last_canonical_res)
-                    if termination_reason in (TerminationReason.TIMEOUT, TerminationReason.MAX_RETRIES_REACHED):
-                        break
-
-            if termination_reason in (TerminationReason.TIMEOUT, TerminationReason.MAX_RETRIES_REACHED, TerminationReason.USER_APPROVAL_REQUIRED):
-                break
-
-            # Feed observations back into context for next reasoning turn
-            if turn_observations:
-                current_context += f"\n\n[Observations at Step {agent_step}]:\n" + "\n".join(turn_observations)
-                current_context += "\nBased on these tool results, decide the next action or provide the complete final response."
-
-        # Check termination conditions
-        if agent_step >= self.max_agent_steps:
-            termination_reason = TerminationReason.MAX_STEPS_REACHED
-        elif total_tool_calls >= self.max_tool_calls:
-            termination_reason = TerminationReason.MAX_STEPS_REACHED  # Same as max steps for practical purposes
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 5: Ground-Truth Verification
-        # ─────────────────────────────────────────────────────────────────────
-        t_v_start = time.time()
-        state_machine.transition_to(DoomState.VERIFYING, "Verifying results...", task_id=task.task_id)
-        verification = self.verifier.verify_ground_truth(user_prompt, observations)
-        perf["verification_ms"] = (time.time() - t_v_start) * 1000.0
-        print(f"[DOOM CORE] [VERIFICATION] Status: {verification['status']} ({verification['details']})")
-
-        # If verification failed and we have retries left, attempt self-healing (for AUTONOMOUS plans)
-        if not verification.get("verified", True) and plan.type == "AUTONOMOUS":
-            # Self-healing logic would go here - the DecisionEngine already prevents duplicate writes
-            # The LLM will naturally try to fix based on the error in the context
+        except Exception:
             pass
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 6: Single Synthesized Final Response Generation (NO raw concatenation)
-        # ─────────────────────────────────────────────────────────────────────
-        t_synth = time.time()
-        final_text = self._synthesize_final_response(
-            user_prompt=user_prompt,
-            observations=observations,
-            plan=plan,
-            last_llm_text=last_llm_text,
-            verification=verification
-        )
-        perf["synthesis_ms"] = (time.time() - t_synth) * 1000.0
-
-        return self._finalize_and_log(
-            task=task,
-            user_prompt=user_prompt,
-            final_text=final_text,
-            observations=observations,
-            verification=verification,
-            start_time=start_time,
-            step_descriptions=step_descriptions,
-            perf=perf,
-            termination_reason=termination_reason
-        )
+        print(f"[DOOM CORE] [FINAL RESPONSE] {spoken_text}")
+        return spoken_text
 
     def _synthesize_final_response(
         self,

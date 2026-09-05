@@ -172,6 +172,9 @@ class TaskEngine:
     def active_task(self) -> Optional[Task]:
         return self._active_task
 
+    def get_active_task(self) -> Optional[Task]:
+        return self._active_task
+
     def create_task(self, goal: str, task_type: str = "QUERY") -> Task:
         """Initializes a new autonomous task and marks it active."""
         task_id = f"task_{int(time.time())}_{uuid.uuid4().hex[:6]}"
