@@ -15,6 +15,7 @@ from core.decision_engine import decision_engine
 from core.path_resolver import canonical_path
 from tools.base import RiskLevel, CanonicalToolResult, ToolResult, TerminationReason, FinalResponseStatus, MAX_AGENT_STEPS, MAX_TOOL_CALLS, MAX_RETRIES_PER_ACTION
 from memory import user_profile, short_term_memory, episodic_memory
+from core.cognition import cognitive_engine, CognitiveEngine
 
 
 def extract_expected_filename(user_prompt: str) -> Optional[str]:
@@ -90,6 +91,7 @@ class DOOMCore:
         self.tools = tool_registry
         self.verifier = verifier
         self.decision_eng = decision_engine
+        self.cognition = cognitive_engine
         self.max_agent_steps = MAX_AGENT_STEPS
         self.max_tool_calls = MAX_TOOL_CALLS
         self.max_retries_per_action = MAX_RETRIES_PER_ACTION

@@ -31,6 +31,7 @@ from tools import ALL_TOOLS
 from tools.workstation_modes import CodeModeTool, DailyBriefingTool, StandupReportTool, LockdownTool, ScreenVisionTool
 from core.sound_detector import sound_detector
 from core.listen import listen_for_command
+from core.cognition import cognitive_engine
 
 app = FastAPI(title="DOOM V3 — Personal AI Operating System", version="3.0.0")
 
@@ -73,7 +74,8 @@ async def on_server_startup():
             except Exception:
                 pass
     task_engine.set_state_broadcaster(broadcast_task_state)
-    print("[DASHBOARD] [OK] Task state broadcaster registered")
+    cognitive_engine.set_broadcaster(broadcast_task_state)
+    print("[DASHBOARD] [OK] Task and Cognitive state broadcasters registered")
 
 @app.on_event("shutdown")
 async def on_server_shutdown():
