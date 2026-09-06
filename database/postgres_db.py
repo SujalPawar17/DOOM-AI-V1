@@ -10,6 +10,8 @@ try:
 except Exception:
     pass
 
+from contextlib import contextmanager
+
 try:
     import psycopg2
     from psycopg2 import pool, extras
@@ -17,6 +19,21 @@ try:
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False
+
+
+class DatabaseConnectionError(Exception):
+    """Raised when unable to establish or checkout a database connection."""
+    pass
+
+
+class LockTimeoutError(Exception):
+    """Raised when a database row-level lock timeout occurs."""
+    pass
+
+
+class DeadlockDetectedError(Exception):
+    """Raised when a PostgreSQL deadlock (error code 40P01) is detected."""
+    pass
 
 
 class PostgresManager:
@@ -220,12 +237,24 @@ class PostgresManager:
                 importance_before REAL,
                 importance_after REAL,
                 metadata JSONB DEFAULT '{}',
+                idempotency_key VARCHAR(100),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_lifecycle_mem_id ON memory_lifecycle_events(memory_id);",
             "CREATE INDEX IF NOT EXISTS idx_lifecycle_created ON memory_lifecycle_events(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_lifecycle_task ON memory_lifecycle_events(task_id);",
+            "ALTER TABLE memory_lifecycle_events ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(100);",
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_idempotency ON memory_lifecycle_events(idempotency_key);",
+            # V5.3.2: Status CHECK constraint on memory_records
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_memory_status') THEN
+                    ALTER TABLE memory_records ADD CONSTRAINT chk_memory_status CHECK (status IN ('PENDING_VERIFICATION', 'ACTIVE', 'SUPERSEDED', 'ARCHIVED', 'DELETED'));
+                END IF;
+            END $$;
+            """,
         ]
 
         conn = self.get_connection()
@@ -315,6 +344,47 @@ class PostgresManager:
             conn.close()
         except Exception:
             pass
+
+    @contextmanager
+    def transaction(self, lock_timeout_ms: int = 3000):
+        """
+        V5.3.2: Transaction context manager for atomic lifecycle state changes.
+        - Checks out exactly one connection from the pool.
+        - Enforces explicit transaction boundaries (BEGIN ... COMMIT/ROLLBACK).
+        - Sets lock_timeout to prevent indefinite waiting.
+        - Guarantees rollback on any exception before releasing the connection.
+        - Yields the connection to the caller.
+        """
+        conn = self.get_connection()
+        if not conn:
+            raise DatabaseConnectionError("Failed to acquire connection from pool for transaction.")
+
+        committed = False
+        try:
+            with conn.cursor() as cur:
+                if lock_timeout_ms and lock_timeout_ms > 0:
+                    cur.execute(f"SET LOCAL lock_timeout = '{int(lock_timeout_ms)}ms';")
+            yield conn
+            conn.commit()
+            committed = True
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            err_str = str(e).lower()
+            if "lock_timeout" in err_str or "canceling statement due to lock timeout" in err_str:
+                raise LockTimeoutError(f"Database lock timeout after {lock_timeout_ms}ms: {e}") from e
+            elif "deadlock detected" in err_str:
+                raise DeadlockDetectedError(f"Database deadlock detected: {e}") from e
+            raise
+        finally:
+            if not committed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            self.release_connection(conn)
 
     def is_connected(self) -> bool:
         """Health check for active database connection."""

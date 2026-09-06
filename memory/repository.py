@@ -208,27 +208,28 @@ class MemoryRepository:
     # Update / Status transitions
     # ------------------------------------------------------------------
 
-    def update_status(self, memory_id: str, new_status: MemoryStatus) -> bool:
-        """Update only the status field of a memory record."""
-        pg = self._get_manager()
-        conn = pg.get_connection()
-        if not conn:
-            return False
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE memory_records
-                    SET status = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE memory_id = %s;
-                """, (new_status.value, memory_id))
-            conn.commit()
-            return True
-        except Exception as e:
-            conn.rollback()
-            print(f"[MEMORY REPO] update_status failed for {memory_id}: {e}")
-            return False
-        finally:
-            pg.release_connection(conn)
+    def update_status(
+        self,
+        memory_id: str,
+        new_status: MemoryStatus,
+        reason: str = "Repository status update",
+        actor: Any = "SYSTEM",
+    ) -> bool:
+        """
+        V5.3.2: Update status of a memory record.
+        Routes through the authoritative MemoryLifecycleEngine to enforce
+        pessimistic row locking, transition validation, atomic state + audit commit,
+        and close unaudited state modification bypasses.
+        """
+        from memory.lifecycle import lifecycle_engine
+        res = lifecycle_engine.transition_memory(
+            memory_id=memory_id,
+            target_status=new_status,
+            reason=reason,
+            actor=actor,
+            raise_on_error=False,
+        )
+        return res.success
 
     def update_content(self, memory_id: str, new_content: str) -> bool:
         """Update the content of an existing memory record."""
@@ -412,14 +413,14 @@ class MemoryRepository:
                         source_event_id, task_id, correlation_id,
                         confidence_before, confidence_after,
                         importance_before, importance_after,
-                        metadata, created_at
+                        metadata, idempotency_key, created_at
                     ) VALUES (
                         %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s, %s,
                         %s, %s,
                         %s, %s,
-                        %s, %s
+                        %s, %s, %s
                     )
                     ON CONFLICT (event_id) DO NOTHING;
                 """, (
@@ -438,6 +439,7 @@ class MemoryRepository:
                     event.importance_before,
                     event.importance_after,
                     _serialize_dict(event.metadata),
+                    getattr(event, "idempotency_key", None),
                     event.created_at,
                 ))
             conn.commit()

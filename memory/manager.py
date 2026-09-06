@@ -154,20 +154,36 @@ class MemoryManager:
                 )
                 for old_record in conflicts:
                     if old_record.memory_id != record.memory_id:
-                        # Supersede: store new record + mark old as SUPERSEDED
-                        result = self.store(record)
-                        if result:
-                            memory_repository.update_status(old_record.memory_id, MemoryStatus.SUPERSEDED)
+                        # V5.3.2 Atomic 1:1 Supersession via MemoryLifecycleEngine
+                        trans_res = memory_lifecycle.engine.supersede_memory(
+                            old_memory_id=old_record.memory_id,
+                            new_record=record,
+                            reason=f"Superseded by newer {record.memory_type.value}",
+                            actor="SYSTEM",
+                        )
+                        if trans_res.success:
                             self.telemetry.supersede_count += 1
                             self._broadcast("MEMORY_SUPERSEDED",
                                            old_id=old_record.memory_id,
                                            new_id=record.memory_id)
-                        return result
+                            return record
+                        else:
+                            print(f"[MEMORY MANAGER] Supersession failed: {trans_res.error}")
+                            return None
         except Exception as e:
             print(f"[MEMORY MANAGER] Supersession check failed (non-fatal): {e}")
 
         # No conflicts found — normal store
         return self.store(record)
+
+    def store_and_supersede(
+        self,
+        record: MemoryRecord,
+        conflict_keywords: Optional[List[str]] = None,
+    ) -> Optional[MemoryRecord]:
+        """V5.3.2 alias for store_with_supersession."""
+        return self.store_with_supersession(record=record, conflict_keywords=conflict_keywords)
+
 
     # ------------------------------------------------------------------
     # Retrieve

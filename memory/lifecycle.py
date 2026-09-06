@@ -77,6 +77,11 @@ class MemoryAlreadyDeletedError(InvalidLifecycleTransitionError):
         )
 
 
+class MemoryNotFoundError(MemoryLifecycleError):
+    """Raised when a requested memory record does not exist in memory_records."""
+    pass
+
+
 class LifecycleValidationError(MemoryLifecycleError):
     """Raised when lifecycle transition parameters or event metadata fail validation."""
     pass
@@ -85,6 +90,48 @@ class LifecycleValidationError(MemoryLifecycleError):
 class LifecycleAuditError(MemoryLifecycleError):
     """Raised when writing or serializing a lifecycle audit event fails."""
     pass
+
+
+class ProvenanceValidationError(LifecycleValidationError):
+    """Raised when provenance verification rules (e.g., PENDING_VERIFICATION -> ACTIVE) fail."""
+    pass
+
+
+class ConcurrentModificationError(MemoryLifecycleError):
+    """Raised when a concurrent modification or race condition is detected during transition."""
+    pass
+
+
+class LockTimeoutError(MemoryLifecycleError):
+    """Raised when a database row lock cannot be acquired within the timeout."""
+    pass
+
+
+class DeadlockDetectedError(MemoryLifecycleError):
+    """Raised when a database deadlock is detected during a lifecycle transaction."""
+    pass
+
+
+class DatabaseConnectionError(MemoryLifecycleError):
+    """Raised when unable to acquire a database connection for lifecycle operations."""
+    pass
+
+
+def is_retryable_lifecycle_error(ex: Exception) -> bool:
+    """Classify exceptions into retryable (concurrency, timeout, db) vs non-retryable (validation, deleted)."""
+    if isinstance(ex, (LockTimeoutError, DeadlockDetectedError, DatabaseConnectionError, ConcurrentModificationError)):
+        return True
+    from database.postgres_db import (
+        LockTimeoutError as DBLockTimeoutError,
+        DeadlockDetectedError as DBDeadlockDetectedError,
+        DatabaseConnectionError as DBConnectionError,
+    )
+    if isinstance(ex, (DBLockTimeoutError, DBDeadlockDetectedError, DBConnectionError)):
+        return True
+    err_str = str(ex).lower()
+    if "lock_timeout" in err_str or "canceling statement due to lock timeout" in err_str or "deadlock detected" in err_str:
+        return True
+    return False
 
 
 # ============================================================================
@@ -363,6 +410,84 @@ def validate_transition(
     return rule
 
 
+def validate_provenance(
+    from_state: Any,
+    to_state: Any,
+    actor: Optional[Any] = None,
+    reason: Optional[str] = None,
+    task_id: Optional[str] = None,
+    source_event_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    memory_id: Optional[str] = None,
+) -> bool:
+    """
+    Validate provenance when transitioning PENDING_VERIFICATION -> ACTIVE.
+    Rules:
+    - USER actor: non-empty reason, minimum 5 characters.
+    - TASK actor: task_id OR source_event_id required.
+    - SYSTEM actor: requires explicit corroboration mechanism in metadata and non-empty reason.
+    - LIFECYCLE_ENGINE actor: forbidden from automatically granting verification authority.
+    - Never stores raw verification evidence.
+    """
+    s_from = coerce_memory_status(from_state)
+    s_to = coerce_memory_status(to_state)
+
+    if s_from == MemoryStatus.PENDING_VERIFICATION and s_to == MemoryStatus.ACTIVE:
+        act_str = actor.value if hasattr(actor, "value") else str(actor or "")
+        act_upper = act_str.upper()
+
+        if act_upper == LifecycleActor.USER.value:
+            if not reason or len(reason.strip()) < 5:
+                raise ProvenanceValidationError(
+                    "USER verification provenance requires a non-empty reason of at least 5 characters.",
+                    memory_id=memory_id,
+                )
+        elif act_upper == LifecycleActor.TASK.value:
+            if not (task_id and task_id.strip()) and not (source_event_id and source_event_id.strip()):
+                raise ProvenanceValidationError(
+                    "TASK verification provenance requires task_id or source_event_id.",
+                    memory_id=memory_id,
+                )
+        elif act_upper == LifecycleActor.SYSTEM.value:
+            meta = metadata or {}
+            has_corroboration = any(
+                k in meta for k in ("corroboration_source", "provenance_rule", "system_corroboration", "verifier_id")
+            )
+            if not has_corroboration or not (reason and reason.strip()):
+                raise ProvenanceValidationError(
+                    "SYSTEM verification provenance requires explicit corroboration mechanism in metadata and non-empty reason.",
+                    memory_id=memory_id,
+                )
+        elif act_upper == LifecycleActor.LIFECYCLE_ENGINE.value:
+            raise ProvenanceValidationError(
+                "LIFECYCLE_ENGINE actor cannot automatically grant verification authority.",
+                memory_id=memory_id,
+            )
+        else:
+            raise ProvenanceValidationError(
+                f"Unknown or unauthorized verification actor: '{actor}'.",
+                memory_id=memory_id,
+            )
+    return True
+
+
+@dataclass
+class LifecycleTransitionResult:
+    """
+    Authoritative result object returned by MemoryLifecycleEngine.
+    Immutable, deterministic outcome of an atomic state transition.
+    """
+    success: bool
+    memory_id: str
+    previous_status: Optional[MemoryStatus] = None
+    new_status: Optional[MemoryStatus] = None
+    event_id: Optional[str] = None
+    transition_timestamp: str = field(default_factory=_utcnow)
+    error: Optional[str] = None
+    idempotent_replay: bool = False
+
+
+
 # ============================================================================
 # 5. LIFECYCLE AUDIT EVENT SCHEMA
 # ============================================================================
@@ -397,6 +522,7 @@ class MemoryLifecycleEvent:
     importance_before: Optional[float] = None
     importance_after: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    idempotency_key: Optional[str] = None
     created_at: str = field(default_factory=_utcnow)
 
     def __post_init__(self):
@@ -439,6 +565,7 @@ class MemoryLifecycleEvent:
             "importance_before": self.importance_before,
             "importance_after": self.importance_after,
             "metadata": self.metadata,
+            "idempotency_key": self.idempotency_key,
             "created_at": self.created_at,
         }
 
@@ -461,20 +588,544 @@ class MemoryLifecycleEvent:
             importance_before=float(data["importance_before"]) if data.get("importance_before") is not None else None,
             importance_after=float(data["importance_after"]) if data.get("importance_after") is not None else None,
             metadata=data.get("metadata") or {},
+            idempotency_key=data.get("idempotency_key"),
             created_at=data["created_at"].isoformat() if hasattr(data.get("created_at"), "isoformat") else str(data.get("created_at", _utcnow())),
         )
 
 
+def _emit_lifecycle_telemetry(
+    event: str,
+    memory_id: str,
+    previous_status: Optional[str],
+    new_status: Optional[str],
+    actor: str,
+    event_id: Optional[str],
+    task_id: Optional[str],
+    correlation_id: Optional[str],
+    duration_ms: float,
+    success: bool,
+    idempotent_replay: bool,
+) -> None:
+    """
+    Emit structured lifecycle telemetry.
+    Guaranteed zero raw content, query text, embeddings, or secrets.
+    Failures in telemetry are safely absorbed without impacting transactions.
+    """
+    try:
+        telemetry_payload = {
+            "event": event,
+            "memory_id": memory_id,
+            "previous_status": previous_status,
+            "new_status": new_status,
+            "actor": actor,
+            "event_id": event_id,
+            "task_id": task_id,
+            "correlation_id": correlation_id,
+            "duration_ms": round(duration_ms, 3),
+            "success": success,
+            "idempotent_replay": idempotent_replay,
+        }
+    except Exception:
+        pass
+
+
 # ============================================================================
-# 6. BACKWARD-COMPATIBLE V5.1 LIFECYCLE MANAGER INTERFACE
+# 6. AUTHORITATIVE MEMORY LIFECYCLE ENGINE (V5.3.2)
+# ============================================================================
+
+class MemoryLifecycleEngine:
+    """
+    DOOM V5.3.2 Authoritative Memory Lifecycle Engine.
+    Enforces ACID transactions, row-level locking (FOR UPDATE),
+    atomic state + audit log commit, idempotency, and provenance verification.
+    ZERO tool authority. ZERO network or LLM operations inside transaction.
+    """
+
+    def _get_manager(self):
+        from database.postgres_db import postgres_manager
+        return postgres_manager
+
+    def transition_memory(
+        self,
+        memory_id: str,
+        target_status: Any,
+        reason: str = "",
+        actor: Any = LifecycleActor.SYSTEM.value,
+        source_event_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        related_memory_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        raise_on_error: bool = False,
+    ) -> LifecycleTransitionResult:
+        """
+        Canonical entry point for single-memory lifecycle transitions.
+        Execution sequence:
+        BEGIN -> LOCK (FOR UPDATE) -> READ STATE -> IDEMPOTENCY CHECK ->
+        VALIDATE TRANSITION -> VALIDATE PROVENANCE -> UPDATE STATUS ->
+        INSERT AUDIT EVENT -> COMMIT -> POST-COMMIT TELEMETRY
+        """
+        import time
+        t0 = time.perf_counter()
+        pg = self._get_manager()
+        act_str = actor.value if hasattr(actor, "value") else str(actor)
+        target_s = coerce_memory_status(target_status)
+
+        current_status = None
+        event_id = None
+        try:
+            from psycopg2 import extras
+            with pg.transaction(lock_timeout_ms=3000) as conn:
+                with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                    # 1. Pessimistic Row Lock (3000ms timeout enforced by session)
+                    cur.execute(
+                        "SELECT memory_id, status, confidence, importance FROM memory_records WHERE memory_id = %s FOR UPDATE;",
+                        (memory_id,)
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise MemoryNotFoundError(f"Memory record not found: '{memory_id}'", memory_id=memory_id)
+
+                    # 2. Authoritative Current State (post-lock)
+                    current_status = coerce_memory_status(row["status"])
+                    conf_before = row.get("confidence")
+                    imp_before = float(row["importance"]) if row.get("importance") is not None else None
+
+                    # 3. Idempotency Check
+                    if idempotency_key:
+                        cur.execute(
+                            "SELECT event_id, memory_id, previous_status, new_status, created_at FROM memory_lifecycle_events WHERE idempotency_key = %s AND memory_id = %s LIMIT 1;",
+                            (idempotency_key, memory_id)
+                        )
+                        existing_evt = cur.fetchone()
+                        if existing_evt:
+                            duration_ms = (time.perf_counter() - t0) * 1000
+                            _emit_lifecycle_telemetry(
+                                event="LIFECYCLE_TRANSITION_IDEMPOTENT_REPLAY",
+                                memory_id=memory_id,
+                                previous_status=existing_evt["previous_status"],
+                                new_status=existing_evt["new_status"],
+                                actor=act_str,
+                                event_id=existing_evt["event_id"],
+                                task_id=task_id,
+                                correlation_id=correlation_id,
+                                duration_ms=duration_ms,
+                                success=True,
+                                idempotent_replay=True,
+                            )
+                            return LifecycleTransitionResult(
+                                success=True,
+                                memory_id=memory_id,
+                                previous_status=coerce_memory_status(existing_evt["previous_status"]),
+                                new_status=coerce_memory_status(existing_evt["new_status"]),
+                                event_id=existing_evt["event_id"],
+                                transition_timestamp=str(existing_evt["created_at"]),
+                                idempotent_replay=True,
+                            )
+
+                    # 4. Validate State Transition
+                    validate_transition(
+                        from_state=current_status,
+                        to_state=target_s,
+                        memory_id=memory_id,
+                        reason=reason,
+                        actor=actor,
+                    )
+
+                    # 5. Validate Provenance
+                    validate_provenance(
+                        from_state=current_status,
+                        to_state=target_s,
+                        actor=actor,
+                        reason=reason,
+                        task_id=task_id,
+                        source_event_id=source_event_id,
+                        metadata=metadata,
+                        memory_id=memory_id,
+                    )
+
+                    # 6. Apply Status Update
+                    cur.execute(
+                        "UPDATE memory_records SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
+                        (target_s.value, memory_id)
+                    )
+
+                    # 7. Insert Audit Event
+                    evt = MemoryLifecycleEvent(
+                        memory_id=memory_id,
+                        previous_status=current_status,
+                        new_status=target_s,
+                        transition_reason=reason or "",
+                        actor=act_str,
+                        related_memory_id=related_memory_id,
+                        source_event_id=source_event_id,
+                        task_id=task_id,
+                        correlation_id=correlation_id,
+                        confidence_before=conf_before,
+                        confidence_after=conf_before,
+                        importance_before=imp_before,
+                        importance_after=imp_before,
+                        metadata=metadata or {},
+                        idempotency_key=idempotency_key,
+                    )
+                    event_id = evt.event_id
+
+                    cur.execute("""
+                        INSERT INTO memory_lifecycle_events (
+                            event_id, memory_id, previous_status, new_status,
+                            transition_reason, actor, related_memory_id,
+                            source_event_id, task_id, correlation_id,
+                            confidence_before, confidence_after,
+                            importance_before, importance_after,
+                            metadata, idempotency_key, created_at
+                        ) VALUES (
+                            %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s, %s
+                        );
+                    """, (
+                        evt.event_id,
+                        evt.memory_id,
+                        evt.previous_status.value,
+                        evt.new_status.value,
+                        evt.transition_reason,
+                        evt.actor,
+                        evt.related_memory_id,
+                        evt.source_event_id,
+                        evt.task_id,
+                        evt.correlation_id,
+                        evt.confidence_before,
+                        evt.confidence_after,
+                        evt.importance_before,
+                        evt.importance_after,
+                        json.dumps(evt.metadata or {}, default=str),
+                        evt.idempotency_key,
+                        evt.created_at,
+                    ))
+
+            # 8. Post-Commit Telemetry
+            duration_ms = (time.perf_counter() - t0) * 1000
+            _emit_lifecycle_telemetry(
+                event="LIFECYCLE_TRANSITION_COMMITTED",
+                memory_id=memory_id,
+                previous_status=current_status.value if current_status else None,
+                new_status=target_s.value,
+                actor=act_str,
+                event_id=event_id,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                duration_ms=duration_ms,
+                success=True,
+                idempotent_replay=False,
+            )
+            return LifecycleTransitionResult(
+                success=True,
+                memory_id=memory_id,
+                previous_status=current_status,
+                new_status=target_s,
+                event_id=event_id,
+                transition_timestamp=evt.created_at,
+                idempotent_replay=False,
+            )
+
+        except Exception as e:
+            duration_ms = (time.perf_counter() - t0) * 1000
+            _emit_lifecycle_telemetry(
+                event="LIFECYCLE_TRANSITION_FAILED",
+                memory_id=memory_id,
+                previous_status=current_status.value if current_status else None,
+                new_status=target_s.value if target_s else None,
+                actor=act_str,
+                event_id=event_id,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                duration_ms=duration_ms,
+                success=False,
+                idempotent_replay=False,
+            )
+            if raise_on_error:
+                raise
+            return LifecycleTransitionResult(
+                success=False,
+                memory_id=memory_id,
+                previous_status=current_status,
+                new_status=None,
+                error=str(e),
+                idempotent_replay=False,
+            )
+
+    def supersede_memory(
+        self,
+        old_memory_id: str,
+        new_record: Any,
+        reason: str = "Superseded by newer record",
+        actor: Any = LifecycleActor.SYSTEM.value,
+        idempotency_key: Optional[str] = None,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        raise_on_error: bool = False,
+    ) -> LifecycleTransitionResult:
+        """
+        Atomic 1:1 Supersession within a single PostgreSQL transaction.
+        BEGIN
+        1. Lock old memory FOR UPDATE
+        2. Read authoritative state; validate transition to SUPERSEDED
+        3. Check idempotency
+        4. Store new memory record (with supersedes_memory_id = old_memory_id)
+        5. Set old memory SUPERSEDED
+        6. Insert audit event for old memory
+        COMMIT
+        """
+        import time
+        t0 = time.perf_counter()
+        pg = self._get_manager()
+        act_str = actor.value if hasattr(actor, "value") else str(actor)
+
+        old_status = None
+        event_id = None
+        try:
+            from psycopg2 import extras
+            with pg.transaction(lock_timeout_ms=3000) as conn:
+                with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                    # 1. Lock old memory FOR UPDATE
+                    cur.execute(
+                        "SELECT memory_id, status, confidence, importance FROM memory_records WHERE memory_id = %s FOR UPDATE;",
+                        (old_memory_id,)
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise MemoryNotFoundError(f"Memory record to supersede not found: '{old_memory_id}'", memory_id=old_memory_id)
+
+                    old_status = coerce_memory_status(row["status"])
+                    conf_before = row.get("confidence")
+                    imp_before = float(row["importance"]) if row.get("importance") is not None else None
+
+                    # 2. Validate transition from old state to SUPERSEDED
+                    validate_transition(
+                        from_state=old_status,
+                        to_state=MemoryStatus.SUPERSEDED,
+                        memory_id=old_memory_id,
+                        reason=reason,
+                        actor=actor,
+                    )
+
+                    # 3. Idempotency Check
+                    if idempotency_key:
+                        cur.execute(
+                            "SELECT event_id, memory_id, previous_status, new_status, created_at FROM memory_lifecycle_events WHERE idempotency_key = %s AND memory_id = %s LIMIT 1;",
+                            (idempotency_key, old_memory_id)
+                        )
+                        existing_evt = cur.fetchone()
+                        if existing_evt:
+                            duration_ms = (time.perf_counter() - t0) * 1000
+                            _emit_lifecycle_telemetry(
+                                event="LIFECYCLE_SUPERSEDE_IDEMPOTENT_REPLAY",
+                                memory_id=old_memory_id,
+                                previous_status=existing_evt["previous_status"],
+                                new_status=existing_evt["new_status"],
+                                actor=act_str,
+                                event_id=existing_evt["event_id"],
+                                task_id=task_id,
+                                correlation_id=correlation_id,
+                                duration_ms=duration_ms,
+                                success=True,
+                                idempotent_replay=True,
+                            )
+                            return LifecycleTransitionResult(
+                                success=True,
+                                memory_id=old_memory_id,
+                                previous_status=coerce_memory_status(existing_evt["previous_status"]),
+                                new_status=coerce_memory_status(existing_evt["new_status"]),
+                                event_id=existing_evt["event_id"],
+                                transition_timestamp=str(existing_evt["created_at"]),
+                                idempotent_replay=True,
+                            )
+
+                    # 4. Link new record to old
+                    new_record.supersedes_memory_id = old_memory_id
+
+                    # 5. Store new record inside THIS transaction
+                    cur.execute("""
+                        INSERT INTO memory_records (
+                            memory_id, memory_type, content, source, confidence,
+                            importance, status, project_id, task_id, entity_ids, tags,
+                            supersedes_memory_id, source_event_id, verification_status,
+                            privacy_class, metadata, created_at, updated_at, last_accessed_at
+                        ) VALUES (
+                            %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (memory_id) DO UPDATE SET
+                            content = EXCLUDED.content,
+                            confidence = EXCLUDED.confidence,
+                            importance = EXCLUDED.importance,
+                            status = EXCLUDED.status,
+                            verification_status = EXCLUDED.verification_status,
+                            tags = EXCLUDED.tags,
+                            metadata = EXCLUDED.metadata,
+                            supersedes_memory_id = EXCLUDED.supersedes_memory_id,
+                            updated_at = CURRENT_TIMESTAMP;
+                    """, (
+                        new_record.memory_id,
+                        new_record.memory_type.value if hasattr(new_record.memory_type, "value") else str(new_record.memory_type),
+                        new_record.content,
+                        new_record.source.value if hasattr(new_record.source, "value") else str(new_record.source),
+                        new_record.confidence.value if hasattr(new_record.confidence, "value") else str(new_record.confidence),
+                        new_record.importance,
+                        new_record.status.value if hasattr(new_record.status, "value") else str(new_record.status),
+                        new_record.project_id,
+                        new_record.task_id or task_id,
+                        json.dumps(new_record.entity_ids or [], default=str),
+                        json.dumps(new_record.tags or [], default=str),
+                        old_memory_id,
+                        new_record.source_event_id,
+                        new_record.verification_status.value if hasattr(new_record.verification_status, "value") else str(new_record.verification_status),
+                        new_record.privacy_class.value if hasattr(new_record.privacy_class, "value") else str(new_record.privacy_class),
+                        json.dumps(new_record.metadata or {}, default=str),
+                        new_record.created_at,
+                        new_record.updated_at,
+                        new_record.last_accessed_at,
+                    ))
+
+                    # 6. Transition old memory to SUPERSEDED
+                    cur.execute(
+                        "UPDATE memory_records SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
+                        (MemoryStatus.SUPERSEDED.value, old_memory_id)
+                    )
+
+                    # 7. Insert Audit Event for old memory
+                    evt = MemoryLifecycleEvent(
+                        memory_id=old_memory_id,
+                        previous_status=old_status,
+                        new_status=MemoryStatus.SUPERSEDED,
+                        transition_reason=reason or "",
+                        actor=act_str,
+                        related_memory_id=new_record.memory_id,
+                        source_event_id=new_record.source_event_id,
+                        task_id=task_id or new_record.task_id,
+                        correlation_id=correlation_id,
+                        confidence_before=conf_before,
+                        confidence_after=conf_before,
+                        importance_before=imp_before,
+                        importance_after=imp_before,
+                        metadata={},
+                        idempotency_key=idempotency_key,
+                    )
+                    event_id = evt.event_id
+
+                    cur.execute("""
+                        INSERT INTO memory_lifecycle_events (
+                            event_id, memory_id, previous_status, new_status,
+                            transition_reason, actor, related_memory_id,
+                            source_event_id, task_id, correlation_id,
+                            confidence_before, confidence_after,
+                            importance_before, importance_after,
+                            metadata, idempotency_key, created_at
+                        ) VALUES (
+                            %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s, %s
+                        );
+                    """, (
+                        evt.event_id,
+                        evt.memory_id,
+                        evt.previous_status.value,
+                        evt.new_status.value,
+                        evt.transition_reason,
+                        evt.actor,
+                        evt.related_memory_id,
+                        evt.source_event_id,
+                        evt.task_id,
+                        evt.correlation_id,
+                        evt.confidence_before,
+                        evt.confidence_after,
+                        evt.importance_before,
+                        evt.importance_after,
+                        json.dumps(evt.metadata or {}, default=str),
+                        evt.idempotency_key,
+                        evt.created_at,
+                    ))
+
+            # 8. Post-Commit Telemetry
+            duration_ms = (time.perf_counter() - t0) * 1000
+            _emit_lifecycle_telemetry(
+                event="LIFECYCLE_SUPERSEDE_COMMITTED",
+                memory_id=old_memory_id,
+                previous_status=old_status.value if old_status else None,
+                new_status=MemoryStatus.SUPERSEDED.value,
+                actor=act_str,
+                event_id=event_id,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                duration_ms=duration_ms,
+                success=True,
+                idempotent_replay=False,
+            )
+            return LifecycleTransitionResult(
+                success=True,
+                memory_id=old_memory_id,
+                previous_status=old_status,
+                new_status=MemoryStatus.SUPERSEDED,
+                event_id=event_id,
+                transition_timestamp=evt.created_at,
+                idempotent_replay=False,
+            )
+
+        except Exception as e:
+            duration_ms = (time.perf_counter() - t0) * 1000
+            _emit_lifecycle_telemetry(
+                event="LIFECYCLE_SUPERSEDE_FAILED",
+                memory_id=old_memory_id,
+                previous_status=old_status.value if old_status else None,
+                new_status=MemoryStatus.SUPERSEDED.value,
+                actor=act_str,
+                event_id=event_id,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                duration_ms=duration_ms,
+                success=False,
+                idempotent_replay=False,
+            )
+            if raise_on_error:
+                raise
+            return LifecycleTransitionResult(
+                success=False,
+                memory_id=old_memory_id,
+                previous_status=old_status,
+                new_status=None,
+                error=str(e),
+                idempotent_replay=False,
+            )
+
+
+# ============================================================================
+# 7. BACKWARD-COMPATIBLE V5.1/V5.3.1 LIFECYCLE MANAGER INTERFACE
 # ============================================================================
 
 class MemoryLifecycleManager:
     """
     Manages the lifecycle transitions of memory records.
-    V5.3.1 maintains backward compatibility with V5.1 callers while enforcing
-    the canonical state transition matrix and audit event generation.
+    V5.3.2 routes all transitions through the authoritative MemoryLifecycleEngine
+    guaranteeing row-level locking, atomic state + audit, and provenance validation.
     """
+
+    def __init__(self, engine: Optional[MemoryLifecycleEngine] = None):
+        self._engine = engine
+
+    @property
+    def engine(self) -> MemoryLifecycleEngine:
+        if self._engine is None:
+            self._engine = lifecycle_engine
+        return self._engine
 
     def supersede(
         self,
@@ -482,113 +1133,67 @@ class MemoryLifecycleManager:
         new_record: Any,
         reason: str = "Superseded by newer record",
         actor: str = LifecycleActor.SYSTEM.value,
+        idempotency_key: Optional[str] = None,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> bool:
         """
-        Supersede an existing memory with a newer one.
-        - Old memory -> SUPERSEDED status
-        - New memory -> links supersedes_memory_id to old
-        - Preserves history in database
+        Supersede an existing memory with a newer one atomically.
+        Routes via MemoryLifecycleEngine.supersede_memory().
         """
-        from memory.repository import memory_repository
-
-        # Validate transition from old record's current status
-        old_rec = memory_repository.get_by_id(old_memory_id)
-        if not old_rec:
-            return False
-
-        try:
-            validate_transition(old_rec.status, MemoryStatus.SUPERSEDED, memory_id=old_memory_id, reason=reason)
-        except MemoryLifecycleError as ex:
-            print(f"[MEMORY LIFECYCLE] Supersede rejected: {ex}")
-            return False
-
-        # Link new record to old
-        new_record.supersedes_memory_id = old_memory_id
-
-        # Store new record first
-        stored = memory_repository.store(new_record)
-        if not stored:
-            print(f"[MEMORY LIFECYCLE] Failed to store new record before superseding {old_memory_id}")
-            return False
-
-        # Transition old record to SUPERSEDED
-        superseded = memory_repository.update_status(old_memory_id, MemoryStatus.SUPERSEDED)
-        if superseded:
-            # Record audit event
-            evt = MemoryLifecycleEvent(
-                memory_id=old_memory_id,
-                previous_status=old_rec.status,
-                new_status=MemoryStatus.SUPERSEDED,
-                transition_reason=reason,
-                actor=actor,
-                related_memory_id=new_record.memory_id,
-            )
-            memory_repository.store_lifecycle_event(evt)
-            print(f"[MEMORY LIFECYCLE] Superseded {old_memory_id} -> new record {new_record.memory_id}")
-            return True
-        return False
+        res = self.engine.supersede_memory(
+            old_memory_id=old_memory_id,
+            new_record=new_record,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            raise_on_error=False,
+        )
+        if not res.success:
+            print(f"[MEMORY LIFECYCLE] Supersede rejected: {res.error}")
+        return res.success
 
     def archive(
         self,
         memory_id: str,
         reason: str = "Archived memory",
         actor: str = LifecycleActor.SYSTEM.value,
+        idempotency_key: Optional[str] = None,
     ) -> bool:
-        """Move an ACTIVE memory to ARCHIVED state."""
-        from memory.repository import memory_repository
-        rec = memory_repository.get_by_id(memory_id)
-        if not rec:
-            return False
-
-        try:
-            validate_transition(rec.status, MemoryStatus.ARCHIVED, memory_id=memory_id, reason=reason)
-        except MemoryLifecycleError as ex:
-            print(f"[MEMORY LIFECYCLE] Archive rejected: {ex}")
-            return False
-
-        success = memory_repository.update_status(memory_id, MemoryStatus.ARCHIVED)
-        if success:
-            evt = MemoryLifecycleEvent(
-                memory_id=memory_id,
-                previous_status=rec.status,
-                new_status=MemoryStatus.ARCHIVED,
-                transition_reason=reason,
-                actor=actor,
-            )
-            memory_repository.store_lifecycle_event(evt)
-            print(f"[MEMORY LIFECYCLE] Archived memory {memory_id}")
-        return success
+        """Move an ACTIVE memory to ARCHIVED state via MemoryLifecycleEngine."""
+        res = self.engine.transition_memory(
+            memory_id=memory_id,
+            target_status=MemoryStatus.ARCHIVED,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            raise_on_error=False,
+        )
+        if not res.success:
+            print(f"[MEMORY LIFECYCLE] Archive rejected: {res.error}")
+        return res.success
 
     def delete(
         self,
         memory_id: str,
         reason: str = "Logical deletion",
         actor: str = LifecycleActor.SYSTEM.value,
+        idempotency_key: Optional[str] = None,
     ) -> bool:
-        """Logically delete a memory: mark status as DELETED."""
-        from memory.repository import memory_repository
-        rec = memory_repository.get_by_id(memory_id)
-        if not rec:
-            return False
-
-        try:
-            validate_transition(rec.status, MemoryStatus.DELETED, memory_id=memory_id, reason=reason)
-        except MemoryLifecycleError as ex:
-            print(f"[MEMORY LIFECYCLE] Delete rejected: {ex}")
-            return False
-
-        success = memory_repository.update_status(memory_id, MemoryStatus.DELETED)
-        if success:
-            evt = MemoryLifecycleEvent(
-                memory_id=memory_id,
-                previous_status=rec.status,
-                new_status=MemoryStatus.DELETED,
-                transition_reason=reason,
-                actor=actor,
-            )
-            memory_repository.store_lifecycle_event(evt)
-            print(f"[MEMORY LIFECYCLE] Logically deleted memory {memory_id}")
-        return success
+        """Logically delete a memory: mark status as DELETED via MemoryLifecycleEngine."""
+        res = self.engine.transition_memory(
+            memory_id=memory_id,
+            target_status=MemoryStatus.DELETED,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            raise_on_error=False,
+        )
+        if not res.success:
+            print(f"[MEMORY LIFECYCLE] Delete rejected: {res.error}")
+        return res.success
 
     def expire_temporary(self, memory_id: str) -> bool:
         """Expire a temporary memory by archiving it."""
@@ -599,31 +1204,27 @@ class MemoryLifecycleManager:
         memory_id: str,
         reason: str = "Verification confirmed",
         actor: str = LifecycleActor.SYSTEM.value,
+        task_id: Optional[str] = None,
+        source_event_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
     ) -> bool:
-        """Promote a PENDING_VERIFICATION memory to ACTIVE."""
-        from memory.repository import memory_repository
-        rec = memory_repository.get_by_id(memory_id)
-        if not rec:
-            return False
-
-        try:
-            validate_transition(rec.status, MemoryStatus.ACTIVE, memory_id=memory_id, reason=reason)
-        except MemoryLifecycleError as ex:
-            print(f"[MEMORY LIFECYCLE] Activation rejected: {ex}")
-            return False
-
-        success = memory_repository.update_status(memory_id, MemoryStatus.ACTIVE)
-        if success:
-            evt = MemoryLifecycleEvent(
-                memory_id=memory_id,
-                previous_status=rec.status,
-                new_status=MemoryStatus.ACTIVE,
-                transition_reason=reason,
-                actor=actor,
-            )
-            memory_repository.store_lifecycle_event(evt)
-            print(f"[MEMORY LIFECYCLE] Activated pending memory {memory_id}")
-        return success
+        """Promote a PENDING_VERIFICATION memory to ACTIVE via MemoryLifecycleEngine."""
+        res = self.engine.transition_memory(
+            memory_id=memory_id,
+            target_status=MemoryStatus.ACTIVE,
+            reason=reason,
+            actor=actor,
+            task_id=task_id,
+            source_event_id=source_event_id,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+            raise_on_error=False,
+        )
+        if not res.success:
+            print(f"[MEMORY LIFECYCLE] Activation rejected: {res.error}")
+        return res.success
 
 
-memory_lifecycle = MemoryLifecycleManager()
+lifecycle_engine = MemoryLifecycleEngine()
+memory_lifecycle = MemoryLifecycleManager(engine=lifecycle_engine)

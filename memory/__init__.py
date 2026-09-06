@@ -12,20 +12,31 @@ from memory.types import (
 from memory.schemas import MemoryRecord, MemoryContext, ScoredMemory
 from memory.manager import memory_manager, MemoryManager
 
-# V5.3.1 Memory Lifecycle Foundation
+# V5.3.1 & V5.3.2 Memory Lifecycle & Transaction Engine
 from memory.lifecycle import (
     memory_lifecycle,
     MemoryLifecycleManager,
+    lifecycle_engine,
+    MemoryLifecycleEngine,
+    LifecycleTransitionResult,
     MemoryLifecycleError,
     InvalidLifecycleTransitionError,
     InvalidLifecycleStateError,
     MemoryAlreadyDeletedError,
     LifecycleValidationError,
     LifecycleAuditError,
+    MemoryNotFoundError,
+    ProvenanceValidationError,
+    ConcurrentModificationError,
+    LockTimeoutError,
+    DeadlockDetectedError,
+    DatabaseConnectionError,
+    is_retryable_lifecycle_error,
     LifecycleActor,
     LifecycleTransition,
     MemoryLifecycleEvent,
     validate_transition,
+    validate_provenance,
     is_valid_transition,
     get_transition,
     LIFECYCLE_TRANSITIONS,
@@ -42,12 +53,18 @@ __all__ = [
     "ConfidenceLevel", "VerificationStatus", "PrivacyClass",
     "MemoryRecord", "MemoryContext", "ScoredMemory",
     "memory_manager", "MemoryManager",
-    # V5.3.1 Lifecycle Foundation
+    # V5.3.1 & V5.3.2 Lifecycle & Transaction Engine
     "memory_lifecycle", "MemoryLifecycleManager",
+    "lifecycle_engine", "MemoryLifecycleEngine",
+    "LifecycleTransitionResult",
     "MemoryLifecycleError", "InvalidLifecycleTransitionError",
     "InvalidLifecycleStateError", "MemoryAlreadyDeletedError",
     "LifecycleValidationError", "LifecycleAuditError",
+    "MemoryNotFoundError", "ProvenanceValidationError",
+    "ConcurrentModificationError", "LockTimeoutError",
+    "DeadlockDetectedError", "DatabaseConnectionError",
+    "is_retryable_lifecycle_error",
     "LifecycleActor", "LifecycleTransition", "MemoryLifecycleEvent",
-    "validate_transition", "is_valid_transition", "get_transition",
+    "validate_transition", "validate_provenance", "is_valid_transition", "get_transition",
     "LIFECYCLE_TRANSITIONS",
 ]
