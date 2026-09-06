@@ -47,3 +47,6 @@ python-dotenv
 aiohttp
 asyncio
 websockets
+
+# V5.2 Semantic Embeddings (Lightweight ONNX Runtime)
+fastembed>=0.8.0
