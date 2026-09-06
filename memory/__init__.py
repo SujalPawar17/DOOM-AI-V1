@@ -12,6 +12,25 @@ from memory.types import (
 from memory.schemas import MemoryRecord, MemoryContext, ScoredMemory
 from memory.manager import memory_manager, MemoryManager
 
+# V5.3.1 Memory Lifecycle Foundation
+from memory.lifecycle import (
+    memory_lifecycle,
+    MemoryLifecycleManager,
+    MemoryLifecycleError,
+    InvalidLifecycleTransitionError,
+    InvalidLifecycleStateError,
+    MemoryAlreadyDeletedError,
+    LifecycleValidationError,
+    LifecycleAuditError,
+    LifecycleActor,
+    LifecycleTransition,
+    MemoryLifecycleEvent,
+    validate_transition,
+    is_valid_transition,
+    get_transition,
+    LIFECYCLE_TRANSITIONS,
+)
+
 __all__ = [
     # Legacy (backward compat)
     "user_profile", "UserProfile",
@@ -23,4 +42,12 @@ __all__ = [
     "ConfidenceLevel", "VerificationStatus", "PrivacyClass",
     "MemoryRecord", "MemoryContext", "ScoredMemory",
     "memory_manager", "MemoryManager",
+    # V5.3.1 Lifecycle Foundation
+    "memory_lifecycle", "MemoryLifecycleManager",
+    "MemoryLifecycleError", "InvalidLifecycleTransitionError",
+    "InvalidLifecycleStateError", "MemoryAlreadyDeletedError",
+    "LifecycleValidationError", "LifecycleAuditError",
+    "LifecycleActor", "LifecycleTransition", "MemoryLifecycleEvent",
+    "validate_transition", "is_valid_transition", "get_transition",
+    "LIFECYCLE_TRANSITIONS",
 ]

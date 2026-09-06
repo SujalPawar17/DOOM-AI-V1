@@ -202,6 +202,30 @@ class PostgresManager:
             "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_records(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_memory_importance ON memory_records(importance DESC);",
             "CREATE INDEX IF NOT EXISTS idx_memory_privacy ON memory_records(privacy_class);",
+            # V5.3.1: Lifecycle audit events table
+            """
+            CREATE TABLE IF NOT EXISTS memory_lifecycle_events (
+                event_id VARCHAR(100) PRIMARY KEY,
+                memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                previous_status VARCHAR(30) NOT NULL,
+                new_status VARCHAR(30) NOT NULL,
+                transition_reason VARCHAR(255) NOT NULL,
+                actor VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+                related_memory_id VARCHAR(100),
+                source_event_id VARCHAR(100),
+                task_id VARCHAR(100),
+                correlation_id VARCHAR(100),
+                confidence_before VARCHAR(20),
+                confidence_after VARCHAR(20),
+                importance_before REAL,
+                importance_after REAL,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_mem_id ON memory_lifecycle_events(memory_id);",
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_created ON memory_lifecycle_events(created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_task ON memory_lifecycle_events(task_id);",
         ]
 
         conn = self.get_connection()
@@ -211,8 +235,9 @@ class PostgresManager:
             with conn.cursor() as cur:
                 for q in queries:
                     cur.execute(q)
+            conn.commit()
             self._init_v52_vector_schema(conn)
-            print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records")
+            print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records, memory_lifecycle_events")
         except Exception as e:
             conn.rollback()
             print(f"[POSTGRES ERROR] Failed to create schema tables: {e}")

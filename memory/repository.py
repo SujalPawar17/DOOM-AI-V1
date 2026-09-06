@@ -390,4 +390,134 @@ class MemoryRepository:
         )
 
 
+    # ------------------------------------------------------------------
+    # V5.3.1 Lifecycle Events persistence & auditing
+    # ------------------------------------------------------------------
+
+    def store_lifecycle_event(self, event) -> bool:
+        """
+        Store a MemoryLifecycleEvent in the memory_lifecycle_events table.
+        Non-fatal; returns True on success, False on error.
+        """
+        pg = self._get_manager()
+        conn = pg.get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO memory_lifecycle_events (
+                        event_id, memory_id, previous_status, new_status,
+                        transition_reason, actor, related_memory_id,
+                        source_event_id, task_id, correlation_id,
+                        confidence_before, confidence_after,
+                        importance_before, importance_after,
+                        metadata, created_at
+                    ) VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s,
+                        %s, %s,
+                        %s, %s
+                    )
+                    ON CONFLICT (event_id) DO NOTHING;
+                """, (
+                    event.event_id,
+                    event.memory_id,
+                    event.previous_status.value if hasattr(event.previous_status, "value") else str(event.previous_status),
+                    event.new_status.value if hasattr(event.new_status, "value") else str(event.new_status),
+                    event.transition_reason,
+                    event.actor,
+                    event.related_memory_id,
+                    event.source_event_id,
+                    event.task_id,
+                    event.correlation_id,
+                    event.confidence_before,
+                    event.confidence_after,
+                    event.importance_before,
+                    event.importance_after,
+                    _serialize_dict(event.metadata),
+                    event.created_at,
+                ))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"[MEMORY REPO] store_lifecycle_event failed: {e}")
+            return False
+        finally:
+            pg.release_connection(conn)
+
+    def get_lifecycle_events(self, memory_id: str, limit: int = 50) -> List[Any]:
+        """Fetch audit lifecycle events for a specific memory record in reverse chronological order."""
+        pg = self._get_manager()
+        conn = pg.get_connection()
+        if not conn:
+            return []
+        try:
+            from psycopg2 import extras
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM memory_lifecycle_events
+                    WHERE memory_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                """, (memory_id, limit))
+                rows = cur.fetchall()
+                return [self._row_to_lifecycle_event(dict(r)) for r in rows]
+        except Exception as e:
+            print(f"[MEMORY REPO] get_lifecycle_events failed: {e}")
+            return []
+        finally:
+            pg.release_connection(conn)
+
+    def get_lifecycle_event_by_id(self, event_id: str) -> Optional[Any]:
+        """Fetch a single lifecycle audit event by its ID."""
+        pg = self._get_manager()
+        conn = pg.get_connection()
+        if not conn:
+            return None
+        try:
+            from psycopg2 import extras
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM memory_lifecycle_events WHERE event_id = %s;",
+                    (event_id,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return self._row_to_lifecycle_event(dict(row))
+            return None
+        except Exception as e:
+            print(f"[MEMORY REPO] get_lifecycle_event_by_id failed: {e}")
+            return None
+        finally:
+            pg.release_connection(conn)
+
+    def count_lifecycle_events(self, memory_id: Optional[str] = None) -> int:
+        """Count total lifecycle events, optionally filtered by memory_id."""
+        pg = self._get_manager()
+        conn = pg.get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                if memory_id:
+                    cur.execute("SELECT COUNT(*) FROM memory_lifecycle_events WHERE memory_id = %s;", (memory_id,))
+                else:
+                    cur.execute("SELECT COUNT(*) FROM memory_lifecycle_events;")
+                row = cur.fetchone()
+                return row[0] if row else 0
+        except Exception:
+            return 0
+        finally:
+            pg.release_connection(conn)
+
+    def _row_to_lifecycle_event(self, row: Dict[str, Any]) -> Any:
+        """Convert a database row into a MemoryLifecycleEvent."""
+        from memory.lifecycle import MemoryLifecycleEvent
+        return MemoryLifecycleEvent.from_dict(row)
+
+
 memory_repository = MemoryRepository()
