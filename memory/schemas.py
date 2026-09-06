@@ -179,6 +179,7 @@ class MemoryContext:
     Structured memory context passed into the cognitive pipeline.
     Contains only controlled, filtered, relevant memories.
     Never exposes private memory content to unrelated contexts.
+    Enforces V5.2.5 [DATA_ONLY] structural fencing and deterministic budgeting.
     """
     query: str = ""
     retrieved_memories: List[MemoryRecord] = field(default_factory=list)
@@ -186,6 +187,7 @@ class MemoryContext:
     sources: List[str] = field(default_factory=list)
     confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
     context_summary: str = ""                      # Safe summary, never contains private content
+    fenced_context: str = ""                       # V5.2.5: Canonical [DATA_ONLY] structural fenced context
     retrieval_latency_ms: float = 0.0
     memory_hit: bool = False                       # True if relevant memories were found
     memory_count: int = 0
@@ -193,41 +195,79 @@ class MemoryContext:
     semantic_scores: Dict[str, float] = field(default_factory=dict)
     hybrid_breakdowns: Dict[str, HybridScoreBreakdown] = field(default_factory=dict)
     retrieval_mode: str = "LEXICAL"
+    fencing_applied: bool = True
+    context_char_count: int = 0
+    budget_exceeded: bool = False
+    omitted_count: int = 0
 
     def has_memories(self) -> bool:
         return len(self.retrieved_memories) > 0
 
     def get_summary_for_cognition(self) -> str:
         """
-        Returns a safe, controlled summary for injection into cognitive reasoning.
+        V5.2.5: Returns the safe, [DATA_ONLY] fenced context for injection into cognitive reasoning.
         Does NOT dump raw content. Excludes SENSITIVE privacy class records.
+        Delegates to canonical fenced_context to maintain ONE single context safety path.
         """
+        if self.fenced_context:
+            return self.fenced_context
+        if self.context_summary:
+            return self.context_summary
         if not self.retrieved_memories:
             return ""
-        lines = []
-        for mem in self.retrieved_memories:
-            # Never inject sensitive memory into general cognition
-            if mem.privacy_class == PrivacyClass.SENSITIVE:
-                continue
-            label = f"[{mem.memory_type.value}|{mem.source.value}|{mem.confidence.value}]"
-            lines.append(f"  {label} {mem.content}")
-        if not lines:
+
+        # On-the-fly fencing fallback if constructed without builder
+        try:
+            from memory.fencing import memory_context_fencer
+            scored = [
+                ScoredMemory(record=r, score=self.relevance_scores.get(r.memory_id, 0.5))
+                for r in self.retrieved_memories
+            ]
+            res = memory_context_fencer.fence_memories(self.query, scored)
+            return res.fenced_context
+        except Exception:
             return ""
-        return "Relevant Memory Context:\n" + "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Safe serialization. Omits private content from telemetry."""
+        """Safe serialization for API/WebSocket. Omits raw memory records and embeddings."""
         return {
             "query": self.query,
             "memory_count": self.memory_count,
             "memory_hit": self.memory_hit,
             "retrieval_latency_ms": self.retrieval_latency_ms,
-            "confidence": self.confidence.value,
+            "confidence": self.confidence.value if hasattr(self.confidence, "value") else str(self.confidence),
             "sources": self.sources,
             "context_summary": self.context_summary,
+            "fenced_context": self.fenced_context,
             "retrieval_mode": self.retrieval_mode,
             "hybrid_breakdowns": {
                 mid: bd.to_dict() for mid, bd in self.hybrid_breakdowns.items()
             },
-            # Note: does NOT include raw memory content for telemetry safety
+            "fencing_applied": self.fencing_applied,
+            "context_char_count": self.context_char_count or len(self.fenced_context),
+            "budget_exceeded": self.budget_exceeded,
         }
+
+    def to_telemetry_dict(self) -> Dict[str, Any]:
+        """
+        V5.2.5: Sanitized telemetry serialization.
+        STRICTLY NEVER leaks raw user query text, raw memory content, secrets, or embeddings.
+        """
+        import hashlib
+        q_hash = hashlib.sha256(self.query.encode("utf-8")).hexdigest()[:16] if self.query else ""
+        return {
+            "query_present": bool(self.query),
+            "query_length": len(self.query),
+            "query_hash": q_hash,
+            "memory_count": self.memory_count,
+            "memory_hit": self.memory_hit,
+            "retrieval_latency_ms": self.retrieval_latency_ms,
+            "confidence": self.confidence.value if hasattr(self.confidence, "value") else str(self.confidence),
+            "sources": self.sources,
+            "retrieval_mode": self.retrieval_mode,
+            "fencing_applied": self.fencing_applied,
+            "context_char_count": self.context_char_count or len(self.fenced_context),
+            "budget_exceeded": self.budget_exceeded,
+            "omitted_count": self.omitted_count,
+        }
+

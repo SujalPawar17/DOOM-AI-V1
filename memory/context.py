@@ -1,8 +1,10 @@
 """
-DOOM V5.1 — Memory Context Builder
-Assembles a controlled MemoryContext from scored memory records.
-Ensures private content is never injected into general cognitive context.
+DOOM V5.2.5 — Memory Context Builder
+Assembles a controlled, structurally fenced MemoryContext from scored memory records.
+Ensures memory is treated strictly as UNTRUSTED DATA, never as executable instructions.
+Enforces deterministic per-memory and total context budgeting.
 """
+import logging
 from typing import Dict, List, Optional
 
 from memory.schemas import (
@@ -13,13 +15,30 @@ from memory.schemas import (
     HybridScoreBreakdown,
 )
 from memory.types import ConfidenceLevel, PrivacyClass
+from memory.fencing import (
+    ContextBudgetConfig,
+    DEFAULT_BUDGET_CONFIG,
+    MemoryContextFencer,
+    memory_context_fencer,
+)
+
+logger = logging.getLogger("DOOM.MemoryContextBuilder")
 
 
 class MemoryContextBuilder:
     """
     Builds MemoryContext objects from ranked ScoredMemory lists.
-    Enforces: no private content in summary, no raw database rows in output.
+    Enforces:
+      - Structural [DATA_ONLY] fencing (V5.2.5)
+      - Delimiter neutralization and control character stripping
+      - Strict per-memory (<= 500 chars) and total (<= 4000 chars) context budgets
+      - Conservative aggregated confidence
+      - Fail-closed isolation on any construction failure
     """
+
+    def __init__(self, config: Optional[ContextBudgetConfig] = None):
+        self.config = config or DEFAULT_BUDGET_CONFIG
+        self.fencer = MemoryContextFencer(self.config)
 
     def build(
         self,
@@ -31,33 +50,64 @@ class MemoryContextBuilder:
         retrieval_mode: str = "LEXICAL",
     ) -> MemoryContext:
         """
-        Build a MemoryContext from ranked records.
-        The context_summary is safe for injection into LLM reasoning context.
+        Build a MemoryContext from ranked records with full V5.2.5 context fencing.
+        Fails closed: returns safe empty context on unexpected exceptions.
         """
-        records = [sm.record for sm in scored_memories]
-        scores = {sm.record.memory_id: sm.score for sm in scored_memories}
-        sources = list({r.source.value for r in records})
+        try:
+            # Defensive copy to avoid mutating caller inputs
+            scored_copy = list(scored_memories) if scored_memories else []
 
-        # Aggregate confidence: use lowest confidence among retrieved memories
-        # (conservative approach — don't over-claim confidence on a mixed set)
-        overall_confidence = self._aggregate_confidence(records)
+            # Run canonical context fencing & budget enforcement
+            fenced_res = self.fencer.fence_memories(query, scored_copy, self.config)
 
-        # Generate safe, privacy-respecting summary
-        context_summary = self._build_safe_summary(query, scored_memories)
+            records = fenced_res.included_memories
+            scores = {sm.record.memory_id: sm.score for sm in scored_copy if sm.record in records}
+            sources = list({r.source.value for r in records})
 
-        ctx = MemoryContext(
-            query=query,
-            retrieved_memories=records,
-            relevance_scores=scores,
-            sources=sources,
-            confidence=overall_confidence,
-            context_summary=context_summary,
-            semantic_matches=semantic_matches or [],
-            semantic_scores=semantic_scores or {},
-            hybrid_breakdowns=hybrid_breakdowns or {},
-            retrieval_mode=retrieval_mode,
-        )
-        return ctx
+            # Aggregate confidence: use lowest confidence among included memories
+            overall_confidence = self._aggregate_confidence(records)
+
+            ctx = MemoryContext(
+                query=query,
+                retrieved_memories=records,
+                relevance_scores=scores,
+                sources=sources,
+                confidence=overall_confidence,
+                context_summary=fenced_res.context_summary,
+                fenced_context=fenced_res.fenced_context,
+                semantic_matches=semantic_matches or [],
+                semantic_scores=semantic_scores or {},
+                hybrid_breakdowns=hybrid_breakdowns or {},
+                retrieval_mode=retrieval_mode,
+                memory_count=len(records),
+                memory_hit=len(records) > 0,
+                fencing_applied=True,
+                context_char_count=fenced_res.context_char_count,
+                budget_exceeded=fenced_res.budget_exceeded,
+                omitted_count=fenced_res.omitted_count,
+            )
+            return ctx
+
+        except Exception as e:
+            # Fail closed: never return raw unsanitized memory on failure
+            logger.warning(f"[MEMORY CONTEXT] Context building failed safely (fail-closed): {e}")
+            return MemoryContext(
+                query=query,
+                retrieved_memories=[],
+                relevance_scores={},
+                sources=[],
+                confidence=ConfidenceLevel.UNKNOWN,
+                context_summary="",
+                fenced_context="",
+                retrieval_mode=retrieval_mode,
+                retrieval_latency_ms=0.0,
+                memory_hit=False,
+                memory_count=0,
+                fencing_applied=True,
+                context_char_count=0,
+                budget_exceeded=False,
+                omitted_count=len(scored_memories) if scored_memories else 0,
+            )
 
     def _aggregate_confidence(self, records: List[MemoryRecord]) -> ConfidenceLevel:
         """Aggregate confidence: use minimum (conservative)."""
@@ -75,39 +125,10 @@ class MemoryContextBuilder:
 
     def _build_safe_summary(self, query: str, scored_memories: List[ScoredMemory]) -> str:
         """
-        Build a safe context summary suitable for cognitive reasoning injection.
-        Rules:
-        - Never includes SENSITIVE memory content
-        - PRIVATE memory content included only in preference/identity contexts
-        - Truncates long content entries for brevity
+        Backward compatibility delegation to canonical MemoryContextFencer.
         """
-        if not scored_memories:
-            return ""
-
-        lines = []
-        for sm in scored_memories:
-            rec = sm.record
-
-            # Never include sensitive memories in general context summary
-            if rec.privacy_class == PrivacyClass.SENSITIVE:
-                continue
-
-            # Truncate long content
-            content_display = rec.content[:200] + "..." if len(rec.content) > 200 else rec.content
-
-            type_label = rec.memory_type.value
-            conf_label = rec.confidence.value
-            src_label = rec.source.value
-            score_label = f"{sm.score:.2f}"
-
-            lines.append(
-                f"  [{type_label}|{src_label}|conf:{conf_label}|score:{score_label}] {content_display}"
-            )
-
-        if not lines:
-            return ""
-
-        return f"Memory Context for query '{query[:60]}':\n" + "\n".join(lines)
+        res = self.fencer.fence_memories(query, scored_memories, self.config)
+        return res.context_summary
 
 
 memory_context_builder = MemoryContextBuilder()
