@@ -211,13 +211,55 @@ class PostgresManager:
             with conn.cursor() as cur:
                 for q in queries:
                     cur.execute(q)
-            conn.commit()
+            self._init_v52_vector_schema(conn)
             print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records")
         except Exception as e:
             conn.rollback()
             print(f"[POSTGRES ERROR] Failed to create schema tables: {e}")
         finally:
             self.release_connection(conn)
+
+    def _init_v52_vector_schema(self, conn):
+        """Initializes V5.2 memory_embeddings table if pgvector extension is available."""
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector';")
+                has_ext = cur.fetchone()
+                if not has_ext:
+                    cur.execute("SELECT default_version FROM pg_available_extensions WHERE name = 'vector';")
+                    if cur.fetchone():
+                        try:
+                            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                            conn.commit()
+                            has_ext = True
+                        except Exception:
+                            conn.rollback()
+                if has_ext:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS memory_embeddings (
+                            embedding_id VARCHAR(100) PRIMARY KEY,
+                            memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                            model VARCHAR(100) NOT NULL,
+                            model_version VARCHAR(30) NOT NULL,
+                            dimension INTEGER NOT NULL,
+                            embedding vector(384) NOT NULL,
+                            content_hash VARCHAR(64) NOT NULL,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            CONSTRAINT uq_memory_model_version UNIQUE (memory_id, model, model_version)
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_mem_emb_memory_id ON memory_embeddings(memory_id);
+                        CREATE INDEX IF NOT EXISTS idx_mem_emb_model ON memory_embeddings(model, model_version);
+                    """)
+                    conn.commit()
+                    print("[POSTGRES] [OK] V5.2 memory_embeddings initialized with pgvector")
+                else:
+                    print("[POSTGRES] [NOTE] pgvector not available; V5.2 will use NumPy fallback adapter.")
+        except Exception as e:
+            conn.rollback()
+            print(f"[POSTGRES NOTE] V5.2 pgvector schema check: {e}")
 
     def get_connection(self):
         """Retrieves a connection from the pool or creates a standalone connection."""
