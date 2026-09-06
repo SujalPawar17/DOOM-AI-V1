@@ -70,6 +70,10 @@ MAX_RETRIEVAL_RECORDS: int = 10
 # Minimum relevance score threshold for retrieval inclusion
 RELEVANCE_THRESHOLD: float = 0.25
 
+# V5.2.3 Semantic retrieval thresholds & limits (calibrated to 0.40 via benchmark evidence)
+SEMANTIC_SIMILARITY_THRESHOLD: float = 0.40
+MAX_SEMANTIC_CANDIDATES: int = 25
+
 # Memory sources that must NEVER be stored in durable canonical memory
 BLOCKED_SOURCES: set = set()  # Policy enforces content-level blocking instead
 

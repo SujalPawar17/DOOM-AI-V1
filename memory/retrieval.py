@@ -7,10 +7,11 @@ Does NOT return the entire memory database.
 import time
 from typing import List, Optional
 
-from memory.schemas import MemoryRecord, MemoryContext, ScoredMemory
+from memory.schemas import MemoryRecord, MemoryContext, ScoredMemory, SemanticMemoryMatch
 from memory.types import (
     MemoryType, MemoryStatus, PrivacyClass,
     MAX_RETRIEVAL_RECORDS, RELEVANCE_THRESHOLD,
+    SEMANTIC_SIMILARITY_THRESHOLD, MAX_SEMANTIC_CANDIDATES,
 )
 
 
@@ -37,10 +38,12 @@ class MemoryRetriever:
         memory_types: Optional[List[MemoryType]] = None,
         include_private: bool = False,
         max_results: int = MAX_RETRIEVAL_RECORDS,
+        enable_semantic: bool = True,
     ) -> MemoryContext:
         """
         Main retrieval entry point.
-        Returns a MemoryContext with scored, filtered, relevant records.
+        Combines V5.1 lexical candidate retrieval with V5.2.3 semantic vector candidate retrieval.
+        Applies policy filtering, deduplication, and bounds results safely.
         On any failure, returns an empty MemoryContext (never raises).
         """
         t_start = time.time()
@@ -50,14 +53,26 @@ class MemoryRetriever:
             from memory.repository import memory_repository
             from memory.ranking import memory_ranker
             from memory.context import memory_context_builder
+            from memory.schemas import SemanticMemoryMatch, ScoredMemory
+            from memory.types import (
+                SEMANTIC_SIMILARITY_THRESHOLD,
+                MAX_SEMANTIC_CANDIDATES,
+            )
 
-            # ---- Phase 1: Fetch candidates ----
+            # Handle empty query without filters
+            if (not query or not query.strip()) and not memory_types and not project_id:
+                ctx.retrieval_latency_ms = (time.time() - t_start) * 1000.0
+                ctx.memory_hit = False
+                ctx.memory_count = 0
+                return ctx
+
+            # ---- Phase 1: Fetch Lexical Candidates (V5.1) ----
             privacy_classes = [PrivacyClass.NORMAL]
             if include_private:
                 privacy_classes.append(PrivacyClass.PRIVATE)
             # Never include SENSITIVE in automatic retrieval
 
-            all_candidates: List[MemoryRecord] = []
+            lexical_candidates: List[MemoryRecord] = []
 
             if memory_types:
                 for mt in memory_types:
@@ -69,9 +84,9 @@ class MemoryRetriever:
                         privacy_classes=privacy_classes,
                         limit=self.MAX_CANDIDATE_RECORDS // max(len(memory_types), 1),
                     )
-                    all_candidates.extend(candidates)
+                    lexical_candidates.extend(candidates)
             else:
-                all_candidates = memory_repository.search(
+                lexical_candidates = memory_repository.search(
                     query=None,
                     status=MemoryStatus.ACTIVE,
                     project_id=project_id,
@@ -79,27 +94,137 @@ class MemoryRetriever:
                     limit=self.MAX_CANDIDATE_RECORDS,
                 )
 
-            if not all_candidates:
+            # Score lexical candidates
+            scored_lexical: List[ScoredMemory] = []
+            if lexical_candidates:
+                scored_lexical = memory_ranker.rank(
+                    lexical_candidates, query, project_id=project_id, task_id=task_id
+                )
+
+            # Filter lexical by RELEVANCE_THRESHOLD (require keyword relevance if text query provided)
+            lexical_above_threshold = [
+                s for s in scored_lexical
+                if s.score >= RELEVANCE_THRESHOLD
+                and (not query or not query.strip() or memory_ranker._compute_relevance(s.record, query) > 0.0)
+            ]
+
+            # ---- Phase 2: Fetch Semantic Candidates (V5.2.3) ----
+            semantic_matches: List[SemanticMemoryMatch] = []
+            semantic_scores: dict = {}
+
+            if enable_semantic and query and query.strip():
+                try:
+                    from memory.embedding.router import embedding_router
+                    from memory.vector_store import vector_store
+
+                    # Generate query embedding
+                    emb_res = embedding_router.embed(query, check_policy=True)
+                    if emb_res is not None:
+                        # Vector search (bounded to MAX_SEMANTIC_CANDIDATES = 25)
+                        raw_matches = vector_store.search_similar(
+                            query_vector=emb_res.vector,
+                            top_k=MAX_SEMANTIC_CANDIDATES,
+                            model=emb_res.model,
+                            model_version=emb_res.model_version,
+                        )
+
+                        for m in raw_matches:
+                            # Hard similarity threshold check (0.45)
+                            if m.similarity < SEMANTIC_SIMILARITY_THRESHOLD:
+                                continue
+
+                            # Fetch parent record from repository
+                            rec = memory_repository.get_by_id(m.memory_id)
+                            if not rec:
+                                continue
+
+                            # Policy & security enforcement (defense-in-depth)
+                            # 1. Must be ACTIVE (exclude DELETED, SUPERSEDED, ARCHIVED)
+                            if rec.status != MemoryStatus.ACTIVE:
+                                continue
+
+                            # 2. Never allow SENSITIVE
+                            if rec.privacy_class == PrivacyClass.SENSITIVE:
+                                continue
+
+                            # 3. Privacy level check
+                            if rec.privacy_class == PrivacyClass.PRIVATE and not include_private:
+                                continue
+
+                            # 4. Project filter check
+                            if project_id and rec.project_id and rec.project_id != project_id:
+                                continue
+
+                            # 5. Memory type filter check
+                            if memory_types and rec.memory_type not in memory_types:
+                                continue
+
+                            match_obj = SemanticMemoryMatch(
+                                record=rec,
+                                similarity=m.similarity,
+                                distance=m.distance,
+                                model=m.model,
+                                model_version=m.model_version,
+                            )
+                            semantic_matches.append(match_obj)
+                            semantic_scores[rec.memory_id] = m.similarity
+
+                except Exception as sem_e:
+                    # Semantic failure is non-fatal: log notice, fallback to lexical
+                    print(f"[MEMORY RETRIEVER] Semantic retrieval degraded gracefully: {sem_e}")
+                    semantic_matches = []
+                    semantic_scores = {}
+
+            # ---- Phase 3: Deduplication & Candidate Merging ----
+            # Combine lexical candidates and semantic matches by memory_id
+            combined_records: dict = {}
+            combined_scores: dict = {}
+
+            for sl in lexical_above_threshold:
+                mid = sl.record.memory_id
+                combined_records[mid] = sl.record
+                combined_scores[mid] = sl.score
+
+            for sm in semantic_matches:
+                mid = sm.record.memory_id
+                combined_records[mid] = sm.record
+                if mid in combined_scores:
+                    # In V5.2.3: Preserve max score for deduplication (V5.2.4 will implement hybrid fusion)
+                    combined_scores[mid] = max(combined_scores[mid], sm.similarity)
+                else:
+                    combined_scores[mid] = sm.similarity
+
+            if not combined_records:
                 ctx.retrieval_latency_ms = (time.time() - t_start) * 1000.0
                 ctx.memory_hit = False
                 ctx.memory_count = 0
                 return ctx
 
-            # ---- Phase 2: Score & rank ----
-            scored: List[ScoredMemory] = memory_ranker.rank(
-                all_candidates, query, project_id=project_id, task_id=task_id
-            )
+            # Build final scored list sorted by composite score descending
+            top_scored: List[ScoredMemory] = [
+                ScoredMemory(record=combined_records[mid], score=combined_scores[mid])
+                for mid in combined_records
+            ]
+            top_scored.sort(key=lambda x: x.score, reverse=True)
+            top_scored = top_scored[:max_results]
 
-            # ---- Phase 3: Hard relevance threshold ----
-            above_threshold = [s for s in scored if s.score >= RELEVANCE_THRESHOLD]
+            # Determine retrieval mode
+            has_lex = len(lexical_above_threshold) > 0
+            has_sem = len(semantic_matches) > 0
+            if has_lex and has_sem:
+                mode = "HYBRID"
+            elif has_sem:
+                mode = "SEMANTIC"
+            else:
+                mode = "LEXICAL"
 
-            # ---- Phase 4: Cap at max_results ----
-            top_scored = above_threshold[:max_results]
-
-            # ---- Phase 5: Build MemoryContext ----
+            # ---- Phase 4: Build MemoryContext ----
             ctx = memory_context_builder.build(
                 query=query,
                 scored_memories=top_scored,
+                semantic_matches=semantic_matches,
+                semantic_scores=semantic_scores,
+                retrieval_mode=mode,
             )
             ctx.retrieval_latency_ms = (time.time() - t_start) * 1000.0
             ctx.memory_hit = len(ctx.retrieved_memories) > 0

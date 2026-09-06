@@ -133,6 +133,16 @@ class ScoredMemory:
 
 
 @dataclass
+class SemanticMemoryMatch:
+    """A semantic vector search match for a memory record."""
+    record: MemoryRecord
+    similarity: float = 0.0
+    distance: float = 0.0
+    model: str = ""
+    model_version: str = ""
+
+
+@dataclass
 class MemoryContext:
     """
     Structured memory context passed into the cognitive pipeline.
@@ -148,6 +158,9 @@ class MemoryContext:
     retrieval_latency_ms: float = 0.0
     memory_hit: bool = False                       # True if relevant memories were found
     memory_count: int = 0
+    semantic_matches: List[SemanticMemoryMatch] = field(default_factory=list)
+    semantic_scores: Dict[str, float] = field(default_factory=dict)
+    retrieval_mode: str = "LEXICAL"
 
     def has_memories(self) -> bool:
         return len(self.retrieved_memories) > 0

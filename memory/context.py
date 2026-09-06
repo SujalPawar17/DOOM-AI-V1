@@ -3,9 +3,9 @@ DOOM V5.1 — Memory Context Builder
 Assembles a controlled MemoryContext from scored memory records.
 Ensures private content is never injected into general cognitive context.
 """
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from memory.schemas import MemoryContext, MemoryRecord, ScoredMemory
+from memory.schemas import MemoryContext, MemoryRecord, ScoredMemory, SemanticMemoryMatch
 from memory.types import ConfidenceLevel, PrivacyClass
 
 
@@ -19,6 +19,9 @@ class MemoryContextBuilder:
         self,
         query: str,
         scored_memories: List[ScoredMemory],
+        semantic_matches: Optional[List[SemanticMemoryMatch]] = None,
+        semantic_scores: Optional[Dict[str, float]] = None,
+        retrieval_mode: str = "LEXICAL",
     ) -> MemoryContext:
         """
         Build a MemoryContext from ranked records.
@@ -42,6 +45,9 @@ class MemoryContextBuilder:
             sources=sources,
             confidence=overall_confidence,
             context_summary=context_summary,
+            semantic_matches=semantic_matches or [],
+            semantic_scores=semantic_scores or {},
+            retrieval_mode=retrieval_mode,
         )
         return ctx
 
