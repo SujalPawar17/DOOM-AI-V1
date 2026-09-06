@@ -133,6 +133,37 @@ class ScoredMemory:
 
 
 @dataclass
+class HybridScoreBreakdown:
+    """Detailed score breakdown across all six V5.2.4 hybrid ranking factors."""
+    lexical_score: float = 0.0
+    semantic_score: float = 0.0
+    importance_score: float = 0.0
+    recency_score: float = 0.0
+    confidence_score: float = 0.0
+    project_score: float = 0.0
+    final_score: float = 0.0
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "lexical_score": self.lexical_score,
+            "semantic_score": self.semantic_score,
+            "importance_score": self.importance_score,
+            "recency_score": self.recency_score,
+            "confidence_score": self.confidence_score,
+            "project_score": self.project_score,
+            "final_score": self.final_score,
+        }
+
+
+@dataclass
+class HybridRankedMemory:
+    """A memory record paired with its 6-factor composite hybrid score and breakdown."""
+    record: MemoryRecord
+    score: float = 0.0
+    breakdown: Optional[HybridScoreBreakdown] = None
+
+
+@dataclass
 class SemanticMemoryMatch:
     """A semantic vector search match for a memory record."""
     record: MemoryRecord
@@ -160,6 +191,7 @@ class MemoryContext:
     memory_count: int = 0
     semantic_matches: List[SemanticMemoryMatch] = field(default_factory=list)
     semantic_scores: Dict[str, float] = field(default_factory=dict)
+    hybrid_breakdowns: Dict[str, HybridScoreBreakdown] = field(default_factory=dict)
     retrieval_mode: str = "LEXICAL"
 
     def has_memories(self) -> bool:
@@ -193,5 +225,9 @@ class MemoryContext:
             "confidence": self.confidence.value,
             "sources": self.sources,
             "context_summary": self.context_summary,
+            "retrieval_mode": self.retrieval_mode,
+            "hybrid_breakdowns": {
+                mid: bd.to_dict() for mid, bd in self.hybrid_breakdowns.items()
+            },
             # Note: does NOT include raw memory content for telemetry safety
         }

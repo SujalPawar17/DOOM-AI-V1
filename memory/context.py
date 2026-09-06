@@ -5,7 +5,13 @@ Ensures private content is never injected into general cognitive context.
 """
 from typing import Dict, List, Optional
 
-from memory.schemas import MemoryContext, MemoryRecord, ScoredMemory, SemanticMemoryMatch
+from memory.schemas import (
+    MemoryContext,
+    MemoryRecord,
+    ScoredMemory,
+    SemanticMemoryMatch,
+    HybridScoreBreakdown,
+)
 from memory.types import ConfidenceLevel, PrivacyClass
 
 
@@ -21,6 +27,7 @@ class MemoryContextBuilder:
         scored_memories: List[ScoredMemory],
         semantic_matches: Optional[List[SemanticMemoryMatch]] = None,
         semantic_scores: Optional[Dict[str, float]] = None,
+        hybrid_breakdowns: Optional[Dict[str, HybridScoreBreakdown]] = None,
         retrieval_mode: str = "LEXICAL",
     ) -> MemoryContext:
         """
@@ -47,6 +54,7 @@ class MemoryContextBuilder:
             context_summary=context_summary,
             semantic_matches=semantic_matches or [],
             semantic_scores=semantic_scores or {},
+            hybrid_breakdowns=hybrid_breakdowns or {},
             retrieval_mode=retrieval_mode,
         )
         return ctx

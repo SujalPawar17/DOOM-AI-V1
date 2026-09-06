@@ -74,6 +74,73 @@ RELEVANCE_THRESHOLD: float = 0.25
 SEMANTIC_SIMILARITY_THRESHOLD: float = 0.40
 MAX_SEMANTIC_CANDIDATES: int = 25
 
+# V5.2.4 Hybrid ranking limits & constants
+MAX_LEXICAL_CANDIDATES: int = 25
+MAX_MERGED_CANDIDATES: int = 50
+RECENCY_HALFLIFE_DAYS: float = 30.0
+
+
+class HybridRankingWeights:
+    """
+    Canonical, validated, configurable weights for the V5.2.4 six-factor hybrid ranking formula.
+    Weights must be non-negative, finite numbers and sum to exactly 1.00 within 1e-6 tolerance.
+    """
+    __slots__ = (
+        "weight_lexical",
+        "weight_semantic",
+        "weight_importance",
+        "weight_recency",
+        "weight_confidence",
+        "weight_project",
+    )
+
+    def __init__(
+        self,
+        weight_lexical: float = 0.25,
+        weight_semantic: float = 0.35,
+        weight_importance: float = 0.15,
+        weight_recency: float = 0.10,
+        weight_confidence: float = 0.05,
+        weight_project: float = 0.10,
+    ):
+        self.weight_lexical = float(weight_lexical)
+        self.weight_semantic = float(weight_semantic)
+        self.weight_importance = float(weight_importance)
+        self.weight_recency = float(weight_recency)
+        self.weight_confidence = float(weight_confidence)
+        self.weight_project = float(weight_project)
+        self.validate()
+
+    def validate(self) -> None:
+        import math
+        weights = (
+            self.weight_lexical,
+            self.weight_semantic,
+            self.weight_importance,
+            self.weight_recency,
+            self.weight_confidence,
+            self.weight_project,
+        )
+        for w in weights:
+            if math.isnan(w) or math.isinf(w) or w < 0.0:
+                raise ValueError(f"HybridRankingWeights: all weights must be non-negative finite numbers, got {w}")
+        total = sum(weights)
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"HybridRankingWeights must sum to 1.00 within 1e-6 tolerance, got {total:.6f}")
+
+    def to_dict(self) -> dict:
+        return {
+            "weight_lexical": self.weight_lexical,
+            "weight_semantic": self.weight_semantic,
+            "weight_importance": self.weight_importance,
+            "weight_recency": self.weight_recency,
+            "weight_confidence": self.weight_confidence,
+            "weight_project": self.weight_project,
+        }
+
+
+DEFAULT_HYBRID_WEIGHTS = HybridRankingWeights()
+
 # Memory sources that must NEVER be stored in durable canonical memory
 BLOCKED_SOURCES: set = set()  # Policy enforces content-level blocking instead
 
