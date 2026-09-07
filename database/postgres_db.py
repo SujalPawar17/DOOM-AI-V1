@@ -293,6 +293,30 @@ class PostgresManager:
             """,
             "CREATE INDEX IF NOT EXISTS idx_mem_vec_state_pres ON memory_vector_state(memory_id, vector_present);",
             "CREATE INDEX IF NOT EXISTS idx_mem_vec_state_gen ON memory_vector_state(max_generation);",
+            # V5.3.4: Memory relationships table (Knowledge graph & DAG)
+            """
+            CREATE TABLE IF NOT EXISTS memory_relationships (
+                relationship_id VARCHAR(100) PRIMARY KEY,
+                source_memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                target_memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                relationship_type VARCHAR(50) NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                reason VARCHAR(500),
+                actor VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+                idempotency_key VARCHAR(150) UNIQUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                metadata JSONB DEFAULT '{}',
+                CONSTRAINT chk_relationship_no_self CHECK (source_memory_id <> target_memory_id),
+                CONSTRAINT chk_relationship_type CHECK (
+                    relationship_type IN ('SUPERSEDES', 'DUPLICATE_OF', 'CONFLICTS_WITH', 'RELATED_TO', 'DERIVED_FROM')
+                )
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_rel_source ON memory_relationships(source_memory_id);",
+            "CREATE INDEX IF NOT EXISTS idx_rel_target ON memory_relationships(target_memory_id);",
+            "CREATE INDEX IF NOT EXISTS idx_rel_type ON memory_relationships(relationship_type);",
+            "CREATE INDEX IF NOT EXISTS idx_rel_pair ON memory_relationships(source_memory_id, target_memory_id, relationship_type);",
+            "CREATE INDEX IF NOT EXISTS idx_rel_idempotency ON memory_relationships(idempotency_key);",
         ]
 
         conn = self.get_connection()

@@ -423,13 +423,17 @@ class MemoryRepository:
                 return val
             if hasattr(val, "isoformat"):
                 return val.isoformat()
-            return str(val)
+        raw_source = row.get("source", MemorySource.DERIVED_CONTEXT.value)
+        try:
+            source_val = MemorySource(raw_source)
+        except (ValueError, TypeError):
+            source_val = MemorySource.SYSTEM_OBSERVATION if str(raw_source).upper() == "SYSTEM" else MemorySource.DERIVED_CONTEXT
 
         return MemoryRecord(
             memory_id=row.get("memory_id", ""),
             memory_type=MemoryType(row.get("memory_type", MemoryType.SEMANTIC.value)),
             content=row.get("content", ""),
-            source=MemorySource(row.get("source", MemorySource.DERIVED_CONTEXT.value)),
+            source=source_val,
             confidence=ConfidenceLevel(row.get("confidence", ConfidenceLevel.MEDIUM.value)),
             importance=float(row.get("importance", 0.5)),
             status=MemoryStatus(row.get("status", MemoryStatus.ACTIVE.value)),

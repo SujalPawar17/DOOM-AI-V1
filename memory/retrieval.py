@@ -132,6 +132,25 @@ class MemoryRetriever:
                     for c in kw_cands:
                         raw_lexical_map[c.memory_id] = c
 
+                    # V5.3.4: Check superseded records for active successors
+                    sup_cands = memory_repository.search(
+                        query=term,
+                        status=MemoryStatus.SUPERSEDED,
+                        privacy_classes=privacy_classes,
+                        limit=MAX_LEXICAL_CANDIDATES,
+                    )
+                    if sup_cands:
+                        try:
+                            from memory.relationship_engine import relationship_engine
+                            sup_ids = [s.memory_id for s in sup_cands]
+                            resolved_map = relationship_engine.resolve_lineage(sup_ids)
+                            for old_id, succ_id in resolved_map.items():
+                                succ_rec = memory_repository.get_by_id(succ_id)
+                                if succ_rec and succ_rec.status == MemoryStatus.ACTIVE:
+                                    raw_lexical_map[succ_rec.memory_id] = succ_rec
+                        except Exception:
+                            pass
+
             # Score lexical candidates using pure lexical score (S_lex) to prevent double counting
             lexical_candidates: List[Tuple[MemoryRecord, float]] = []
             for r in raw_lexical_map.values():
@@ -195,17 +214,29 @@ class MemoryRetriever:
                                     pass
                                 continue
 
-                            # Policy & security enforcement (defense-in-depth BEFORE ranking)
                             # 1. Must be ACTIVE (exclude DELETED, SUPERSEDED, ARCHIVED)
                             if rec.status != MemoryStatus.ACTIVE:
-                                # Zombie vector: non-ACTIVE memory has vector
-                                try:
-                                    from memory.sync_engine import vector_sync_engine, _emit_sync_telemetry
-                                    _emit_sync_telemetry("VECTOR_ZOMBIE_DETECTED", memory_id=rec.memory_id, status=rec.status.value, generation=rec.generation)
-                                    vector_sync_engine.schedule_deletion(rec.memory_id, generation=rec.generation)
-                                except Exception:
-                                    pass
-                                continue
+                                # V5.3.4: If superseded, attempt forward lineage resolution
+                                if rec.status == MemoryStatus.SUPERSEDED:
+                                    try:
+                                        from memory.relationship_engine import relationship_engine
+                                        resolved_map = relationship_engine.resolve_lineage([rec.memory_id])
+                                        if rec.memory_id in resolved_map:
+                                            succ_id = resolved_map[rec.memory_id]
+                                            succ_rec = memory_repository.get_by_id(succ_id)
+                                            if succ_rec and succ_rec.status == MemoryStatus.ACTIVE:
+                                                rec = succ_rec
+                                    except Exception:
+                                        pass
+                                if rec.status != MemoryStatus.ACTIVE:
+                                    # Zombie vector: non-ACTIVE memory has vector
+                                    try:
+                                        from memory.sync_engine import vector_sync_engine, _emit_sync_telemetry
+                                        _emit_sync_telemetry("VECTOR_ZOMBIE_DETECTED", memory_id=rec.memory_id, status=rec.status.value, generation=rec.generation)
+                                        vector_sync_engine.schedule_deletion(rec.memory_id, generation=rec.generation)
+                                    except Exception:
+                                        pass
+                                    continue
 
                             # 2. Never allow SENSITIVE
                             if rec.privacy_class == PrivacyClass.SENSITIVE:
@@ -333,6 +364,35 @@ class MemoryRetriever:
             ctx.retrieval_latency_ms = (time.time() - t_start) * 1000.0
             ctx.memory_hit = len(ctx.retrieved_memories) > 0
             ctx.memory_count = len(ctx.retrieved_memories)
+
+            # V5.3.4: Relationship Intelligence Resolution (Conflicts & Associations)
+            try:
+                retrieved_ids = [r.memory_id for r in ctx.retrieved_memories]
+                if len(retrieved_ids) >= 2:
+                    from database.postgres_db import postgres_manager
+                    conn = postgres_manager.get_connection()
+                    if conn:
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    SELECT source_memory_id, target_memory_id, confidence, reason
+                                    FROM memory_relationships
+                                    WHERE relationship_type = 'CONFLICTS_WITH'
+                                      AND source_memory_id = ANY(%s)
+                                      AND target_memory_id = ANY(%s);
+                                """, (retrieved_ids, retrieved_ids))
+                                c_rows = cur.fetchall()
+                                for row in c_rows:
+                                    ctx.conflicts.append({
+                                        "source_memory_id": row[0],
+                                        "target_memory_id": row[1],
+                                        "confidence": float(row[2]),
+                                        "reason": row[3],
+                                    })
+                        finally:
+                            postgres_manager.release_connection(conn)
+            except Exception:
+                pass
 
             # Touch access timestamps (non-blocking, non-fatal)
             try:

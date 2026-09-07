@@ -202,6 +202,8 @@ class MemoryContext:
     context_char_count: int = 0
     budget_exceeded: bool = False
     omitted_count: int = 0
+    conflicts: List[Dict[str, Any]] = field(default_factory=list)
+    relationship_annotations: Dict[str, Any] = field(default_factory=dict)
 
     def has_memories(self) -> bool:
         return len(self.retrieved_memories) > 0
@@ -249,6 +251,9 @@ class MemoryContext:
             "fencing_applied": self.fencing_applied,
             "context_char_count": self.context_char_count or len(self.fenced_context),
             "budget_exceeded": self.budget_exceeded,
+            "omitted_count": self.omitted_count,
+            "conflicts": self.conflicts,
+            "relationship_annotations": self.relationship_annotations,
         }
 
     def to_telemetry_dict(self) -> Dict[str, Any]:

@@ -61,6 +61,37 @@ from memory.reconciliation import (
     VectorReconciliationEngine,
 )
 
+# V5.3.4 Memory Relationships, Supersession DAG & Reconciliation
+from memory.relationships import (
+    RelationshipType,
+    RelationshipCandidateType,
+    CandidateStatus,
+    MemoryRelationship,
+    RelationshipCandidate,
+    RelationshipMutationResult,
+    MemoryRelationshipError,
+    SelfReferenceError,
+    CyclicSupersessionError,
+    InvalidRelationshipTypeError,
+    RelationshipValidationError,
+    IdempotencyConflictError,
+    SensitiveRelationshipError,
+    RelationshipNotFoundError,
+    compute_relationship_idempotency_key,
+)
+from memory.relationship_engine import (
+    relationship_engine,
+    MemoryRelationshipEngine,
+)
+from memory.relationship_reconciliation import (
+    relationship_reconciliation_engine,
+    RelationshipReconciliationEngine,
+    RelationshipReconciliationReport,
+)
+from memory.relationship_migration import (
+    run_relationship_migration,
+)
+
 __all__ = [
     # Legacy (backward compat)
     "user_profile", "UserProfile",
@@ -91,5 +122,15 @@ __all__ = [
     "ReconciliationReport", "compute_sync_idempotency_key", "validate_sync_transition",
     "vector_sync_engine", "VectorSyncEngine",
     "vector_reconciliation_engine", "VectorReconciliationEngine",
+    # V5.3.4 Memory Relationships & DAG
+    "RelationshipType", "RelationshipCandidateType", "CandidateStatus",
+    "MemoryRelationship", "RelationshipCandidate", "RelationshipMutationResult",
+    "MemoryRelationshipError", "SelfReferenceError", "CyclicSupersessionError",
+    "InvalidRelationshipTypeError", "RelationshipValidationError",
+    "IdempotencyConflictError", "SensitiveRelationshipError", "RelationshipNotFoundError",
+    "compute_relationship_idempotency_key",
+    "relationship_engine", "MemoryRelationshipEngine",
+    "relationship_reconciliation_engine", "RelationshipReconciliationEngine",
+    "RelationshipReconciliationReport", "run_relationship_migration",
 ]
 

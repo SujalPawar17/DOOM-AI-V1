@@ -152,24 +152,43 @@ class MemoryManager:
                     content_keywords=conflict_keywords,
                     project_id=record.project_id,
                 )
-                for old_record in conflicts:
-                    if old_record.memory_id != record.memory_id:
-                        # V5.3.2 Atomic 1:1 Supersession via MemoryLifecycleEngine
-                        trans_res = memory_lifecycle.engine.supersede_memory(
-                            old_memory_id=old_record.memory_id,
-                            new_record=record,
-                            reason=f"Superseded by newer {record.memory_type.value}",
-                            actor="SYSTEM",
-                        )
-                        if trans_res.success:
-                            self.telemetry.supersede_count += 1
-                            self._broadcast("MEMORY_SUPERSEDED",
-                                           old_id=old_record.memory_id,
-                                           new_id=record.memory_id)
-                            return record
-                        else:
-                            print(f"[MEMORY MANAGER] Supersession failed: {trans_res.error}")
-                            return None
+                valid_conflicts = [c for c in conflicts if c.memory_id != record.memory_id]
+                if len(valid_conflicts) > 1:
+                    # V5.3.4 Atomic N:1 Consolidation via MemoryRelationshipEngine
+                    from memory.relationship_engine import relationship_engine
+                    old_ids = [c.memory_id for c in valid_conflicts]
+                    trans_res = relationship_engine.consolidate_n_to_1(
+                        old_memory_ids=old_ids,
+                        new_record=record,
+                        reason=f"Consolidated and superseded by newer {record.memory_type.value}",
+                        actor="SYSTEM",
+                    )
+                    if trans_res.success:
+                        self.telemetry.supersede_count += len(old_ids)
+                        for oid in old_ids:
+                            self._broadcast("MEMORY_SUPERSEDED", old_id=oid, new_id=record.memory_id)
+                        return record
+                    else:
+                        print(f"[MEMORY MANAGER] N:1 Consolidation failed: {trans_res.error}")
+                        return None
+                elif len(valid_conflicts) == 1:
+                    old_record = valid_conflicts[0]
+                    # V5.3.2/V5.3.4 Atomic 1:1 Supersession via MemoryLifecycleEngine
+                    trans_res = memory_lifecycle.engine.supersede_memory(
+                        old_memory_id=old_record.memory_id,
+                        new_record=record,
+                        reason=f"Superseded by newer {record.memory_type.value}",
+                        actor="SYSTEM",
+                    )
+                    if trans_res.success:
+                        self.telemetry.supersede_count += 1
+                        self._broadcast("MEMORY_SUPERSEDED",
+                                       old_id=old_record.memory_id,
+                                       new_id=record.memory_id)
+                        return record
+                    else:
+                        print(f"[MEMORY MANAGER] Supersession failed: {trans_res.error}")
+                        return None
         except Exception as e:
             print(f"[MEMORY MANAGER] Supersession check failed (non-fatal): {e}")
 

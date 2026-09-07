@@ -969,7 +969,21 @@ class MemoryLifecycleEngine:
                                 idempotent_replay=True,
                             )
 
-                    # 4. Link new record to old
+                    # 4. Cycle and Self-Reference Verification (V5.3.4 DAG Invariants)
+                    if old_memory_id == new_record.memory_id:
+                        from memory.relationships import SelfReferenceError
+                        raise SelfReferenceError(old_memory_id)
+
+                    from memory.relationship_engine import relationship_engine
+                    from memory.relationships import (
+                        CyclicSupersessionError,
+                        compute_relationship_idempotency_key,
+                        RelationshipType,
+                    )
+                    if relationship_engine.check_cycle(cur, new_record.memory_id, old_memory_id, relationship_type="SUPERSEDES", max_depth=15):
+                        raise CyclicSupersessionError(new_record.memory_id, old_memory_id)
+
+                    # Link new record to old
                     new_record.supersedes_memory_id = old_memory_id
                     new_record.generation = 1
 
@@ -1025,6 +1039,17 @@ class MemoryLifecycleEngine:
                         "UPDATE memory_records SET status = %s, generation = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
                         (MemoryStatus.SUPERSEDED.value, old_new_gen, old_memory_id)
                     )
+
+                    # V5.3.4: Authoritative SUPERSEDES edge in memory_relationships
+                    edge_idem = compute_relationship_idempotency_key(new_record.memory_id, old_memory_id, "SUPERSEDES")
+                    rel_id = f"rel_{uuid.uuid4().hex[:16]}"
+                    cur.execute("""
+                        INSERT INTO memory_relationships (
+                            relationship_id, source_memory_id, target_memory_id, relationship_type,
+                            confidence, reason, actor, idempotency_key, created_at, metadata
+                        ) VALUES (%s, %s, %s, %s, 1.0, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+                        ON CONFLICT (idempotency_key) DO NOTHING;
+                    """, (rel_id, new_record.memory_id, old_memory_id, RelationshipType.SUPERSEDES.value, reason, act_str, edge_idem, json.dumps({"single_supersede": True})))
 
                     # V5.3.3: Enqueue vector sync for old memory (DELETE) and new memory (UPSERT if ACTIVE)
                     from memory.sync_engine import vector_sync_engine
@@ -1167,6 +1192,48 @@ class MemoryLifecycleEngine:
                 idempotent_replay=False,
             )
 
+    def consolidate_memories(
+        self,
+        old_memory_ids: List[str],
+        new_record: Any,
+        reason: str = "Consolidated multiple memories",
+        actor: Any = LifecycleActor.SYSTEM.value,
+        idempotency_key: Optional[str] = None,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> LifecycleTransitionResult:
+        """V5.3.4: Atomic N:1 supersession/consolidation delegating to relationship_engine."""
+        from memory.relationship_engine import relationship_engine
+        return relationship_engine.consolidate_n_to_1(
+            old_memory_ids=old_memory_ids,
+            new_record=new_record,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
+    def decompose_memory(
+        self,
+        old_memory_id: str,
+        new_records: List[Any],
+        reason: str = "Decomposed memory into multiple components",
+        actor: Any = LifecycleActor.SYSTEM.value,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> LifecycleTransitionResult:
+        """V5.3.4: Atomic 1:N supersession/decomposition delegating to relationship_engine."""
+        from memory.relationship_engine import relationship_engine
+        return relationship_engine.decompose_1_to_n(
+            old_memory_id=old_memory_id,
+            new_records=new_records,
+            reason=reason,
+            actor=actor,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
 
 # ============================================================================
 # 7. BACKWARD-COMPATIBLE V5.1/V5.3.1 LIFECYCLE MANAGER INTERFACE
@@ -1284,6 +1351,52 @@ class MemoryLifecycleManager:
         )
         if not res.success:
             print(f"[MEMORY LIFECYCLE] Activation rejected: {res.error}")
+        return res.success
+
+    def consolidate(
+        self,
+        old_memory_ids: List[str],
+        new_record: Any,
+        reason: str = "Consolidated multiple memories",
+        actor: str = LifecycleActor.SYSTEM.value,
+        idempotency_key: Optional[str] = None,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> bool:
+        """V5.3.4: Consolidate multiple memories into one atomically."""
+        res = self.engine.consolidate_memories(
+            old_memory_ids=old_memory_ids,
+            new_record=new_record,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+        if not res.success:
+            print(f"[MEMORY LIFECYCLE] Consolidation rejected: {res.error}")
+        return res.success
+
+    def decompose(
+        self,
+        old_memory_id: str,
+        new_records: List[Any],
+        reason: str = "Decomposed memory into multiple components",
+        actor: str = LifecycleActor.SYSTEM.value,
+        task_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> bool:
+        """V5.3.4: Decompose a memory into multiple records atomically."""
+        res = self.engine.decompose_memory(
+            old_memory_id=old_memory_id,
+            new_records=new_records,
+            reason=reason,
+            actor=actor,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+        if not res.success:
+            print(f"[MEMORY LIFECYCLE] Decomposition rejected: {res.error}")
         return res.success
 
 
