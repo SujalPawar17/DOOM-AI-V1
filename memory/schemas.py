@@ -47,6 +47,7 @@ class MemoryRecord:
     # Importance & lifecycle
     importance: float = 0.5                        # 0.0 (lowest) to 1.0 (highest)
     status: MemoryStatus = MemoryStatus.ACTIVE
+    generation: int = 1                            # V5.3.3 monotonic generation counter
 
     # Temporal fields
     created_at: str = field(default_factory=_utcnow)
@@ -86,6 +87,7 @@ class MemoryRecord:
             "verification_status": self.verification_status.value,
             "importance": self.importance,
             "status": self.status.value,
+            "generation": self.generation,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "last_accessed_at": self.last_accessed_at,
@@ -111,6 +113,7 @@ class MemoryRecord:
             verification_status=VerificationStatus(data.get("verification_status", VerificationStatus.UNVERIFIED.value)),
             importance=float(data.get("importance", 0.5)),
             status=MemoryStatus(data.get("status", MemoryStatus.ACTIVE.value)),
+            generation=int(data.get("generation") or 1),
             created_at=data.get("created_at", _utcnow()),
             updated_at=data.get("updated_at", _utcnow()),
             last_accessed_at=data.get("last_accessed_at"),

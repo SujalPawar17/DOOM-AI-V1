@@ -255,6 +255,44 @@ class PostgresManager:
                 END IF;
             END $$;
             """,
+            # V5.3.3: Monotonic generation column and index on memory_records
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS generation INTEGER NOT NULL DEFAULT 1;",
+            "CREATE INDEX IF NOT EXISTS idx_memory_generation ON memory_records(generation);",
+            # V5.3.3: Transactional vector synchronization queue
+            """
+            CREATE TABLE IF NOT EXISTS vector_sync_queue (
+                sync_id VARCHAR(100) PRIMARY KEY,
+                memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                operation VARCHAR(20) NOT NULL,
+                target_generation INTEGER NOT NULL,
+                target_status VARCHAR(30) NOT NULL,
+                idempotency_key VARCHAR(150) UNIQUE,
+                sync_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 5,
+                available_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                locked_until TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                last_error_class VARCHAR(100),
+                last_error_message_safe VARCHAR(500)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_vsq_status_avail ON vector_sync_queue(sync_status, available_at);",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_mem_id ON vector_sync_queue(memory_id);",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_idempotency ON vector_sync_queue(idempotency_key);",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_locked_until ON vector_sync_queue(locked_until);",
+            # V5.3.3: Durable vector generation and tombstone state registry
+            """
+            CREATE TABLE IF NOT EXISTS memory_vector_state (
+                memory_id VARCHAR(100) PRIMARY KEY REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                max_generation INTEGER NOT NULL DEFAULT 0,
+                vector_present BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_mem_vec_state_pres ON memory_vector_state(memory_id, vector_present);",
+            "CREATE INDEX IF NOT EXISTS idx_mem_vec_state_gen ON memory_vector_state(max_generation);",
         ]
 
         conn = self.get_connection()
@@ -300,10 +338,12 @@ class PostgresManager:
                             dimension INTEGER NOT NULL,
                             embedding vector(384) NOT NULL,
                             content_hash VARCHAR(64) NOT NULL,
+                            generation INTEGER NOT NULL DEFAULT 1,
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                             CONSTRAINT uq_memory_model_version UNIQUE (memory_id, model, model_version)
                         );
+                        ALTER TABLE memory_embeddings ADD COLUMN IF NOT EXISTS generation INTEGER NOT NULL DEFAULT 1;
                         CREATE INDEX IF NOT EXISTS idx_mem_emb_memory_id ON memory_embeddings(memory_id);
                         CREATE INDEX IF NOT EXISTS idx_mem_emb_model ON memory_embeddings(model, model_version);
                     """)

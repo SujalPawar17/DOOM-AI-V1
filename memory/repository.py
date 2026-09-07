@@ -45,17 +45,19 @@ class MemoryRepository:
         conn = pg.get_connection()
         if not conn:
             return False
+        sync_id = None
         try:
             with conn.cursor() as cur:
+                rec_gen = int(getattr(record, "generation", 1) or 1)
                 cur.execute("""
                     INSERT INTO memory_records (
                         memory_id, memory_type, content, source, confidence,
-                        importance, status, project_id, task_id, entity_ids, tags,
+                        importance, status, generation, project_id, task_id, entity_ids, tags,
                         supersedes_memory_id, source_event_id, verification_status,
                         privacy_class, metadata, created_at, updated_at, last_accessed_at
                     ) VALUES (
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s, %s, %s, %s
                     )
@@ -64,6 +66,7 @@ class MemoryRepository:
                         confidence = EXCLUDED.confidence,
                         importance = EXCLUDED.importance,
                         status = EXCLUDED.status,
+                        generation = EXCLUDED.generation,
                         verification_status = EXCLUDED.verification_status,
                         tags = EXCLUDED.tags,
                         metadata = EXCLUDED.metadata,
@@ -76,6 +79,7 @@ class MemoryRepository:
                     record.confidence.value,
                     record.importance,
                     record.status.value,
+                    rec_gen,
                     record.project_id,
                     record.task_id,
                     _serialize_list(record.entity_ids),
@@ -89,7 +93,31 @@ class MemoryRepository:
                     record.updated_at,
                     record.last_accessed_at,
                 ))
+
+                # V5.3.3: Outbox transactional vector synchronization enqueue
+                if record.status == MemoryStatus.ACTIVE and record.privacy_class != PrivacyClass.SENSITIVE:
+                    try:
+                        from memory.sync_engine import vector_sync_engine
+                        sync_id = vector_sync_engine.enqueue_sync_work(
+                            cur=cur,
+                            memory_id=record.memory_id,
+                            operation="UPSERT",
+                            target_generation=rec_gen,
+                            target_status=record.status.value,
+                        )
+                    except Exception as sq_err:
+                        print(f"[MEMORY REPO] Outbox enqueue failed: {sq_err}")
+
             conn.commit()
+
+            # V5.3.3: Post-commit fast-path dispatch (non-fatal)
+            if sync_id:
+                try:
+                    from memory.sync_engine import vector_sync_engine
+                    vector_sync_engine.trigger_post_commit(sync_id)
+                except Exception as pc_err:
+                    print(f"[MEMORY REPO] Post-commit vector sync dispatch failed (non-fatal): {pc_err}")
+
             return True
         except Exception as e:
             conn.rollback()
@@ -231,20 +259,49 @@ class MemoryRepository:
         )
         return res.success
 
-    def update_content(self, memory_id: str, new_content: str) -> bool:
-        """Update the content of an existing memory record."""
+    def update_content(self, memory_id: str, new_content: str, reason: str = "") -> bool:
+        """
+        Update the content of an existing memory record.
+        Atomically increments monotonic generation and enqueues vector synchronization.
+        """
         pg = self._get_manager()
         conn = pg.get_connection()
         if not conn:
             return False
+        sync_id = None
         try:
             with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE memory_records
-                    SET content = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE memory_id = %s AND status = 'ACTIVE';
+                    SET content = %s, generation = generation + 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE memory_id = %s AND status = 'ACTIVE'
+                    RETURNING generation, privacy_class, status;
                 """, (new_content, memory_id))
+                row = cur.fetchone()
+                if row:
+                    new_gen, pclass, status = row[0], row[1], row[2]
+                    if pclass != "SENSITIVE" and status == "ACTIVE":
+                        try:
+                            from memory.sync_engine import vector_sync_engine
+                            sync_id = vector_sync_engine.enqueue_sync_work(
+                                cur=cur,
+                                memory_id=memory_id,
+                                operation="UPSERT",
+                                target_generation=new_gen,
+                                target_status=status,
+                            )
+                        except Exception as sq_err:
+                            print(f"[MEMORY REPO] Outbox enqueue failed: {sq_err}")
+
             conn.commit()
+
+            if sync_id:
+                try:
+                    from memory.sync_engine import vector_sync_engine
+                    vector_sync_engine.trigger_post_commit(sync_id)
+                except Exception as pc_err:
+                    print(f"[MEMORY REPO] Post-commit vector sync dispatch failed (non-fatal): {pc_err}")
+
             return True
         except Exception as e:
             conn.rollback()
@@ -376,6 +433,7 @@ class MemoryRepository:
             confidence=ConfidenceLevel(row.get("confidence", ConfidenceLevel.MEDIUM.value)),
             importance=float(row.get("importance", 0.5)),
             status=MemoryStatus(row.get("status", MemoryStatus.ACTIVE.value)),
+            generation=int(row.get("generation") or 1),
             project_id=row.get("project_id"),
             task_id=row.get("task_id"),
             entity_ids=safe_list(row.get("entity_ids")),

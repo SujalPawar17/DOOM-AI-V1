@@ -170,10 +170,10 @@ class MemoryRetriever:
                     # Generate query embedding
                     emb_res = embedding_router.embed(query, check_policy=True)
                     if emb_res is not None:
-                        # Vector search (bounded to MAX_SEMANTIC_CANDIDATES = 25)
+                        # Vector search with bounded over-fetching (Phase 20: 50 raw candidates)
                         raw_matches = vector_store.search_similar(
                             query_vector=emb_res.vector,
-                            top_k=MAX_SEMANTIC_CANDIDATES,
+                            top_k=50,
                             model=emb_res.model,
                             model_version=emb_res.model_version,
                         )
@@ -183,18 +183,37 @@ class MemoryRetriever:
                             if m.similarity < SEMANTIC_SIMILARITY_THRESHOLD:
                                 continue
 
-                            # Fetch parent record from repository
+                            # Authoritative PostgreSQL validation (Phase 19)
                             rec = memory_repository.get_by_id(m.memory_id)
                             if not rec:
+                                # Orphan vector: exists in VectorStore but missing from PostgreSQL
+                                try:
+                                    from memory.sync_engine import vector_sync_engine, _emit_sync_telemetry
+                                    _emit_sync_telemetry("VECTOR_ORPHAN_DETECTED", memory_id=m.memory_id)
+                                    vector_sync_engine.schedule_deletion(m.memory_id)
+                                except Exception:
+                                    pass
                                 continue
 
                             # Policy & security enforcement (defense-in-depth BEFORE ranking)
                             # 1. Must be ACTIVE (exclude DELETED, SUPERSEDED, ARCHIVED)
                             if rec.status != MemoryStatus.ACTIVE:
+                                # Zombie vector: non-ACTIVE memory has vector
+                                try:
+                                    from memory.sync_engine import vector_sync_engine, _emit_sync_telemetry
+                                    _emit_sync_telemetry("VECTOR_ZOMBIE_DETECTED", memory_id=rec.memory_id, status=rec.status.value, generation=rec.generation)
+                                    vector_sync_engine.schedule_deletion(rec.memory_id, generation=rec.generation)
+                                except Exception:
+                                    pass
                                 continue
 
                             # 2. Never allow SENSITIVE
                             if rec.privacy_class == PrivacyClass.SENSITIVE:
+                                try:
+                                    from memory.sync_engine import vector_sync_engine
+                                    vector_sync_engine.schedule_deletion(rec.memory_id, generation=rec.generation)
+                                except Exception:
+                                    pass
                                 continue
 
                             # 3. Privacy level check

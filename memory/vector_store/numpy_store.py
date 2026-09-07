@@ -35,16 +35,91 @@ class NumPyVectorStorageAdapter(VectorStore):
         self._max_vectors = max_vectors
         # Primary storage dict: key = (memory_id, model, model_version) -> StoredVectorRecord
         self._records: Dict[Tuple[str, str, str], StoredVectorRecord] = {}
-        self._lock = threading.Lock()
+        # Monotonic generation registry: tracks highest generation observed per memory_id
+        self._max_generation: Dict[str, int] = {}
+        self._lock = threading.RLock()
 
         # Telemetry counters
         self._store_count: int = 0
         self._search_count: int = 0
         self._delete_count: int = 0
+        self._stale_upsert_rejections: int = 0
+        self._sync_generations_from_db()
 
     @property
     def backend(self) -> VectorStorageBackend:
         return VectorStorageBackend.NUMPY_FALLBACK
+
+    def _sync_generations_from_db(self) -> None:
+        """Hydrate monotonic generation registry from PostgreSQL memory_vector_state."""
+        try:
+            from database.postgres_db import postgres_manager
+            conn = postgres_manager.get_connection()
+            if not conn:
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT memory_id, max_generation FROM memory_vector_state;")
+                    for row in cur.fetchall():
+                        mid, gen = str(row[0]), int(row[1])
+                        self._max_generation[mid] = max(self._max_generation.get(mid, 0), gen)
+            finally:
+                postgres_manager.release_connection(conn)
+        except Exception:
+            pass
+
+    def _persist_vector_state(self, memory_id: str, generation: int, present: bool) -> None:
+        """Persist generation state and tombstone to PostgreSQL memory_vector_state."""
+        try:
+            from database.postgres_db import postgres_manager
+            conn = postgres_manager.get_connection()
+            if not conn:
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO memory_vector_state (memory_id, max_generation, vector_present, updated_at)
+                        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (memory_id) DO UPDATE SET
+                            max_generation = GREATEST(memory_vector_state.max_generation, EXCLUDED.max_generation),
+                            vector_present = EXCLUDED.vector_present,
+                            updated_at = CURRENT_TIMESTAMP;
+                    """, (memory_id, generation, present))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                postgres_manager.release_connection(conn)
+        except Exception:
+            pass
+
+    def _get_db_generation_unlocked(self, clean_mid: str) -> int:
+        """Probe PostgreSQL memory_vector_state without locking."""
+        try:
+            from database.postgres_db import postgres_manager
+            conn = postgres_manager.get_connection()
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT max_generation FROM memory_vector_state WHERE memory_id = %s;", (clean_mid,))
+                        row = cur.fetchone()
+                        if row and row[0] is not None:
+                            return int(row[0])
+                finally:
+                    postgres_manager.release_connection(conn)
+        except Exception:
+            pass
+        return 0
+
+    def get_max_generation(self, memory_id: str) -> int:
+        """Return the highest generation observed for the given memory_id."""
+        clean_mid = memory_id.strip()
+        with self._lock:
+            if clean_mid in self._max_generation:
+                return self._max_generation[clean_mid]
+            gen = self._get_db_generation_unlocked(clean_mid)
+            self._max_generation[clean_mid] = gen
+            return gen
 
     # ------------------------------------------------------------------
     # CRUD Operations
@@ -52,23 +127,58 @@ class NumPyVectorStorageAdapter(VectorStore):
     def store_embedding(
         self,
         memory_id: str,
-        embedding: List[float],
-        model: str,
-        model_version: str,
-        content_hash: str,
+        embedding: Optional[List[float]] = None,
+        model: str = "",
+        model_version: str = "",
+        content_hash: str = "",
         dimension: int = 384,
+        generation: int = 1,
+        vector: Optional[List[float]] = None,
     ) -> StoredVectorRecord:
         """
         Store an embedding vector idempotently.
-        Replaces existing record if (memory_id, model, model_version) exists.
+        Replaces existing record if (memory_id, model, model_version) exists,
+        provided generation >= max_generation observed for this memory_id.
+        Stale UPSERTs with generation < max_generation are strictly rejected.
+        Supports both embedding= and vector= keyword arguments.
         """
         if not memory_id or not isinstance(memory_id, str):
             raise VectorValidationError("memory_id must be a non-empty string.")
 
-        clean_vector = validate_vector_for_storage(embedding, expected_dimension=dimension)
-        key = (memory_id.strip(), model.strip(), model_version.strip())
+        actual_vector = embedding if embedding is not None else vector
+        if actual_vector is None:
+            raise VectorValidationError("Either embedding or vector must be provided.")
+
+        clean_mid = memory_id.strip()
+        clean_model = model.strip() if model else "default"
+        clean_ver = model_version.strip() if model_version else "v1"
+        clean_vector = validate_vector_for_storage(actual_vector, expected_dimension=dimension)
+        key = (clean_mid, clean_model, clean_ver)
 
         with self._lock:
+            # Monotonic generation check: Reject stale UPSERTs
+            highest_gen = self._max_generation.get(clean_mid)
+            if highest_gen is None:
+                highest_gen = self.get_max_generation(clean_mid)
+                self._max_generation[clean_mid] = highest_gen
+
+            if generation < highest_gen:
+                self._stale_upsert_rejections += 1
+                existing = self._records.get(key)
+                if existing:
+                    return existing
+                return StoredVectorRecord(
+                    embedding_id=f"emb_stale_{clean_mid[:16]}",
+                    memory_id=clean_mid,
+                    model=clean_model,
+                    model_version=clean_ver,
+                    dimension=dimension,
+                    embedding=clean_vector,
+                    content_hash=content_hash.strip(),
+                    generation=generation,
+                    backend=self.backend.value,
+                )
+
             # Capacity check (only for new entries)
             if key not in self._records and len(self._records) >= self._max_vectors:
                 raise VectorStorageLimitError(
@@ -79,14 +189,18 @@ class NumPyVectorStorageAdapter(VectorStore):
             existing = self._records.get(key)
             created_at = existing.created_at if existing else now_iso
 
+            # Update highest observed generation
+            self._max_generation[clean_mid] = max(highest_gen, generation)
+
             record = StoredVectorRecord(
-                embedding_id=f"emb_{memory_id[:16]}_{hash(key) & 0xFFFFFFFF:08x}",
-                memory_id=memory_id.strip(),
-                model=model.strip(),
-                model_version=model_version.strip(),
+                embedding_id=f"emb_{clean_mid[:16]}_{hash(key) & 0xFFFFFFFF:08x}",
+                memory_id=clean_mid,
+                model=clean_model,
+                model_version=clean_ver,
                 dimension=dimension,
                 embedding=clean_vector,
                 content_hash=content_hash.strip(),
+                generation=generation,
                 created_at=created_at,
                 updated_at=now_iso,
                 backend=self.backend.value,
@@ -94,32 +208,52 @@ class NumPyVectorStorageAdapter(VectorStore):
 
             self._records[key] = record
             self._store_count += 1
-            return record
+
+        # Persist durable vector state
+        self._persist_vector_state(clean_mid, generation, True)
+        return record
 
     def get_embedding(
         self,
         memory_id: str,
-        model: str,
-        model_version: str,
+        model: Optional[str] = None,
+        model_version: Optional[str] = None,
     ) -> Optional[StoredVectorRecord]:
-        """Retrieve stored record by memory_id, model, and version."""
-        key = (memory_id.strip(), model.strip(), model_version.strip())
+        """Retrieve stored record by memory_id and optional model/version."""
+        clean_mid = memory_id.strip()
         with self._lock:
-            return self._records.get(key)
+            if model is not None and model_version is not None:
+                key = (clean_mid, model.strip(), model_version.strip())
+                return self._records.get(key)
+            # Find any record matching memory_id
+            for k, r in self._records.items():
+                if k[0] == clean_mid:
+                    return r
+            return None
 
     def delete_embedding(
         self,
         memory_id: str,
         model: Optional[str] = None,
         model_version: Optional[str] = None,
+        generation: Optional[int] = None,
     ) -> bool:
         """
         Delete embedding record. Idempotent — repeated deletions return False safely.
+        If generation is provided, sets max_generation so stale UPSERTs cannot resurrect.
         """
         clean_mid = memory_id.strip()
         deleted = False
 
         with self._lock:
+            target_gen = generation
+            if target_gen is not None:
+                self._max_generation[clean_mid] = max(
+                    self._max_generation.get(clean_mid, 0),
+                    target_gen,
+                )
+            effective_gen = self._max_generation.get(clean_mid, target_gen or 0)
+
             if model is not None and model_version is not None:
                 key = (clean_mid, model.strip(), model_version.strip())
                 if key in self._records:
@@ -134,7 +268,10 @@ class NumPyVectorStorageAdapter(VectorStore):
 
             if deleted:
                 self._delete_count += 1
-            return deleted
+
+        # Persist tombstone to durable memory_vector_state
+        self._persist_vector_state(clean_mid, effective_gen, False)
+        return deleted
 
     def has_embedding(
         self,
@@ -230,9 +367,11 @@ class NumPyVectorStorageAdapter(VectorStore):
                 "store_ops": self._store_count,
                 "search_ops": self._search_count,
                 "delete_ops": self._delete_count,
+                "stale_upsert_rejections": self._stale_upsert_rejections,
             }
 
     def clear(self) -> None:
         """Clear all vectors from memory."""
         with self._lock:
             self._records.clear()
+            self._max_generation.clear()

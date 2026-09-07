@@ -680,7 +680,7 @@ class MemoryLifecycleEngine:
                 with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
                     # 1. Pessimistic Row Lock (3000ms timeout enforced by session)
                     cur.execute(
-                        "SELECT memory_id, status, confidence, importance FROM memory_records WHERE memory_id = %s FOR UPDATE;",
+                        "SELECT memory_id, status, confidence, importance, generation, privacy_class FROM memory_records WHERE memory_id = %s FOR UPDATE;",
                         (memory_id,)
                     )
                     row = cur.fetchone()
@@ -691,6 +691,8 @@ class MemoryLifecycleEngine:
                     current_status = coerce_memory_status(row["status"])
                     conf_before = row.get("confidence")
                     imp_before = float(row["importance"]) if row.get("importance") is not None else None
+                    curr_gen = int(row.get("generation") or 1)
+                    new_generation = curr_gen + 1
 
                     # 3. Idempotency Check
                     if idempotency_key:
@@ -745,10 +747,21 @@ class MemoryLifecycleEngine:
                         memory_id=memory_id,
                     )
 
-                    # 6. Apply Status Update
+                    # 6. Apply Status Update and Monotonic Generation Increment
                     cur.execute(
-                        "UPDATE memory_records SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
-                        (target_s.value, memory_id)
+                        "UPDATE memory_records SET status = %s, generation = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
+                        (target_s.value, new_generation, memory_id)
+                    )
+
+                    # V5.3.3: Outbox Transactional Vector Synchronization Enqueue
+                    vec_op = "UPSERT" if target_s == MemoryStatus.ACTIVE else "DELETE"
+                    from memory.sync_engine import vector_sync_engine
+                    sync_id = vector_sync_engine.enqueue_sync_work(
+                        cur=cur,
+                        memory_id=memory_id,
+                        operation=vec_op,
+                        target_generation=new_generation,
+                        target_status=target_s.value,
                     )
 
                     # 7. Insert Audit Event
@@ -822,6 +835,15 @@ class MemoryLifecycleEngine:
                 success=True,
                 idempotent_replay=False,
             )
+
+            # 9. Post-Commit Vector Sync Fast-Path Dispatch (Safe, Non-fatal)
+            if sync_id:
+                try:
+                    from memory.sync_engine import vector_sync_engine
+                    vector_sync_engine.trigger_post_commit(sync_id)
+                except Exception as pc_err:
+                    print(f"[MEMORY LIFECYCLE] Post-commit vector sync failed (non-fatal): {pc_err}")
+
             return LifecycleTransitionResult(
                 success=True,
                 memory_id=memory_id,
@@ -893,7 +915,7 @@ class MemoryLifecycleEngine:
                 with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
                     # 1. Lock old memory FOR UPDATE
                     cur.execute(
-                        "SELECT memory_id, status, confidence, importance FROM memory_records WHERE memory_id = %s FOR UPDATE;",
+                        "SELECT memory_id, status, confidence, importance, generation FROM memory_records WHERE memory_id = %s FOR UPDATE;",
                         (old_memory_id,)
                     )
                     row = cur.fetchone()
@@ -903,6 +925,8 @@ class MemoryLifecycleEngine:
                     old_status = coerce_memory_status(row["status"])
                     conf_before = row.get("confidence")
                     imp_before = float(row["importance"]) if row.get("importance") is not None else None
+                    old_gen = int(row.get("generation") or 1)
+                    old_new_gen = old_gen + 1
 
                     # 2. Validate transition from old state to SUPERSEDED
                     validate_transition(
@@ -947,17 +971,18 @@ class MemoryLifecycleEngine:
 
                     # 4. Link new record to old
                     new_record.supersedes_memory_id = old_memory_id
+                    new_record.generation = 1
 
                     # 5. Store new record inside THIS transaction
                     cur.execute("""
                         INSERT INTO memory_records (
                             memory_id, memory_type, content, source, confidence,
-                            importance, status, project_id, task_id, entity_ids, tags,
+                            importance, status, generation, project_id, task_id, entity_ids, tags,
                             supersedes_memory_id, source_event_id, verification_status,
                             privacy_class, metadata, created_at, updated_at, last_accessed_at
                         ) VALUES (
                             %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s,
                             %s, %s, %s, %s, %s
                         )
@@ -966,6 +991,7 @@ class MemoryLifecycleEngine:
                             confidence = EXCLUDED.confidence,
                             importance = EXCLUDED.importance,
                             status = EXCLUDED.status,
+                            generation = EXCLUDED.generation,
                             verification_status = EXCLUDED.verification_status,
                             tags = EXCLUDED.tags,
                             metadata = EXCLUDED.metadata,
@@ -979,6 +1005,7 @@ class MemoryLifecycleEngine:
                         new_record.confidence.value if hasattr(new_record.confidence, "value") else str(new_record.confidence),
                         new_record.importance,
                         new_record.status.value if hasattr(new_record.status, "value") else str(new_record.status),
+                        1,
                         new_record.project_id,
                         new_record.task_id or task_id,
                         json.dumps(new_record.entity_ids or [], default=str),
@@ -993,11 +1020,30 @@ class MemoryLifecycleEngine:
                         new_record.last_accessed_at,
                     ))
 
-                    # 6. Transition old memory to SUPERSEDED
+                    # 6. Transition old memory to SUPERSEDED with monotonic generation increment
                     cur.execute(
-                        "UPDATE memory_records SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
-                        (MemoryStatus.SUPERSEDED.value, old_memory_id)
+                        "UPDATE memory_records SET status = %s, generation = %s, updated_at = CURRENT_TIMESTAMP WHERE memory_id = %s;",
+                        (MemoryStatus.SUPERSEDED.value, old_new_gen, old_memory_id)
                     )
+
+                    # V5.3.3: Enqueue vector sync for old memory (DELETE) and new memory (UPSERT if ACTIVE)
+                    from memory.sync_engine import vector_sync_engine
+                    sync_id_old = vector_sync_engine.enqueue_sync_work(
+                        cur=cur,
+                        memory_id=old_memory_id,
+                        operation="DELETE",
+                        target_generation=old_new_gen,
+                        target_status=MemoryStatus.SUPERSEDED.value,
+                    )
+                    sync_id_new = None
+                    if new_record.status == MemoryStatus.ACTIVE and new_record.privacy_class != PrivacyClass.SENSITIVE:
+                        sync_id_new = vector_sync_engine.enqueue_sync_work(
+                            cur=cur,
+                            memory_id=new_record.memory_id,
+                            operation="UPSERT",
+                            target_generation=1,
+                            target_status=new_record.status.value,
+                        )
 
                     # 7. Insert Audit Event for old memory
                     evt = MemoryLifecycleEvent(
@@ -1070,6 +1116,21 @@ class MemoryLifecycleEngine:
                 success=True,
                 idempotent_replay=False,
             )
+
+            # 9. Post-Commit Vector Sync Fast-Path Dispatch (Safe, Non-fatal)
+            if sync_id_old:
+                try:
+                    from memory.sync_engine import vector_sync_engine
+                    vector_sync_engine.trigger_post_commit(sync_id_old)
+                except Exception as pc1:
+                    print(f"[MEMORY LIFECYCLE] Post-commit vector sync failed (old): {pc1}")
+            if sync_id_new:
+                try:
+                    from memory.sync_engine import vector_sync_engine
+                    vector_sync_engine.trigger_post_commit(sync_id_new)
+                except Exception as pc2:
+                    print(f"[MEMORY LIFECYCLE] Post-commit vector sync failed (new): {pc2}")
+
             return LifecycleTransitionResult(
                 success=True,
                 memory_id=old_memory_id,

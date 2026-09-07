@@ -42,6 +42,25 @@ from memory.lifecycle import (
     LIFECYCLE_TRANSITIONS,
 )
 
+# V5.3.3 Vector Synchronization & Reconciliation Engine
+from memory.sync import (
+    SyncOperation,
+    VectorSyncStatus,
+    VectorSyncWorkItem,
+    VectorSyncResult,
+    ReconciliationReport,
+    compute_sync_idempotency_key,
+    validate_sync_transition,
+)
+from memory.sync_engine import (
+    vector_sync_engine,
+    VectorSyncEngine,
+)
+from memory.reconciliation import (
+    vector_reconciliation_engine,
+    VectorReconciliationEngine,
+)
+
 __all__ = [
     # Legacy (backward compat)
     "user_profile", "UserProfile",
@@ -67,4 +86,10 @@ __all__ = [
     "LifecycleActor", "LifecycleTransition", "MemoryLifecycleEvent",
     "validate_transition", "validate_provenance", "is_valid_transition", "get_transition",
     "LIFECYCLE_TRANSITIONS",
+    # V5.3.3 Vector Synchronization & Reconciliation
+    "SyncOperation", "VectorSyncStatus", "VectorSyncWorkItem", "VectorSyncResult",
+    "ReconciliationReport", "compute_sync_idempotency_key", "validate_sync_transition",
+    "vector_sync_engine", "VectorSyncEngine",
+    "vector_reconciliation_engine", "VectorReconciliationEngine",
 ]
+

@@ -177,6 +177,14 @@ def teardown_semantic_test_corpus():
         vector_store.delete_embedding(mid)
 
 
+def setup_module(module=None):
+    setup_semantic_test_corpus()
+
+
+def teardown_module(module=None):
+    teardown_semantic_test_corpus()
+
+
 # ===========================================================================
 # Test Cases A through X
 # ===========================================================================

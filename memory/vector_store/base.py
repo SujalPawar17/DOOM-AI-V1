@@ -52,6 +52,7 @@ class StoredVectorRecord:
     dimension: int
     embedding: List[float]
     content_hash: str
+    generation: int = 1
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     backend: str = "UNKNOWN"
@@ -65,6 +66,7 @@ class StoredVectorRecord:
             "model_version": self.model_version,
             "dimension": self.dimension,
             "content_hash": self.content_hash,
+            "generation": self.generation,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "backend": self.backend,
@@ -142,16 +144,19 @@ class VectorStore(ABC):
     def store_embedding(
         self,
         memory_id: str,
-        embedding: List[float],
-        model: str,
-        model_version: str,
-        content_hash: str,
+        embedding: Optional[List[float]] = None,
+        model: str = "",
+        model_version: str = "",
+        content_hash: str = "",
         dimension: int = 384,
+        generation: int = 1,
+        vector: Optional[List[float]] = None,
     ) -> StoredVectorRecord:
         """
         Store an embedding vector idempotently.
         If a record with (memory_id, model, model_version) already exists,
-        updates it atomically.
+        updates it atomically with monotonic generation tracking.
+        Supports both embedding= and vector= keyword arguments.
         """
         pass
 
@@ -159,11 +164,11 @@ class VectorStore(ABC):
     def get_embedding(
         self,
         memory_id: str,
-        model: str,
-        model_version: str,
+        model: Optional[str] = None,
+        model_version: Optional[str] = None,
     ) -> Optional[StoredVectorRecord]:
         """
-        Retrieve a stored embedding record by memory_id and model version.
+        Retrieve a stored embedding record by memory_id and optional model version.
         Returns None if not found.
         """
         pass
@@ -174,6 +179,7 @@ class VectorStore(ABC):
         memory_id: str,
         model: Optional[str] = None,
         model_version: Optional[str] = None,
+        generation: Optional[int] = None,
     ) -> bool:
         """
         Delete embedding for a memory_id.
