@@ -49,6 +49,14 @@ class MemoryRecord:
     status: MemoryStatus = MemoryStatus.ACTIVE
     generation: int = 1                            # V5.3.3 monotonic generation counter
 
+    # V5.3.5 Freshness, Temporal validity & Continuous Confidence
+    confidence_score: Optional[float] = None       # Continuous score in [0.0, 1.0] (syncs from confidence if None)
+    freshness_class: str = "PROJECT_STABLE"        # FreshnessClass enum value
+    is_foundational: bool = False                  # Guaranteed high freshness floor / importance protection
+    valid_from: Optional[str] = field(default_factory=_utcnow)
+    valid_until: Optional[str] = None
+    last_confirmed_at: Optional[str] = field(default_factory=_utcnow)
+
     # Temporal fields
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
@@ -72,6 +80,16 @@ class MemoryRecord:
     # Extensible metadata (never logs raw content)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.confidence_score is None:
+            _CONF_MAP = {
+                ConfidenceLevel.HIGH: 1.0,
+                ConfidenceLevel.MEDIUM: 0.6,
+                ConfidenceLevel.LOW: 0.3,
+                ConfidenceLevel.UNKNOWN: 0.1,
+            }
+            self.confidence_score = _CONF_MAP.get(self.confidence, 0.50)
+
     def touch(self) -> None:
         """Update last_accessed_at timestamp."""
         self.last_accessed_at = _utcnow()
@@ -84,6 +102,12 @@ class MemoryRecord:
             "content": self.content,
             "source": self.source.value,
             "confidence": self.confidence.value,
+            "confidence_score": self.confidence_score,
+            "freshness_class": self.freshness_class,
+            "is_foundational": self.is_foundational,
+            "valid_from": self.valid_from,
+            "valid_until": self.valid_until,
+            "last_confirmed_at": self.last_confirmed_at,
             "verification_status": self.verification_status.value,
             "importance": self.importance,
             "status": self.status.value,
@@ -104,12 +128,32 @@ class MemoryRecord:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryRecord":
         """Deserialize from a dictionary (e.g. database row)."""
+        c_score = data.get("confidence_score")
+        if c_score is None:
+            c_val = str(data.get("confidence", "MEDIUM")).upper()
+            if c_val == "HIGH":
+                c_score = 0.90
+            elif c_val == "LOW":
+                c_score = 0.30
+            elif c_val == "UNKNOWN":
+                c_score = 0.10
+            else:
+                c_score = 0.60
+        else:
+            c_score = float(c_score)
+
         return cls(
             memory_id=data.get("memory_id", new_memory_id()),
             memory_type=MemoryType(data.get("memory_type", MemoryType.SEMANTIC.value)),
             content=data.get("content", ""),
             source=MemorySource(data.get("source", MemorySource.DERIVED_CONTEXT.value)),
             confidence=ConfidenceLevel(data.get("confidence", ConfidenceLevel.MEDIUM.value)),
+            confidence_score=c_score,
+            freshness_class=str(data.get("freshness_class", "PROJECT_STABLE")),
+            is_foundational=bool(data.get("is_foundational", False)),
+            valid_from=data.get("valid_from"),
+            valid_until=data.get("valid_until"),
+            last_confirmed_at=data.get("last_confirmed_at", data.get("created_at", _utcnow())),
             verification_status=VerificationStatus(data.get("verification_status", VerificationStatus.UNVERIFIED.value)),
             importance=float(data.get("importance", 0.5)),
             status=MemoryStatus(data.get("status", MemoryStatus.ACTIVE.value)),
@@ -137,7 +181,7 @@ class ScoredMemory:
 
 @dataclass
 class HybridScoreBreakdown:
-    """Detailed score breakdown across all six V5.2.4 hybrid ranking factors."""
+    """Detailed score breakdown across all six V5.2.4/V5.3.5 hybrid ranking factors."""
     lexical_score: float = 0.0
     semantic_score: float = 0.0
     importance_score: float = 0.0
@@ -145,6 +189,7 @@ class HybridScoreBreakdown:
     confidence_score: float = 0.0
     project_score: float = 0.0
     final_score: float = 0.0
+    freshness_score: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -155,6 +200,7 @@ class HybridScoreBreakdown:
             "confidence_score": self.confidence_score,
             "project_score": self.project_score,
             "final_score": self.final_score,
+            "freshness_score": self.freshness_score,
         }
 
 

@@ -113,6 +113,10 @@ class MemoryManager:
 
             # Apply policy decisions to record
             record.confidence = decision.confidence
+            record.confidence_score = getattr(decision, "confidence_score", 0.50)
+            record.freshness_class = getattr(decision, "freshness_class", "PROJECT_STABLE")
+            record.is_foundational = getattr(decision, "is_foundational", False)
+            record.importance = getattr(decision, "importance", record.importance)
             record.verification_status = decision.verification_status
             record.privacy_class = decision.privacy_class
             record.tags = list(set(record.tags + decision.tags))

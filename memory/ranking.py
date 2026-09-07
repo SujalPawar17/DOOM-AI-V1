@@ -193,6 +193,75 @@ class MemoryRanker:
         except Exception:
             return 0.5
 
+    def compute_freshness_score(self, record: MemoryRecord) -> float:
+        """
+        Compute V5.3.5 semantic freshness score F(t) in [0.0, 1.0].
+        Rules:
+        1. If valid_until exists and now > valid_until, F(t) = 0.0 (expired).
+        2. If freshness_class == PERMANENT, F(t) = 1.0 (no decay).
+        3. Otherwise: F(t) = floor + (1 - floor) * exp(-ln(2) / half_life * delta_days),
+           where delta_days = (now - max(last_confirmed_at, created_at)).
+        Strictly a non-mutating ranking calculation — never deletes, archives, or modifies DB.
+        """
+        from memory.evolution_models import FreshnessClass, FRESHNESS_CONFIG
+
+        # 1. Expiration check
+        valid_until_str = getattr(record, "valid_until", None)
+        now = datetime.now(timezone.utc)
+        if valid_until_str:
+            try:
+                vu = datetime.fromisoformat(valid_until_str.replace("Z", "+00:00"))
+                if now > vu:
+                    return 0.0
+            except Exception:
+                pass
+
+        # 2. Freshness class & parameters
+        f_class_name = getattr(record, "freshness_class", "PROJECT_STABLE")
+        try:
+            f_class = FreshnessClass(f_class_name)
+        except Exception:
+            f_class = FreshnessClass.PROJECT_STABLE
+
+        if f_class == FreshnessClass.PERMANENT:
+            return 1.0
+
+        params = FRESHNESS_CONFIG.get(f_class, FRESHNESS_CONFIG[FreshnessClass.PROJECT_STABLE])
+        half_life = params.half_life_days
+        floor = params.floor
+
+        # Foundational override check: if is_foundational is True, guarantee floor >= 0.85
+        if getattr(record, "is_foundational", False) and floor < 0.85:
+            floor = 0.85
+            half_life = max(half_life, 365.0)
+
+        # 3. Calculate delta_days from max(last_confirmed_at, created_at)
+        ref_dt = None
+        for ts_str in (getattr(record, "last_confirmed_at", None), getattr(record, "created_at", None)):
+            if ts_str:
+                try:
+                    dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    if ref_dt is None or dt > ref_dt:
+                        ref_dt = dt
+                except Exception:
+                    pass
+
+        if not ref_dt:
+            return floor
+
+        delta_seconds = (now - ref_dt).total_seconds()
+        if delta_seconds <= 0.0:
+            return 1.0
+
+        delta_days = delta_seconds / 86400.0
+        if half_life <= 0.0 or math.isinf(half_life):
+            return 1.0
+
+        decay_rate = math.log(2.0) / half_life
+        decay_factor = math.exp(-decay_rate * delta_days)
+        f_score = floor + (1.0 - floor) * decay_factor
+        return max(0.0, min(f_score, 1.0))
+
     def compute_recency_score(self, record: MemoryRecord, halflife_days: float = RECENCY_HALFLIFE_DAYS) -> float:
         """
         Compute pure recency score (S_rec) in [0.0, 1.0] using exponential half-life decay.
@@ -220,9 +289,21 @@ class MemoryRanker:
         """
         Compute pure confidence score (S_conf) in [0.0, 1.0].
         If verification_status is CONTRADICTED, clamps to 0.0.
+        Uses continuous confidence_score if present; falls back to discrete weights.
         """
         if getattr(record, "verification_status", None) == VerificationStatus.CONTRADICTED:
             return 0.0
+
+        # V5.3.5: Prefer continuous score if explicitly available
+        c_score = getattr(record, "confidence_score", None)
+        if c_score is not None:
+            try:
+                f_val = float(c_score)
+                if not (math.isnan(f_val) or math.isinf(f_val)):
+                    return max(0.0, min(f_val, 1.0))
+            except Exception:
+                pass
+
         conf = getattr(record, "confidence", None) or ConfidenceLevel.UNKNOWN
         weight = _CONFIDENCE_WEIGHTS.get(conf, 0.1)
         return max(0.0, min(float(weight), 1.0))
@@ -272,8 +353,9 @@ class MemoryRanker:
         weights: Optional[HybridRankingWeights] = None,
     ) -> Tuple[float, HybridScoreBreakdown]:
         """
-        Compute the V5.2.4 six-factor composite score and breakdown for a candidate.
-        Final Score = w_lex*S_lex + w_sem*S_sem + w_imp*S_imp + w_rec*S_rec + w_conf*S_conf + w_proj*S_proj
+        Compute the V5.2.4/V5.3.5 six-factor composite score and breakdown for a candidate.
+        Uses semantic freshness score as S_rec/S_fresh.
+        Final Score = w_lex*S_lex + w_sem*S_sem + w_imp*S_imp + w_rec*S_fresh + w_conf*S_conf + w_proj*S_proj
         """
         w = weights or DEFAULT_HYBRID_WEIGHTS
         w.validate()
@@ -281,7 +363,8 @@ class MemoryRanker:
         s_lex = max(0.0, min(float(lexical_score), 1.0))
         s_sem = max(0.0, min(float(semantic_score), 1.0))
         s_imp = self.compute_importance_score(record)
-        s_rec = self.compute_recency_score(record)
+        s_fresh = self.compute_freshness_score(record)
+        s_rec = s_fresh  # V5.3.5: freshness replaces raw calendar recency in the ranking slot
         s_conf = self.compute_confidence_score(record)
         s_proj = self.compute_project_score(record, project_id, task_id)
 
@@ -289,7 +372,7 @@ class MemoryRanker:
             w.weight_lexical * s_lex
             + w.weight_semantic * s_sem
             + w.weight_importance * s_imp
-            + w.weight_recency * s_rec
+            + w.weight_recency * s_fresh
             + w.weight_confidence * s_conf
             + w.weight_project * s_proj
         )
@@ -303,6 +386,7 @@ class MemoryRanker:
             confidence_score=s_conf,
             project_score=s_proj,
             final_score=final_score,
+            freshness_score=s_fresh,
         )
         return final_score, breakdown
 

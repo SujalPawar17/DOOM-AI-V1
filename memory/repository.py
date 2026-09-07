@@ -49,17 +49,26 @@ class MemoryRepository:
         try:
             with conn.cursor() as cur:
                 rec_gen = int(getattr(record, "generation", 1) or 1)
+                c_score = float(getattr(record, "confidence_score", 0.50))
+                f_class = str(getattr(record, "freshness_class", "PROJECT_STABLE"))
+                is_found = bool(getattr(record, "is_foundational", False))
+                v_from = getattr(record, "valid_from", None)
+                v_until = getattr(record, "valid_until", None)
+                l_conf = getattr(record, "last_confirmed_at", None)
+
                 cur.execute("""
                     INSERT INTO memory_records (
                         memory_id, memory_type, content, source, confidence,
                         importance, status, generation, project_id, task_id, entity_ids, tags,
                         supersedes_memory_id, source_event_id, verification_status,
-                        privacy_class, metadata, created_at, updated_at, last_accessed_at
+                        privacy_class, metadata, created_at, updated_at, last_accessed_at,
+                        confidence_score, freshness_class, is_foundational, valid_from, valid_until, last_confirmed_at
                     ) VALUES (
                         %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
-                        %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s
                     )
                     ON CONFLICT (memory_id) DO UPDATE SET
                         content = EXCLUDED.content,
@@ -70,6 +79,12 @@ class MemoryRepository:
                         verification_status = EXCLUDED.verification_status,
                         tags = EXCLUDED.tags,
                         metadata = EXCLUDED.metadata,
+                        confidence_score = EXCLUDED.confidence_score,
+                        freshness_class = EXCLUDED.freshness_class,
+                        is_foundational = EXCLUDED.is_foundational,
+                        valid_from = EXCLUDED.valid_from,
+                        valid_until = EXCLUDED.valid_until,
+                        last_confirmed_at = EXCLUDED.last_confirmed_at,
                         updated_at = CURRENT_TIMESTAMP;
                 """, (
                     record.memory_id,
@@ -92,6 +107,12 @@ class MemoryRepository:
                     record.created_at,
                     record.updated_at,
                     record.last_accessed_at,
+                    c_score,
+                    f_class,
+                    is_found,
+                    v_from,
+                    v_until,
+                    l_conf,
                 ))
 
                 # V5.3.3: Outbox transactional vector synchronization enqueue
@@ -429,12 +450,32 @@ class MemoryRepository:
         except (ValueError, TypeError):
             source_val = MemorySource.SYSTEM_OBSERVATION if str(raw_source).upper() == "SYSTEM" else MemorySource.DERIVED_CONTEXT
 
+        c_score = row.get("confidence_score")
+        if c_score is None:
+            c_val = str(row.get("confidence", "MEDIUM")).upper()
+            if c_val == "HIGH":
+                c_score = 0.90
+            elif c_val == "LOW":
+                c_score = 0.30
+            elif c_val == "UNKNOWN":
+                c_score = 0.10
+            else:
+                c_score = 0.60
+        else:
+            c_score = float(c_score)
+
         return MemoryRecord(
             memory_id=row.get("memory_id", ""),
             memory_type=MemoryType(row.get("memory_type", MemoryType.SEMANTIC.value)),
             content=row.get("content", ""),
             source=source_val,
             confidence=ConfidenceLevel(row.get("confidence", ConfidenceLevel.MEDIUM.value)),
+            confidence_score=c_score,
+            freshness_class=str(row.get("freshness_class") or "PROJECT_STABLE"),
+            is_foundational=bool(row.get("is_foundational", False)),
+            valid_from=iso_str(row.get("valid_from")),
+            valid_until=iso_str(row.get("valid_until")),
+            last_confirmed_at=iso_str(row.get("last_confirmed_at")) or iso_str(row.get("created_at")) or "",
             importance=float(row.get("importance", 0.5)),
             status=MemoryStatus(row.get("status", MemoryStatus.ACTIVE.value)),
             generation=int(row.get("generation") or 1),

@@ -317,6 +317,79 @@ class PostgresManager:
             "CREATE INDEX IF NOT EXISTS idx_rel_type ON memory_relationships(relationship_type);",
             "CREATE INDEX IF NOT EXISTS idx_rel_pair ON memory_relationships(source_memory_id, target_memory_id, relationship_type);",
             "CREATE INDEX IF NOT EXISTS idx_rel_idempotency ON memory_relationships(idempotency_key);",
+            # V5.3.5: Memory Freshness, Temporal Fields & Confidence Evolution
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS freshness_class VARCHAR(30) NOT NULL DEFAULT 'PROJECT_STABLE';",
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS confidence_score REAL NOT NULL DEFAULT 0.50;",
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS is_foundational BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS valid_from TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;",
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS valid_until TIMESTAMP WITH TIME ZONE;",
+            "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS last_confirmed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;",
+            "CREATE INDEX IF NOT EXISTS idx_memory_freshness_class ON memory_records(freshness_class);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_conf_score ON memory_records(confidence_score);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_valid_until ON memory_records(valid_until);",
+            "CREATE INDEX IF NOT EXISTS idx_memory_last_confirmed ON memory_records(last_confirmed_at DESC);",
+            # V5.3.5: Constraints on memory_records
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_memory_conf_score') THEN
+                    ALTER TABLE memory_records ADD CONSTRAINT chk_memory_conf_score CHECK (confidence_score >= 0.0 AND confidence_score <= 1.0);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_memory_importance') THEN
+                    ALTER TABLE memory_records ADD CONSTRAINT chk_memory_importance CHECK (importance >= 0.0 AND importance <= 1.0);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_memory_freshness_class') THEN
+                    ALTER TABLE memory_records ADD CONSTRAINT chk_memory_freshness_class CHECK (
+                        freshness_class IN ('PERMANENT', 'FOUNDATIONAL', 'PROJECT_STABLE', 'DYNAMIC_FACT', 'EPHEMERAL')
+                    );
+                END IF;
+            END $$;
+            """,
+            # V5.3.5: Normalized memory evidence table
+            """
+            CREATE TABLE IF NOT EXISTS memory_evidence (
+                evidence_id VARCHAR(100) PRIMARY KEY,
+                memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                evidence_type VARCHAR(50) NOT NULL,
+                polarity VARCHAR(20) NOT NULL CHECK (polarity IN ('SUPPORTING', 'CONTRADICTING', 'AMBIGUOUS')),
+                strength REAL NOT NULL CHECK (strength >= 0.0 AND strength <= 1.0),
+                source VARCHAR(50) NOT NULL,
+                actor VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+                source_task_id VARCHAR(100),
+                observation_hash VARCHAR(64) NOT NULL,
+                idempotency_key VARCHAR(150) UNIQUE NOT NULL,
+                summary VARCHAR(255) NOT NULL,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_evidence_mem_id ON memory_evidence(memory_id);",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_obs_hash ON memory_evidence(observation_hash);",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_idempotency ON memory_evidence(idempotency_key);",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_created ON memory_evidence(created_at DESC);",
+            # V5.3.5: Memory evolution audit events table
+            """
+            CREATE TABLE IF NOT EXISTS memory_evolution_events (
+                event_id VARCHAR(100) PRIMARY KEY,
+                memory_id VARCHAR(100) NOT NULL REFERENCES memory_records(memory_id) ON DELETE CASCADE,
+                evidence_id VARCHAR(100) REFERENCES memory_evidence(evidence_id) ON DELETE SET NULL,
+                evolution_type VARCHAR(50) NOT NULL,
+                confidence_before REAL NOT NULL,
+                confidence_after REAL NOT NULL,
+                importance_before REAL NOT NULL,
+                importance_after REAL NOT NULL,
+                delta_confidence REAL NOT NULL,
+                delta_importance REAL NOT NULL,
+                reason VARCHAR(255) NOT NULL,
+                actor VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+                idempotency_key VARCHAR(150) UNIQUE NOT NULL,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_evo_mem_id ON memory_evolution_events(memory_id);",
+            "CREATE INDEX IF NOT EXISTS idx_evo_created ON memory_evolution_events(created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_evo_idempotency ON memory_evolution_events(idempotency_key);",
         ]
 
         conn = self.get_connection()
@@ -477,7 +550,7 @@ class PostgresManager:
         try:
             with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT 
+                    SELECT
                         (SELECT COUNT(*) FROM user_profiles) AS profile_count,
                         (SELECT COUNT(*) FROM episodic_memory) AS episode_count,
                         (SELECT COUNT(*) FROM semantic_facts) AS fact_count,

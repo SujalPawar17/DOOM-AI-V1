@@ -92,6 +92,44 @@ from memory.relationship_migration import (
     run_relationship_migration,
 )
 
+# V5.3.5 Memory Freshness, Confidence & Importance Evolution
+from memory.evolution_models import (
+    FreshnessClass,
+    FreshnessParameters,
+    FRESHNESS_CONFIG,
+    EvidencePolarity,
+    EvidenceType,
+    EvolutionType,
+    MemoryEvidence,
+    MemoryEvolutionEvent,
+    EvolutionResult,
+    MemoryEpistemicProfile,
+    MemoryEvolutionError,
+    InadmissibleEvidenceError,
+    InactiveMemoryEvolutionError,
+    EvolutionValidationError,
+    EvolutionConcurrencyError,
+    IdempotencyConflictError as EvolutionIdempotencyConflictError,
+    SensitiveEvidencePolicyError,
+    clamp_float,
+    project_confidence_score_to_level,
+    project_confidence_level_to_score,
+    compute_observation_hash,
+    compute_evidence_idempotency_key,
+)
+from memory.evolution_engine import (
+    evolution_engine,
+    MemoryEvolutionEngine,
+)
+from memory.evolution_migration import (
+    run_evolution_migration,
+)
+from memory.evolution_reconciliation import (
+    evolution_reconciliation_engine,
+    MemoryEvolutionReconciliationEngine,
+    EvolutionReconciliationReport,
+)
+
 __all__ = [
     # Legacy (backward compat)
     "user_profile", "UserProfile",
@@ -132,5 +170,18 @@ __all__ = [
     "relationship_engine", "MemoryRelationshipEngine",
     "relationship_reconciliation_engine", "RelationshipReconciliationEngine",
     "RelationshipReconciliationReport", "run_relationship_migration",
+    # V5.3.5 Freshness, Confidence & Importance Evolution
+    "FreshnessClass", "FreshnessParameters", "FRESHNESS_CONFIG",
+    "EvidencePolarity", "EvidenceType", "EvolutionType",
+    "MemoryEvidence", "MemoryEvolutionEvent", "EvolutionResult",
+    "MemoryEpistemicProfile", "MemoryEvolutionError", "InadmissibleEvidenceError",
+    "InactiveMemoryEvolutionError", "EvolutionValidationError",
+    "EvolutionConcurrencyError", "EvolutionIdempotencyConflictError",
+    "SensitiveEvidencePolicyError", "clamp_float",
+    "project_confidence_score_to_level", "project_confidence_level_to_score",
+    "compute_observation_hash", "compute_evidence_idempotency_key",
+    "evolution_engine", "MemoryEvolutionEngine",
+    "run_evolution_migration", "evolution_reconciliation_engine",
+    "MemoryEvolutionReconciliationEngine", "EvolutionReconciliationReport",
 ]
 

@@ -16,7 +16,8 @@ from memory.validators import memory_validator
 class PolicyDecision:
     """Result of a policy evaluation."""
     __slots__ = ("approved", "rejection_reason", "memory_type", "source",
-                 "confidence", "privacy_class", "verification_status",
+                 "confidence", "confidence_score", "freshness_class", "is_foundational",
+                 "privacy_class", "verification_status",
                  "importance", "tags")
 
     def __init__(
@@ -26,6 +27,9 @@ class PolicyDecision:
         memory_type: MemoryType = MemoryType.SEMANTIC,
         source: MemorySource = MemorySource.DERIVED_CONTEXT,
         confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM,
+        confidence_score: float = 0.50,
+        freshness_class: str = "PROJECT_STABLE",
+        is_foundational: bool = False,
         privacy_class: PrivacyClass = PrivacyClass.NORMAL,
         verification_status: VerificationStatus = VerificationStatus.UNVERIFIED,
         importance: float = 0.5,
@@ -36,6 +40,9 @@ class PolicyDecision:
         self.memory_type = memory_type
         self.source = source
         self.confidence = confidence
+        self.confidence_score = confidence_score
+        self.freshness_class = freshness_class
+        self.is_foundational = is_foundational
         self.privacy_class = privacy_class
         self.verification_status = verification_status
         self.importance = importance
@@ -103,6 +110,8 @@ class MemoryWritePolicy:
 
         # --- Step 6: Determine confidence from source + evidence ---
         confidence = self._determine_confidence(source, task_verified, user_explicit)
+        from memory.evolution_models import project_confidence_level_to_score
+        confidence_score = project_confidence_level_to_score(confidence)
 
         # --- Step 7: Determine verification status ---
         verification_status = self._determine_verification_status(source, task_verified, user_explicit)
@@ -110,7 +119,25 @@ class MemoryWritePolicy:
         # --- Step 8: Determine privacy class ---
         effective_privacy = privacy_class or self._infer_privacy_class(content, memory_type)
 
-        # --- Step 9: Build tags ---
+        # --- Step 9: Determine V5.3.5 Freshness class and Foundational status ---
+        if memory_type == MemoryType.PREFERENCE:
+            freshness_class = "FOUNDATIONAL"
+            is_foundational = True
+            effective_importance = max(float(importance), 0.80)
+        elif memory_type == MemoryType.SHORT_TERM:
+            freshness_class = "EPHEMERAL"
+            is_foundational = False
+            effective_importance = float(importance)
+        elif memory_type == MemoryType.EXPERIENCE:
+            freshness_class = "DYNAMIC_FACT"
+            is_foundational = False
+            effective_importance = float(importance)
+        else:
+            freshness_class = "PROJECT_STABLE"
+            is_foundational = False
+            effective_importance = float(importance)
+
+        # --- Step 10: Build tags ---
         tags = list(extra_tags or [])
         tags.append(source.value.lower())
         tags.append(memory_type.value.lower())
@@ -120,9 +147,12 @@ class MemoryWritePolicy:
             memory_type=memory_type,
             source=source,
             confidence=confidence,
+            confidence_score=confidence_score,
+            freshness_class=freshness_class,
+            is_foundational=is_foundational,
             privacy_class=effective_privacy,
             verification_status=verification_status,
-            importance=importance,
+            importance=effective_importance,
             tags=tags,
         )
 
