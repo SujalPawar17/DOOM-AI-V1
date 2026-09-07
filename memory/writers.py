@@ -22,8 +22,9 @@ def write_experience(
     outcome_status: Optional[str] = None,
     error_signature: Optional[str] = None,
     execution_trace: Optional[List[Dict[str, Any]]] = None,
-    strategy_applied: Optional[Dict[str, Any]]] = None,
+    strategy_applied: Optional[Dict[str, Any]] = None,
     verification_evidence: Optional[Dict[str, Any]] = None,
+
 ) -> Optional[MemoryRecord]:
     """
     Record a verified task execution experience.

@@ -96,11 +96,18 @@ class DOOMCore:
         self.max_tool_calls = MAX_TOOL_CALLS
         self.max_retries_per_action = MAX_RETRIES_PER_ACTION
 
-    def process_request(self, user_input: str, lang: Optional[str] = None) -> str:
+    def process_request(
+        self,
+        user_input: str,
+        lang: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+    ) -> str:
         """
-        DOOM V4.1 Master Production Entry Point — Integrated Cognitive Core.
+        DOOM V4.1 / V5.3.7.1 Master Production Entry Point — Integrated Cognitive Core.
         Delegates understanding, reasoning, decision, dynamic planning, execution,
         observation, evaluation, reflection, and adaptive replanning to CognitiveEngine.
+        Propagates verified project context throughout the cognitive lifecycle.
         """
         if not user_input or not user_input.strip():
             state_machine.transition_to(DoomState.IDLE, "Standing by, Boss.")
@@ -113,14 +120,24 @@ class DOOMCore:
         # Step 1: Record user turn in short-term memory
         short_term_memory.add_user_turn(user_prompt)
 
-        # Step 2: Invoke V4 Cognitive Core Lifecycle
+        # Step 2: Invoke V4 / V5.3.7.1 Cognitive Core Lifecycle
         t_cog_start = time.time()
         try:
-            cognitive_state = self.cognition.process(user_prompt, context={"lang": lang})
+            merged_context = dict(context or {})
+            if lang:
+                merged_context["lang"] = lang
+            if project_id:
+                merged_context["project_id"] = project_id
+            cognitive_state = self.cognition.process(
+                user_prompt,
+                context=merged_context,
+                project_id=project_id,
+            )
         except Exception as cog_err:
             print(f"[DOOM CORE] [COGNITIVE ERROR] {cog_err}")
             state_machine.transition_to(DoomState.ERROR, str(cog_err))
             return f"I encountered an anomaly in the cognitive core, Boss: {cog_err}"
+
 
         cog_ms = (time.time() - t_cog_start) * 1000.0
         total_duration_ms = (time.time() - start_time) * 1000.0

@@ -177,6 +177,11 @@ class CognitiveState:
     # V5.1: Structured memory context (MemoryContext | None — Any to avoid circular import at module load)
     memory_context: Optional[Any] = None
 
+    # V5.3.7.1: Canonical Project Context & Empirical Guidance
+    project_id: str = "doom"
+    project_context: Optional[Any] = None
+    empirical_guidance: Optional[Any] = None
+
     def to_dict(self, safe: bool = True) -> Dict[str, Any]:
         """Safe serialization. Never exposes raw or private chain-of-thought."""
         return {
@@ -184,6 +189,8 @@ class CognitiveState:
             "normalized_goal": self.normalized_goal,
             "intent": self.intent.value,
             "task_type": self.task_type,
+            "project_id": self.project_id,
+            "project_context": self.project_context.to_dict() if hasattr(self.project_context, "to_dict") else None,
             "constraints": self.constraints,
             "required_capabilities": self.required_capabilities,
             "reasoning_summary": self.reasoning_summary,
@@ -203,5 +210,7 @@ class CognitiveState:
             "final_response_status": self.final_response_status,
             "is_terminal": self.is_terminal,
             "termination_reason": self.termination_reason,
-            "telemetry": self.telemetry.to_dict()
+            "telemetry": self.telemetry.to_dict(),
+            "has_empirical_guidance": self.empirical_guidance is not None,
         }
+

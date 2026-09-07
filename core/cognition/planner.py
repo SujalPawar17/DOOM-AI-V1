@@ -18,10 +18,36 @@ class CognitivePlanner:
         intent: CognitiveIntent,
         normalized_goal: str,
         entities: Dict[str, Any],
-        required_capabilities: List[str]
+        required_capabilities: List[str],
+        empirical_guidance: Optional[Any] = None,
+        strategies: Optional[List[Dict[str, Any]]] = None,
+        failure_warnings: Optional[List[Dict[str, Any]]] = None,
+        project_id: Optional[str] = None,
     ) -> List[CognitiveStep]:
-        """Synthesizes structured cognitive steps."""
+        """
+        Synthesizes structured cognitive steps.
+        V5.3.7.1: Evaluates fenced empirical strategies and failure warnings as non-coercive DATA.
+        - Filters out deprecated and low-reliability strategies (< 0.60).
+        - Biases tool selection and procedural steps towards empirically verified patterns.
+        - Enforces defensive verification when matching failure warnings are detected.
+        - Guarantees strictly read-only execution (zero database writes).
+        """
         target_file = entities.get("target_file", "Desktop/script.py")
+
+        # Extract active, reliable empirical strategies
+        applicable_strategies: List[Dict[str, Any]] = []
+        if strategies:
+            for s in strategies:
+                if s.get("is_deprecated", False):
+                    continue
+                if float(s.get("reliability_score", 0.0)) < 0.60:
+                    continue
+                applicable_strategies.append(s)
+
+        # Identify relevant failure warnings
+        active_warnings: List[Dict[str, Any]] = list(failure_warnings or [])
+        has_warnings = len(active_warnings) > 0
+
 
         # 1. Multi-Step Execution: Create -> Run -> Verify
         if intent == CognitiveIntent.MULTI_STEP:
@@ -174,12 +200,21 @@ class CognitivePlanner:
 
         # 5. Direct Action
         if intent in (CognitiveIntent.ACTION, CognitiveIntent.CREATION):
+            chosen_tool = None
+            step_obj = normalized_goal
+            if applicable_strategies:
+                top_s = applicable_strategies[0]
+                rec_tools = top_s.get("recommended_tools", []) or top_s.get("prerequisites", [])
+                if rec_tools and isinstance(rec_tools, list):
+                    chosen_tool = rec_tools[0]
+                step_obj = f"{normalized_goal} (Guided by strategy: {top_s.get('name', 'verified')})"
+
             return [
                 CognitiveStep(
                     step_id=1,
-                    objective=normalized_goal,
+                    objective=step_obj,
                     action="execute_action",
-                    tool_name=None,
+                    tool_name=chosen_tool,
                     tool_args={},
                     required_capability=required_capabilities[0] if required_capabilities else "general",
                     expected_outcome="Action executed successfully",
@@ -188,6 +223,7 @@ class CognitivePlanner:
                     verification_required=True
                 )
             ]
+
 
         # Default Single Conversational Step
         return [

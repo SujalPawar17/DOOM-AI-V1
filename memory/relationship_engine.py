@@ -164,18 +164,26 @@ class MemoryRelationshipEngine:
                         f"Idempotency key '{idem_key}' already exists with different relationship parameters."
                     )
 
-            # 2. Check source & target records exist and security rules
-            c.execute("""
-                SELECT memory_id, privacy_class, status
-                FROM memory_records
-                WHERE memory_id IN (%s, %s);
-            """, (s_id, t_id))
-            rec_rows = {r[0]: (r[1], r[2]) for r in c.fetchall()}
+            # 2. Deterministic Lexicographical Lock Ordering & Row Verification (V5.3.7.1)
+            # Acquires row-level FOR UPDATE locks in strictly sorted order to prevent deadlocks and race conditions
+            ordered_ids = sorted([s_id, t_id])
+            rec_rows = {}
+            for mid in ordered_ids:
+                c.execute("""
+                    SELECT memory_id, privacy_class, status
+                    FROM memory_records
+                    WHERE memory_id = %s
+                    FOR UPDATE;
+                """, (mid,))
+                r = c.fetchone()
+                if r:
+                    rec_rows[r[0]] = (r[1], r[2])
 
             if s_id not in rec_rows:
                 raise RelationshipValidationError(f"Source memory '{s_id}' does not exist in memory_records.")
             if t_id not in rec_rows:
                 raise RelationshipValidationError(f"Target memory '{t_id}' does not exist in memory_records.")
+
 
             src_pclass, src_status = rec_rows[s_id]
             tgt_pclass, tgt_status = rec_rows[t_id]
@@ -913,3 +921,5 @@ class MemoryRelationshipEngine:
 
 
 relationship_engine = MemoryRelationshipEngine()
+memory_relationship_engine = relationship_engine
+

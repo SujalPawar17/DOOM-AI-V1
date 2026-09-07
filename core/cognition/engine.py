@@ -49,16 +49,24 @@ class CognitiveEngine:
             except Exception:
                 pass
 
-    def retrieve_relevant_memory(self, goal: str) -> Dict[str, Any]:
+    def retrieve_relevant_memory(
+        self,
+        goal: str,
+        context: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         V5.1: Delegates to MemoryRetriever for structured, ranked, privacy-filtered retrieval.
+        V5.3.7.1: Dynamically resolves project context instead of hardcoding 'doom'.
         Falls back to legacy keyword lookup if V5.1 retriever fails (graceful degradation).
         Returns a plain dict for backward compat with existing callers.
         The full MemoryContext is stored in state.memory_context.
         """
         try:
+            from memory.project_context import resolve_project_context
             from memory.retrieval import memory_retriever
-            ctx = memory_retriever.retrieve(query=goal, project_id="doom")
+            proj_ctx = resolve_project_context(explicit_project_id=project_id, context=context, strict=False)
+            ctx = memory_retriever.retrieve(query=goal, project_id=proj_ctx.project_id)
             if ctx.has_memories():
                 # Return a summary dict for backward compat (reasoning_engine still receives dict)
                 return {"memory_context_summary": ctx.context_summary, "memory_count": ctx.memory_count}
@@ -79,22 +87,34 @@ class CognitiveEngine:
                 relevant[key] = val
         return relevant
 
-    def process(self, user_request: str, context: Optional[Dict[str, Any]] = None) -> CognitiveState:
+    def process(
+        self,
+        user_request: str,
+        context: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+    ) -> CognitiveState:
         """
         Public Master Entry Point for the V4 Cognitive Lifecycle.
+        V5.3.7.1: Resolves dynamic project context and propagates it throughout execution.
         """
         t0 = time.time()
-        state = CognitiveState(user_request=user_request)
-        self._broadcast("COGNITION_STARTED", request=user_request)
+        from memory.project_context import resolve_project_context
+        proj_ctx = resolve_project_context(explicit_project_id=project_id, context=context)
+        state = CognitiveState(
+            user_request=user_request,
+            project_id=proj_ctx.project_id,
+            project_context=proj_ctx,
+        )
+        self._broadcast("COGNITION_STARTED", request=user_request, project_id=proj_ctx.project_id)
 
         # ---------------------------------------------------------------------
-        # 1. MEMORY CONTEXT RETRIEVAL (V5.1)
+        # 1. MEMORY CONTEXT RETRIEVAL (V5.1 / V5.3.7.1)
         # ---------------------------------------------------------------------
         t_mem = time.time()
         try:
             from memory.retrieval import memory_retriever
-            self._broadcast("MEMORY_RETRIEVAL_STARTED", query=user_request[:60])
-            mem_ctx = memory_retriever.retrieve(query=user_request, project_id="doom")
+            self._broadcast("MEMORY_RETRIEVAL_STARTED", query=user_request[:60], project_id=proj_ctx.project_id)
+            mem_ctx = memory_retriever.retrieve(query=user_request, project_id=proj_ctx.project_id)
             state.memory_context = mem_ctx
             state.telemetry.memory_retrieval_ms = (time.time() - t_mem) * 1000.0
             # Backward compat: populate state.relevant_memory as summary dict
@@ -108,11 +128,16 @@ class CognitiveEngine:
                                latency_ms=mem_ctx.retrieval_latency_ms)
             else:
                 # Legacy fallback for profile/system facts
-                state.relevant_memory = self.retrieve_relevant_memory(user_request)
+                state.relevant_memory = self.retrieve_relevant_memory(
+                    user_request, context=context, project_id=proj_ctx.project_id
+                )
         except Exception as mem_err:
             # Memory retrieval failure must never prevent cognition
             state.telemetry.memory_retrieval_ms = (time.time() - t_mem) * 1000.0
-            state.relevant_memory = self.retrieve_relevant_memory(user_request)
+            state.relevant_memory = self.retrieve_relevant_memory(
+                user_request, context=context, project_id=proj_ctx.project_id
+            )
+
 
         # ---------------------------------------------------------------------
         # 2. UNDERSTAND
@@ -237,14 +262,46 @@ class CognitiveEngine:
             return state
 
         # ---------------------------------------------------------------------
-        # 5. PLAN
+        # 5. PLAN & EMPIRICAL GUIDANCE (V5.3.7.1)
         # ---------------------------------------------------------------------
         t_plan = time.time()
+        strategies: List[Dict[str, Any]] = []
+        failure_warnings: List[Dict[str, Any]] = []
+        fenced_guidance = None
+
+        try:
+            from memory.retrieval import memory_retriever
+            from memory.fencing import memory_context_fencer
+            # Retrieve active strategies for project (STRICTLY READ-ONLY)
+            strategies = memory_retriever.retrieve_strategies(
+                project_id=proj_ctx.project_id,
+                query=state.normalized_goal,
+                max_results=3,
+                evaluate_transfers=True,
+            )
+            # Retrieve negative warnings for project (STRICTLY READ-ONLY)
+            failure_warnings = memory_retriever.retrieve_negative_experiences(
+                project_id=proj_ctx.project_id,
+                max_results=3,
+            )
+            if strategies or failure_warnings:
+                fenced_guidance = memory_context_fencer.fence_empirical_guidance(
+                    strategies=strategies,
+                    failure_warnings=failure_warnings,
+                )
+                state.empirical_guidance = fenced_guidance
+        except Exception:
+            pass
+
         state.current_plan = cognitive_planner.plan(
             state.intent,
             state.normalized_goal,
             state.entities,
-            state.required_capabilities
+            state.required_capabilities,
+            empirical_guidance=fenced_guidance,
+            strategies=strategies,
+            failure_warnings=failure_warnings,
+            project_id=proj_ctx.project_id,
         )
         state.telemetry.planning_ms = (time.time() - t_plan) * 1000.0
         self._broadcast("PLAN_CREATED", step_count=len(state.current_plan))
@@ -255,9 +312,13 @@ class CognitiveEngine:
         # ToolRegistry, RiskEngine, CheckpointManager, and Verifier)
         # ---------------------------------------------------------------------
         from core.cognition.bridge import cognitive_bridge
-        state = cognitive_bridge.execute_plan(state, context)
+        merged_context = dict(context or {})
+        merged_context["project_id"] = proj_ctx.project_id
+        merged_context["project_context"] = proj_ctx
+        state = cognitive_bridge.execute_plan(state, merged_context)
         elapsed = (time.time() - t0) * 1000.0
         state.telemetry.total_cognitive_ms = max(elapsed, 0.05)
+
         return state
 
 

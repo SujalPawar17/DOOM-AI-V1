@@ -404,7 +404,8 @@ class PostgresManager:
                 parent_project_id VARCHAR(64) REFERENCES projects(project_id) ON DELETE SET NULL,
                 metadata JSONB NOT NULL DEFAULT '{}',
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT chk_projects_parent_not_self CHECK (parent_project_id IS NULL OR parent_project_id <> project_id)
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(lifecycle_status);",
@@ -452,8 +453,8 @@ class PostgresManager:
                 prerequisites JSONB NOT NULL DEFAULT '[]',
                 anti_patterns JSONB NOT NULL DEFAULT '[]',
                 supporting_experience_ids JSONB NOT NULL DEFAULT '[]',
-                supporting_experience_count INT NOT NULL DEFAULT 1,
-                contradicting_experience_count INT NOT NULL DEFAULT 0,
+                supporting_experience_count INT NOT NULL DEFAULT 1 CHECK (supporting_experience_count >= 0),
+                contradicting_experience_count INT NOT NULL DEFAULT 0 CHECK (contradicting_experience_count >= 0),
                 confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.60 CHECK (confidence_score >= 0.01 AND confidence_score <= 1.00),
                 importance DOUBLE PRECISION NOT NULL DEFAULT 0.50 CHECK (importance >= 0.00 AND importance <= 1.00),
                 freshness_class VARCHAR(32) NOT NULL DEFAULT 'PROJECT_STABLE',
@@ -474,15 +475,16 @@ class PostgresManager:
                 recommended_tools JSONB NOT NULL DEFAULT '[]',
                 disallowed_tools JSONB NOT NULL DEFAULT '[]',
                 environmental_preconditions JSONB NOT NULL DEFAULT '{}',
-                total_attempts INT NOT NULL DEFAULT 0,
-                successful_attempts INT NOT NULL DEFAULT 0,
-                failed_attempts INT NOT NULL DEFAULT 0,
+                total_attempts INT NOT NULL DEFAULT 0 CHECK (total_attempts >= 0),
+                successful_attempts INT NOT NULL DEFAULT 0 CHECK (successful_attempts >= 0),
+                failed_attempts INT NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0),
                 reliability_score DOUBLE PRECISION NOT NULL DEFAULT 0.50 CHECK (reliability_score >= 0.00 AND reliability_score <= 1.00),
                 is_deprecated BOOLEAN NOT NULL DEFAULT FALSE,
                 deprecation_reason TEXT,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
             """,
             "CREATE INDEX IF NOT EXISTS idx_strategies_category ON strategies(intent_category);",
             # V5.3.6: Cross-Project Transfer Matrix
@@ -493,12 +495,13 @@ class PostgresManager:
                 target_project_id VARCHAR(64) NOT NULL REFERENCES projects(project_id),
                 lesson_id VARCHAR(64) NOT NULL REFERENCES lessons(lesson_id),
                 strategy_id VARCHAR(64) REFERENCES strategies(strategy_id),
-                semantic_similarity DOUBLE PRECISION NOT NULL,
-                tech_stack_overlap DOUBLE PRECISION NOT NULL,
-                transfer_confidence DOUBLE PRECISION NOT NULL,
+                semantic_similarity DOUBLE PRECISION NOT NULL CHECK (semantic_similarity >= 0.00 AND semantic_similarity <= 1.00),
+                tech_stack_overlap DOUBLE PRECISION NOT NULL CHECK (tech_stack_overlap >= 0.00 AND tech_stack_overlap <= 1.00),
+                transfer_confidence DOUBLE PRECISION NOT NULL CHECK (transfer_confidence >= 0.00 AND transfer_confidence <= 1.00),
                 status VARCHAR(32) NOT NULL DEFAULT 'EVALUATED' CHECK (status IN ('EVALUATED', 'APPROVED', 'REJECTED', 'SUPERSEDED')),
                 rejection_reason TEXT,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT chk_transfer_no_self CHECK (source_project_id <> target_project_id)
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_transfer_matrix_pair ON project_transfer_matrix(source_project_id, target_project_id);",
@@ -512,6 +515,7 @@ class PostgresManager:
                 for q in queries:
                     cur.execute(q)
             conn.commit()
+            self._migrate_v5371_constraints(conn)
             self._init_v52_vector_schema(conn)
             print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records, memory_lifecycle_events")
         except Exception as e:
@@ -519,6 +523,42 @@ class PostgresManager:
             print(f"[POSTGRES ERROR] Failed to create schema tables: {e}")
         finally:
             self.release_connection(conn)
+
+    def _migrate_v5371_constraints(self, conn):
+        """V5.3.7.1: Idempotently applies database-level integrity constraints to existing tables."""
+        constraints = [
+            ("projects", "chk_projects_parent_not_self",
+             "ALTER TABLE projects ADD CONSTRAINT chk_projects_parent_not_self CHECK (parent_project_id IS NULL OR parent_project_id <> project_id);"),
+            ("lessons", "chk_lessons_supporting_count",
+             "ALTER TABLE lessons ADD CONSTRAINT chk_lessons_supporting_count CHECK (supporting_experience_count >= 0);"),
+            ("lessons", "chk_lessons_contradicting_count",
+             "ALTER TABLE lessons ADD CONSTRAINT chk_lessons_contradicting_count CHECK (contradicting_experience_count >= 0);"),
+            ("strategies", "chk_strategies_total_attempts",
+             "ALTER TABLE strategies ADD CONSTRAINT chk_strategies_total_attempts CHECK (total_attempts >= 0);"),
+            ("strategies", "chk_strategies_success_attempts",
+             "ALTER TABLE strategies ADD CONSTRAINT chk_strategies_success_attempts CHECK (successful_attempts >= 0);"),
+            ("strategies", "chk_strategies_failed_attempts",
+             "ALTER TABLE strategies ADD CONSTRAINT chk_strategies_failed_attempts CHECK (failed_attempts >= 0);"),
+            ("project_transfer_matrix", "chk_transfer_no_self",
+
+             "ALTER TABLE project_transfer_matrix ADD CONSTRAINT chk_transfer_no_self CHECK (source_project_id <> target_project_id);"),
+            ("project_transfer_matrix", "chk_transfer_semantic_sim",
+             "ALTER TABLE project_transfer_matrix ADD CONSTRAINT chk_transfer_semantic_sim CHECK (semantic_similarity >= 0.00 AND semantic_similarity <= 1.00);"),
+            ("project_transfer_matrix", "chk_transfer_tech_overlap",
+             "ALTER TABLE project_transfer_matrix ADD CONSTRAINT chk_transfer_tech_overlap CHECK (tech_stack_overlap >= 0.00 AND tech_stack_overlap <= 1.00);"),
+            ("project_transfer_matrix", "chk_transfer_confidence",
+             "ALTER TABLE project_transfer_matrix ADD CONSTRAINT chk_transfer_confidence CHECK (transfer_confidence >= 0.00 AND transfer_confidence <= 1.00);"),
+        ]
+        with conn.cursor() as cur:
+            for tbl, conname, alter_sql in constraints:
+                try:
+                    cur.execute("SELECT 1 FROM pg_constraint WHERE conname = %s;", (conname,))
+                    if not cur.fetchone():
+                        cur.execute(alter_sql)
+                except Exception as ce:
+                    pass
+        conn.commit()
+
 
     def _init_v52_vector_schema(self, conn):
         """Initializes V5.2 memory_embeddings table if pgvector extension is available."""

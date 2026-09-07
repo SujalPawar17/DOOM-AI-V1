@@ -496,3 +496,12 @@ def calculate_transfer_confidence(
     raw_c = source_c * s_sem * s_tech * s_env * (1.0 - p_risk)
     return round(float(max(0.01, min(1.0, raw_c))), 4)
 
+
+# V5.3.7.1 Canonical Project Context re-exports
+from memory.project_context import (
+    ProjectContext,
+    ProjectResolutionStatus,
+    resolve_project_context,
+)
+
+

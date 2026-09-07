@@ -196,6 +196,8 @@ __all__ = [
     "project_migration_engine", "ProjectExperienceMigrationEngine", "run_project_experience_migration",
     "project_reconciliation_engine", "ProjectReconciliationEngine",
     "ProjectReconciliationReport", "run_project_reconciliation",
+    # V5.3.7.1 Canonical Project Context
+    "ProjectContext", "ProjectResolutionStatus", "resolve_project_context",
 ]
 
 # V5.3.6 Project & Experience Intelligence Imports
@@ -238,5 +240,13 @@ from memory.project_reconciliation import (
     ProjectReconciliationReport,
     run_project_reconciliation,
 )
+
+# V5.3.7.1 Canonical Project Context
+from memory.project_context import (
+    ProjectContext,
+    ProjectResolutionStatus,
+    resolve_project_context,
+)
+
 
 

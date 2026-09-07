@@ -608,7 +608,15 @@ class CognitiveBridge:
                 used_tool_names = [o.tool for o in obs_canonical if o.action != "skip_redundant"]
                 short_term_memory.add_assistant_turn(final_text, used_tool_names)
 
-                # V5.1 / V5.3.6: Write experience through canonical MemoryManager and ProjectExperienceEngine
+                # V5.1 / V5.3.6 / V5.3.7.1: Write experience through canonical MemoryManager and ProjectExperienceEngine
+                from memory.project_context import resolve_project_context
+                eff_proj_ctx = resolve_project_context(
+                    explicit_project_id=getattr(state, "project_id", None),
+                    context=context,
+                    strict=False,
+                )
+                eff_project_id = eff_proj_ctx.project_id
+
                 is_empirically_successful = (final_response_status == FinalResponseStatus.SUCCESS) and state.verification_results.get("verified", False)
                 if is_empirically_successful:
                     from memory.writers import write_experience
@@ -617,7 +625,7 @@ class CognitiveBridge:
                         outcome_summary=final_text[:300],
                         tools_used=used_tool_names[:5],
                         task_id=task.task_id if task else None,
-                        project_id="doom",
+                        project_id=eff_project_id,
                         task_verified=True,
                         outcome_status="SUCCESS",
                         verification_evidence=state.verification_results,
@@ -636,7 +644,7 @@ class CognitiveBridge:
 
                         project_experience_engine.record_experience(
                             task_id=task.task_id if task else f"task_{uuid.uuid4().hex[:8]}",
-                            project_id="doom",
+                            project_id=eff_project_id,
                             goal_intent=state.normalized_goal,
                             outcome_status=out_status,
                             strategy_applied={"tools_used": used_tool_names[:5]},
@@ -645,6 +653,7 @@ class CognitiveBridge:
                         )
                     except Exception:
                         pass
+
             except Exception:
                 pass
 
