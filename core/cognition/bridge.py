@@ -608,8 +608,7 @@ class CognitiveBridge:
                 used_tool_names = [o.tool for o in obs_canonical if o.action != "skip_redundant"]
                 short_term_memory.add_assistant_turn(final_text, used_tool_names)
 
-                # V5.1: Write experience through canonical MemoryManager
-                # Only verified successes become EXPERIENCE memories.
+                # V5.1 / V5.3.6: Write experience through canonical MemoryManager and ProjectExperienceEngine
                 is_empirically_successful = (final_response_status == FinalResponseStatus.SUCCESS) and state.verification_results.get("verified", False)
                 if is_empirically_successful:
                     from memory.writers import write_experience
@@ -620,11 +619,32 @@ class CognitiveBridge:
                         task_id=task.task_id if task else None,
                         project_id="doom",
                         task_verified=True,
+                        outcome_status="SUCCESS",
+                        verification_evidence=state.verification_results,
                     )
-                # Note: failed/partial tasks are NOT recorded as verified experience memories.
-                # This replaces the legacy episodic_memory.record_episode() in this path.
-                # Legacy episodic_memory.record_episode() in orchestrator._finalize_and_log()
-                # is a dead code path (not called in V4.1+ flow) and preserved for compat only.
+                else:
+                    # V5.3.6: Capture negative / partial execution experiences for learning
+                    try:
+                        import uuid
+                        from memory.project_engine import project_experience_engine
+                        from memory.project_models import TaskOutcomeStatus
+                        out_status = TaskOutcomeStatus.FAILURE
+                        if str(final_response_status).upper() in ("PARTIAL", "PARTIAL_SUCCESS"):
+                            out_status = TaskOutcomeStatus.PARTIAL_SUCCESS
+                        elif str(final_response_status).upper() in ("ABORTED", "CANCELLED"):
+                            out_status = TaskOutcomeStatus.ABORTED
+
+                        project_experience_engine.record_experience(
+                            task_id=task.task_id if task else f"task_{uuid.uuid4().hex[:8]}",
+                            project_id="doom",
+                            goal_intent=state.normalized_goal,
+                            outcome_status=out_status,
+                            strategy_applied={"tools_used": used_tool_names[:5]},
+                            error_signature=final_text[:200] if final_text else "Task unverified or failed",
+                            verification_evidence=state.verification_results or {},
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
 

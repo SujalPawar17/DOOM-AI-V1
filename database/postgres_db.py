@@ -390,6 +390,118 @@ class PostgresManager:
             "CREATE INDEX IF NOT EXISTS idx_evo_mem_id ON memory_evolution_events(memory_id);",
             "CREATE INDEX IF NOT EXISTS idx_evo_created ON memory_evolution_events(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_evo_idempotency ON memory_evolution_events(idempotency_key);",
+            # V5.3.6: First-class projects table
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                project_id VARCHAR(64) PRIMARY KEY,
+                name VARCHAR(128) NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                root_path VARCHAR(512),
+                git_remote VARCHAR(512),
+                tech_stack JSONB NOT NULL DEFAULT '[]',
+                lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' CHECK (lifecycle_status IN ('ACTIVE', 'ON_HOLD', 'COMPLETED', 'ARCHIVED')),
+                privacy_class VARCHAR(32) NOT NULL DEFAULT 'NORMAL' CHECK (privacy_class IN ('NORMAL', 'PRIVATE', 'SENSITIVE')),
+                parent_project_id VARCHAR(64) REFERENCES projects(project_id) ON DELETE SET NULL,
+                metadata JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(lifecycle_status);",
+            "CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_project_id);",
+            # V5.3.6: Seed default project 'doom' if not existing
+            """
+            INSERT INTO projects (project_id, name, description, lifecycle_status, privacy_class)
+            VALUES ('doom', 'DOOM Core OS', 'Core DOOM AI Operating System workspace and memory namespace', 'ACTIVE', 'NORMAL')
+            ON CONFLICT (project_id) DO NOTHING;
+            """,
+            # V5.3.6: Experiences table
+            """
+            CREATE TABLE IF NOT EXISTS experiences (
+                experience_id VARCHAR(64) PRIMARY KEY,
+                task_id VARCHAR(64) NOT NULL,
+                project_id VARCHAR(64) NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+                goal_intent TEXT NOT NULL,
+                context_conditions JSONB NOT NULL DEFAULT '{}',
+                strategy_applied JSONB NOT NULL DEFAULT '{}',
+                execution_trace JSONB NOT NULL DEFAULT '[]',
+                outcome_status VARCHAR(32) NOT NULL CHECK (outcome_status IN ('SUCCESS', 'PARTIAL_SUCCESS', 'FAILURE', 'ABORTED', 'UNKNOWN')),
+                outcome_metrics JSONB NOT NULL DEFAULT '{}',
+                error_signature VARCHAR(256),
+                root_cause_analysis TEXT,
+                verification_evidence JSONB NOT NULL DEFAULT '{}',
+                confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.50 CHECK (confidence_score >= 0.01 AND confidence_score <= 1.00),
+                importance DOUBLE PRECISION NOT NULL DEFAULT 0.50 CHECK (importance >= 0.00 AND importance <= 1.00),
+                privacy_class VARCHAR(32) NOT NULL DEFAULT 'NORMAL' CHECK (privacy_class IN ('NORMAL', 'PRIVATE', 'SENSITIVE')),
+                idempotency_key VARCHAR(150) UNIQUE,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_experiences_project_outcome ON experiences(project_id, outcome_status);",
+            "CREATE INDEX IF NOT EXISTS idx_experiences_task ON experiences(task_id);",
+            "CREATE INDEX IF NOT EXISTS idx_experiences_error_sig ON experiences(error_signature) WHERE error_signature IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS idx_experiences_idempotency ON experiences(idempotency_key);",
+            # V5.3.6: Lessons table
+            """
+            CREATE TABLE IF NOT EXISTS lessons (
+                lesson_id VARCHAR(64) PRIMARY KEY,
+                title VARCHAR(256) NOT NULL,
+                summary TEXT NOT NULL,
+                domain VARCHAR(64) NOT NULL,
+                scope VARCHAR(32) NOT NULL DEFAULT 'PROJECT_LOCAL' CHECK (scope IN ('PROJECT_LOCAL', 'CROSS_PROJECT_ELIGIBLE', 'UNIVERSAL')),
+                prerequisites JSONB NOT NULL DEFAULT '[]',
+                anti_patterns JSONB NOT NULL DEFAULT '[]',
+                supporting_experience_ids JSONB NOT NULL DEFAULT '[]',
+                supporting_experience_count INT NOT NULL DEFAULT 1,
+                contradicting_experience_count INT NOT NULL DEFAULT 0,
+                confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.60 CHECK (confidence_score >= 0.01 AND confidence_score <= 1.00),
+                importance DOUBLE PRECISION NOT NULL DEFAULT 0.50 CHECK (importance >= 0.00 AND importance <= 1.00),
+                freshness_class VARCHAR(32) NOT NULL DEFAULT 'PROJECT_STABLE',
+                last_confirmed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS supporting_experience_ids JSONB NOT NULL DEFAULT '[]';",
+            "CREATE INDEX IF NOT EXISTS idx_lessons_domain_scope ON lessons(domain, scope);",
+            # V5.3.6: Strategies table
+            """
+            CREATE TABLE IF NOT EXISTS strategies (
+                strategy_id VARCHAR(64) PRIMARY KEY,
+                name VARCHAR(128) NOT NULL,
+                intent_category VARCHAR(64) NOT NULL,
+                procedure_template JSONB NOT NULL,
+                recommended_tools JSONB NOT NULL DEFAULT '[]',
+                disallowed_tools JSONB NOT NULL DEFAULT '[]',
+                environmental_preconditions JSONB NOT NULL DEFAULT '{}',
+                total_attempts INT NOT NULL DEFAULT 0,
+                successful_attempts INT NOT NULL DEFAULT 0,
+                failed_attempts INT NOT NULL DEFAULT 0,
+                reliability_score DOUBLE PRECISION NOT NULL DEFAULT 0.50 CHECK (reliability_score >= 0.00 AND reliability_score <= 1.00),
+                is_deprecated BOOLEAN NOT NULL DEFAULT FALSE,
+                deprecation_reason TEXT,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_strategies_category ON strategies(intent_category);",
+            # V5.3.6: Cross-Project Transfer Matrix
+            """
+            CREATE TABLE IF NOT EXISTS project_transfer_matrix (
+                transfer_id VARCHAR(64) PRIMARY KEY,
+                source_project_id VARCHAR(64) NOT NULL REFERENCES projects(project_id),
+                target_project_id VARCHAR(64) NOT NULL REFERENCES projects(project_id),
+                lesson_id VARCHAR(64) NOT NULL REFERENCES lessons(lesson_id),
+                strategy_id VARCHAR(64) REFERENCES strategies(strategy_id),
+                semantic_similarity DOUBLE PRECISION NOT NULL,
+                tech_stack_overlap DOUBLE PRECISION NOT NULL,
+                transfer_confidence DOUBLE PRECISION NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'EVALUATED' CHECK (status IN ('EVALUATED', 'APPROVED', 'REJECTED', 'SUPERSEDED')),
+                rejection_reason TEXT,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_transfer_matrix_pair ON project_transfer_matrix(source_project_id, target_project_id);",
         ]
 
         conn = self.get_connection()

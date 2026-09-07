@@ -183,5 +183,60 @@ __all__ = [
     "evolution_engine", "MemoryEvolutionEngine",
     "run_evolution_migration", "evolution_reconciliation_engine",
     "MemoryEvolutionReconciliationEngine", "EvolutionReconciliationReport",
+    # V5.3.6 Project & Experience Intelligence
+    "ProjectLifecycleStatus", "TaskOutcomeStatus", "LessonScope",
+    "TransferStatus", "TransferDecision",
+    "ProjectRecord", "ExperienceRecord", "LessonRecord", "StrategyRecord",
+    "TransferMatrixRecord", "TransferEvaluationResult", "StrategyExplainabilityProfile",
+    "ProjectExperienceError", "ProjectHierarchyCycleError", "InvalidExperienceError",
+    "InadmissibleLessonError", "CrossProjectTransferDeniedError", "StrategyReliabilityError",
+    "compute_experience_idempotency_hash", "normalize_error_signature",
+    "calculate_bayesian_strategy_reliability", "calculate_transfer_confidence",
+    "project_experience_engine", "ProjectExperienceEngine",
+    "project_migration_engine", "ProjectExperienceMigrationEngine", "run_project_experience_migration",
+    "project_reconciliation_engine", "ProjectReconciliationEngine",
+    "ProjectReconciliationReport", "run_project_reconciliation",
 ]
+
+# V5.3.6 Project & Experience Intelligence Imports
+from memory.project_models import (
+    ProjectLifecycleStatus,
+    TaskOutcomeStatus,
+    LessonScope,
+    TransferStatus,
+    TransferDecision,
+    ProjectRecord,
+    ExperienceRecord,
+    LessonRecord,
+    StrategyRecord,
+    TransferMatrixRecord,
+    TransferEvaluationResult,
+    StrategyExplainabilityProfile,
+    ProjectExperienceError,
+    ProjectHierarchyCycleError,
+    InvalidExperienceError,
+    InadmissibleLessonError,
+    CrossProjectTransferDeniedError,
+    StrategyReliabilityError,
+    compute_experience_idempotency_hash,
+    normalize_error_signature,
+    calculate_bayesian_strategy_reliability,
+    calculate_transfer_confidence,
+)
+from memory.project_engine import (
+    project_experience_engine,
+    ProjectExperienceEngine,
+)
+from memory.project_migration import (
+    project_migration_engine,
+    ProjectExperienceMigrationEngine,
+    run_project_experience_migration,
+)
+from memory.project_reconciliation import (
+    project_reconciliation_engine,
+    ProjectReconciliationEngine,
+    ProjectReconciliationReport,
+    run_project_reconciliation,
+)
+
 

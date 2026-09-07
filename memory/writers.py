@@ -19,6 +19,11 @@ def write_experience(
     task_id: Optional[str] = None,
     project_id: Optional[str] = None,
     task_verified: bool = False,
+    outcome_status: Optional[str] = None,
+    error_signature: Optional[str] = None,
+    execution_trace: Optional[List[Dict[str, Any]]] = None,
+    strategy_applied: Optional[Dict[str, Any]]] = None,
+    verification_evidence: Optional[Dict[str, Any]] = None,
 ) -> Optional[MemoryRecord]:
     """
     Record a verified task execution experience.
@@ -26,8 +31,10 @@ def write_experience(
     This replaces the legacy episodic_memory.record_episode() call in bridge.py.
 
     IMPORTANT: If task_verified=False, experience is stored as UNVERIFIED with LOW confidence.
+    In V5.3.6, also records structured experience to project_experience_engine.
     """
     from memory.manager import memory_manager
+    eff_proj = project_id or "doom"
 
     # Build a concise, meaningful experience summary
     tools_str = ", ".join(tools_used[:3]) if tools_used else "no specific tools"
@@ -41,7 +48,7 @@ def write_experience(
         verification_status=VerificationStatus.VERIFIED if task_verified else VerificationStatus.UNVERIFIED,
         importance=0.7 if task_verified else 0.4,
         task_id=task_id,
-        project_id=project_id,
+        project_id=eff_proj,
         tags=["experience", "task_execution"],
         metadata={
             "goal": goal[:300],
@@ -49,7 +56,35 @@ def write_experience(
             "verified": task_verified,
         },
     )
-    return memory_manager.store(record)
+    saved_rec = memory_manager.store(record)
+
+    # V5.3.6: Record structured experience entity
+    try:
+        from memory.project_engine import project_experience_engine
+        from memory.project_models import TaskOutcomeStatus
+
+        status_enum = TaskOutcomeStatus.SUCCESS
+        if outcome_status:
+            try:
+                status_enum = TaskOutcomeStatus(outcome_status.upper())
+            except Exception:
+                status_enum = TaskOutcomeStatus.SUCCESS if task_verified else TaskOutcomeStatus.PARTIAL_SUCCESS
+
+        project_experience_engine.record_experience(
+            task_id=task_id or f"task_{record.memory_id}",
+            project_id=eff_proj,
+            goal_intent=goal,
+            outcome_status=status_enum,
+            strategy_applied=strategy_applied or {"tools_used": tools_used or []},
+            execution_trace=execution_trace or [],
+            error_signature=error_signature,
+            verification_evidence=verification_evidence or {"verified": task_verified},
+        )
+    except Exception as e:
+        # Non-fatal: memory record is authoritative for legacy callers
+        logger.debug(f"[V5.3.6 EXPERIENCE] Optional structured experience recording: {e}")
+
+    return saved_rec
 
 
 def write_preference(

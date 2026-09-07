@@ -6,7 +6,7 @@ Does NOT return the entire memory database.
 """
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from memory.schemas import (
     MemoryRecord,
@@ -433,6 +433,181 @@ class MemoryRetriever:
         from memory.ranking import memory_ranker
         score = memory_ranker.score(record, query)
         return score >= RELEVANCE_THRESHOLD
+
+    # =========================================================================
+    # V5.3.6 Project & Experience Intelligence Retrieval (Strictly Read-Only)
+    # =========================================================================
+
+    def retrieve_strategies(
+        self,
+        project_id: str,
+        query: Optional[str] = None,
+        max_results: int = 5,
+        evaluate_transfers: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieves active and high-reliability execution strategies for project_id.
+        Evaluates cross-project transfer eligibility for transferable strategies.
+        Guarantees STRICT READ-ONLY behavior: zero database mutations.
+        """
+        if limit is not None:
+            max_results = limit
+        results: List[Dict[str, Any]] = []
+        try:
+            import json
+            from database.postgres_db import postgres_manager
+            from memory.project_engine import project_experience_engine
+            from memory.project_models import TransferDecision
+
+            conn = postgres_manager.get_connection()
+            if not conn:
+                return results
+
+            try:
+                with conn.cursor() as cur:
+                    # 1. Fetch project-local active strategies
+                    cur.execute("""
+                        SELECT strategy_id, name, intent_category, procedure_template,
+                               recommended_tools, environmental_preconditions,
+                               reliability_score, successful_attempts, failed_attempts
+                        FROM strategies
+                        WHERE is_deprecated = FALSE
+                          AND (intent_category = %s OR intent_category = 'general')
+                        ORDER BY reliability_score DESC
+                        LIMIT %s;
+                    """, (project_id, max_results * 2))
+                    local_rows = cur.fetchall()
+
+                    for r in local_rows:
+                        proc = r[3] if isinstance(r[3], dict) else (json.loads(r[3]) if r[3] else {})
+                        results.append({
+                            "strategy_id": r[0],
+                            "name": r[1],
+                            "description": proc.get("description", ""),
+                            "applicable_project_id": r[2],
+                            "scope": proc.get("scope", "PROJECT_LOCAL"),
+                            "prerequisites": r[4] if isinstance(r[4], list) else (json.loads(r[4]) if r[4] else []),
+                            "environmental_conditions": r[5] if isinstance(r[5], dict) else (json.loads(r[5]) if r[5] else {}),
+                            "reliability_score": float(r[6]),
+                            "success_count": r[7],
+                            "failure_count": r[8],
+                            "is_transferred": False,
+                        })
+
+                    # 2. Query pre-authorized transferable strategies (STRICTLY READ-ONLY)
+                    if evaluate_transfers:
+                        cur.execute("""
+                            SELECT s.strategy_id, s.name, s.intent_category, s.procedure_template,
+                                   s.recommended_tools, s.environmental_preconditions,
+                                   s.reliability_score, s.successful_attempts, s.failed_attempts,
+                                   m.transfer_confidence, m.status, m.source_project_id
+                            FROM strategies s
+                            JOIN project_transfer_matrix m ON s.strategy_id = m.strategy_id
+                            JOIN projects p_src ON m.source_project_id = p_src.project_id
+                            JOIN projects p_tgt ON m.target_project_id = p_tgt.project_id
+                            WHERE m.target_project_id = %s
+                              AND m.status = 'APPROVED'
+                              AND s.is_deprecated = FALSE
+                              AND p_src.privacy_class != 'SENSITIVE'
+                              AND (p_src.privacy_class != 'PRIVATE' OR p_tgt.privacy_class IN ('PRIVATE', 'SENSITIVE'))
+                            ORDER BY s.reliability_score DESC
+                            LIMIT %s;
+                        """, (project_id, max_results))
+                        cand_rows = cur.fetchall()
+
+                        for cr in cand_rows:
+                            proc = cr[3] if isinstance(cr[3], dict) else (json.loads(cr[3]) if cr[3] else {})
+                            results.append({
+                                "strategy_id": cr[0],
+                                "name": cr[1],
+                                "description": proc.get("description", ""),
+                                "applicable_project_id": cr[2],
+                                "scope": proc.get("scope", "CROSS_PROJECT_ELIGIBLE"),
+                                "prerequisites": cr[4] if isinstance(cr[4], list) else (json.loads(cr[4]) if cr[4] else []),
+                                "environmental_conditions": cr[5] if isinstance(cr[5], dict) else (json.loads(cr[5]) if cr[5] else {}),
+                                "reliability_score": float(cr[6]),
+                                "success_count": cr[7],
+                                "failure_count": cr[8],
+                                "is_transferred": True,
+                                "transfer_confidence": float(cr[9]),
+                                "transfer_decision": "ALLOWED",
+                                "source_project_id": cr[11],
+                            })
+
+            finally:
+                postgres_manager.release_connection(conn)
+
+            # Sort combined results by reliability score
+            results.sort(key=lambda x: x.get("reliability_score", 0.0), reverse=True)
+            return results[:max_results]
+
+        except Exception as e:
+            return []
+
+    def retrieve_negative_experiences(
+        self,
+        project_id: str,
+        error_signature: Optional[str] = None,
+        max_results: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieves negative experiences ("What NOT to do") for project_id.
+        Strictly READ-ONLY.
+        """
+        warnings: List[Dict[str, Any]] = []
+        try:
+            import json
+            from database.postgres_db import postgres_manager
+            conn = postgres_manager.get_connection()
+            if not conn:
+                return warnings
+
+            try:
+                with conn.cursor() as cur:
+                    if error_signature:
+                        cur.execute("""
+                            SELECT experience_id, task_id, outcome_status, error_signature,
+                                   root_cause_analysis, context_conditions, confidence_score
+                            FROM experiences
+                            WHERE project_id = %s
+                              AND outcome_status IN ('FAILURE', 'ABORTED')
+                              AND error_signature = %s
+                            ORDER BY created_at DESC
+                            LIMIT %s;
+                        """, (project_id, error_signature, max_results))
+                    else:
+                        cur.execute("""
+                            SELECT experience_id, task_id, outcome_status, error_signature,
+                                   root_cause_analysis, context_conditions, confidence_score
+                            FROM experiences
+                            WHERE project_id = %s
+                              AND outcome_status IN ('FAILURE', 'ABORTED')
+                            ORDER BY created_at DESC
+                            LIMIT %s;
+                        """, (project_id, max_results))
+
+                    rows = cur.fetchall()
+                    for r in rows:
+                        ctx_dict = r[5] if isinstance(r[5], dict) else (json.loads(r[5]) if r[5] else {})
+                        warnings.append({
+                            "experience_id": r[0],
+                            "task_id": r[1],
+                            "outcome": r[2],
+                            "error_signature": r[3] or "GENERAL_FAILURE",
+                            "failure_reason": r[4] or "Unspecified execution failure",
+                            "conditions": ctx_dict.get("conditions", {}),
+                            "avoidance_recommendation": f"Avoid configuration leading to {r[3] or 'failure'}",
+                            "confidence": float(r[6]) if r[6] is not None else 0.8,
+                        })
+            finally:
+                postgres_manager.release_connection(conn)
+
+            return warnings[:max_results]
+
+        except Exception:
+            return []
+
 
 
 memory_retriever = MemoryRetriever()
