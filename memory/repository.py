@@ -174,6 +174,34 @@ class MemoryRepository:
         finally:
             pg.release_connection(conn)
 
+    def get_by_ids(self, memory_ids: List[str]) -> Dict[str, MemoryRecord]:
+        """Fetch multiple MemoryRecords in a single batch query."""
+        if not memory_ids:
+            return {}
+        pg = self._get_manager()
+        conn = pg.get_connection()
+        if not conn:
+            return {}
+        try:
+            from psycopg2 import extras
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM memory_records WHERE memory_id = ANY(%s);",
+                    (list(memory_ids),)
+                )
+                rows = cur.fetchall()
+                results = {}
+                for row in rows:
+                    rec = self._row_to_record(dict(row))
+                    if rec:
+                        results[rec.memory_id] = rec
+                return results
+        except Exception as e:
+            print(f"[MEMORY REPO] get_by_ids failed: {e}")
+            return {}
+        finally:
+            pg.release_connection(conn)
+
     def search(
         self,
         query: Optional[str] = None,
@@ -200,8 +228,12 @@ class MemoryRepository:
 
             # Default: only ACTIVE records unless caller specifies
             if status is not None:
-                conditions.append("status = %s")
-                params.append(status.value)
+                if isinstance(status, (list, tuple, set)):
+                    conditions.append("status = ANY(%s)")
+                    params.append([s.value if hasattr(s, "value") else str(s) for s in status])
+                else:
+                    conditions.append("status = %s")
+                    params.append(status.value if hasattr(status, "value") else str(status))
             else:
                 conditions.append("status = 'ACTIVE'")
 
@@ -210,7 +242,7 @@ class MemoryRepository:
                 params.append(memory_type.value)
 
             if project_id:
-                conditions.append("project_id = %s")
+                conditions.append("(project_id = %s OR project_id IS NULL)")
                 params.append(project_id)
 
             if task_id:
@@ -234,7 +266,7 @@ class MemoryRepository:
             sql = f"""
                 SELECT * FROM memory_records
                 WHERE {where_clause}
-                ORDER BY importance DESC, created_at DESC
+                ORDER BY importance DESC, created_at DESC, memory_id ASC
                 LIMIT %s;
             """
             params.append(limit)
@@ -333,6 +365,12 @@ class MemoryRepository:
 
     def touch_accessed(self, memory_id: str) -> None:
         """Update last_accessed_at for a memory record (non-blocking)."""
+        self.touch_accessed_batch([memory_id])
+
+    def touch_accessed_batch(self, memory_ids: List[str]) -> None:
+        """Update last_accessed_at for multiple memory records in a single batch (non-blocking)."""
+        if not memory_ids:
+            return
         pg = self._get_manager()
         conn = pg.get_connection()
         if not conn:
@@ -342,8 +380,8 @@ class MemoryRepository:
                 cur.execute("""
                     UPDATE memory_records
                     SET last_accessed_at = CURRENT_TIMESTAMP
-                    WHERE memory_id = %s;
-                """, (memory_id,))
+                    WHERE memory_id = ANY(%s);
+                """, (list(memory_ids),))
             conn.commit()
         except Exception:
             conn.rollback()

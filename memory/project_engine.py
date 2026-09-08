@@ -42,6 +42,8 @@ from memory.project_models import (
     calculate_bayesian_strategy_reliability,
     calculate_transfer_confidence,
 )
+from memory.governance import governance_engine, GovernanceDecision
+from memory.conflict_engine import ConflictEngine
 
 logger = logging.getLogger("DOOM.ProjectExperienceEngine")
 
@@ -636,6 +638,8 @@ class ProjectExperienceEngine:
             procedure_template["derived_from_lesson_id"] = kwargs.get("derived_from_lesson_id")
         if kwargs.get("scope"):
             procedure_template["scope"] = kwargs.get("scope").value if isinstance(kwargs.get("scope"), Enum) else kwargs.get("scope")
+        if kwargs.get("applicable_project_id"):
+            procedure_template["applicable_project_id"] = kwargs.get("applicable_project_id")
 
         recommended_tools = recommended_tools or kwargs.get("prerequisites") or []
         environmental_preconditions = environmental_preconditions or kwargs.get("environmental_conditions") or {}
@@ -725,8 +729,50 @@ class ProjectExperienceEngine:
             self._manager.release_connection(conn)
 
     # -----------------------------------------------------------------------
-    # 4. Cross-Project Transfer Matrix Engine
+    # 4. Cross-Project Transfer Matrix & Governance Engine
     # -----------------------------------------------------------------------
+    def _get_target_failure_stats(self, strategy_id: Optional[str], target_project_id: str) -> Dict[str, Any]:
+        """Queries empirical failure history for a strategy within a specific target project."""
+        if not strategy_id or not target_project_id:
+            return {"failures": 0, "successes": 0, "consecutive_failures": 0}
+        conn = self._manager.get_connection()
+        if not conn:
+            return {"failures": 0, "successes": 0, "consecutive_failures": 0}
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        COUNT(CASE WHEN outcome_status IN ('FAILURE', 'PARTIAL_SUCCESS') THEN 1 END),
+                        COUNT(CASE WHEN outcome_status = 'SUCCESS' THEN 1 END)
+                    FROM experiences
+                    WHERE (strategy_applied->>'strategy_id' = %s) AND project_id = %s;
+                """, (strategy_id, target_project_id))
+                row = cur.fetchone()
+                failures = int(row[0]) if row and row[0] is not None else 0
+                successes = int(row[1]) if row and row[1] is not None else 0
+
+                cur.execute("""
+                    SELECT outcome_status FROM experiences
+                    WHERE (strategy_applied->>'strategy_id' = %s) AND project_id = %s
+                    ORDER BY created_at DESC LIMIT 5;
+                """, (strategy_id, target_project_id))
+                recent = [r[0] for r in cur.fetchall()]
+                consecutive = 0
+                for o in recent:
+                    if o in ('FAILURE', 'PARTIAL_SUCCESS'):
+                        consecutive += 1
+                    else:
+                        break
+                return {
+                    "failures": failures,
+                    "successes": successes,
+                    "consecutive_failures": consecutive,
+                }
+        except Exception:
+            return {"failures": 0, "successes": 0, "consecutive_failures": 0}
+        finally:
+            self._manager.release_connection(conn)
+
     def evaluate_cross_project_transfer(
         self,
         source_project_id: Optional[str] = None,
@@ -739,21 +785,25 @@ class ProjectExperienceEngine:
         **kwargs,
     ) -> TransferEvaluationResult:
         """
-        Formally evaluates and logs cross-project transfer eligibility.
+        Formally evaluates cross-project transfer eligibility via GovernanceEngine.
         Applies:
-        - Hard privacy gate: SENSITIVE or PRIVATE cross-persona transfers are strictly DENIED.
-        - Tech stack Jaccard similarity.
-        - Semantic domain similarity.
-        - Approved formula: C_transfer = C_source * S_sem * S_tech * S_env * (1 - P_risk)
+        - 14 Hard Governance Gates (Privacy Quarantine, Prerequisites, Scope, etc.)
+        - Multi-factor Transfer Confidence Scoring with Target Failure Penalty
+        - Persists to project_transfer_matrix only when persist=True.
+        - Zero accidental mutations to lessons table.
         """
         strat = None
         if strategy_id:
             strat = self.get_strategy(strategy_id)
             if strat and not source_project_id:
-                source_project_id = strat.intent_category
+                source_project_id = (
+                    strat.procedure_template.get("applicable_project_id")
+                    if isinstance(strat.procedure_template, dict)
+                    else None
+                ) or strat.intent_category
 
-        src_id = str(source_project_id).strip().lower()
-        tgt_id = str(target_project_id).strip().lower()
+        src_id = str(source_project_id).strip().lower() if source_project_id else ""
+        tgt_id = str(target_project_id).strip().lower() if target_project_id else ""
 
         src_proj = self.get_project(src_id)
         if not src_proj:
@@ -762,57 +812,33 @@ class ProjectExperienceEngine:
         if not tgt_proj:
             raise ProjectNotFoundError(f"Target project '{tgt_id}' not found")
 
-        # 1. Hard Privacy Gate
-        if src_proj.privacy_class == PrivacyClass.SENSITIVE or (strat and kwargs.get("privacy_class") == PrivacyClass.SENSITIVE):
-            return TransferEvaluationResult(
-                decision=TransferDecision.DENIED,
-                transfer_confidence=0.0,
-                semantic_similarity=0.0,
-                tech_stack_overlap=0.0,
-                environmental_compatibility=0.0,
-                risk_penalty=1.0,
-                reason="Source project has SENSITIVE privacy class; transfer is strictly quarantined",
-            )
-        if src_proj.privacy_class == PrivacyClass.PRIVATE and tgt_proj.privacy_class == PrivacyClass.NORMAL:
-            return TransferEvaluationResult(
-                decision=TransferDecision.DENIED,
-                transfer_confidence=0.0,
-                semantic_similarity=0.0,
-                tech_stack_overlap=0.0,
-                environmental_compatibility=0.0,
-                risk_penalty=1.0,
-                reason="PRIVATE source project cannot transfer knowledge into public/NORMAL target project",
-            )
+        # 1. Lesson Scope and Domain Check (if lesson_id provided)
+        lsn_domain = None
+        if lesson_id:
+            conn = self._manager.get_connection()
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT confidence_score, domain, scope FROM lessons WHERE lesson_id = %s;", (lesson_id,))
+                        lsn_row = cur.fetchone()
+                        if not lsn_row:
+                            raise ValueError(f"Lesson '{lesson_id}' not found")
+                        lsn_domain = lsn_row[1]
+                        if lsn_row[2] == "PROJECT_LOCAL":
+                            return TransferEvaluationResult(
+                                decision=TransferDecision.DENIED,
+                                transfer_confidence=0.0,
+                                semantic_similarity=0.0,
+                                tech_stack_overlap=0.0,
+                                environmental_compatibility=0.0,
+                                risk_penalty=1.0,
+                                reason="Lesson scope is PROJECT_LOCAL; cross-project transfer prohibited",
+                                strategy_id=strategy_id,
+                            )
+                finally:
+                    self._manager.release_connection(conn)
 
-        # Check strategy prerequisites if present
-        if strat and strat.recommended_tools:
-            missing = [req for req in strat.recommended_tools if req not in tgt_proj.tech_stack]
-            if missing:
-                return TransferEvaluationResult(
-                    decision=TransferDecision.DENIED,
-                    transfer_confidence=0.0,
-                    semantic_similarity=0.0,
-                    tech_stack_overlap=0.0,
-                    environmental_compatibility=0.0,
-                    risk_penalty=1.0,
-                    reason=f"Prerequisites not satisfied: missing {missing}",
-                )
-
-        # Check strategy scope if PROJECT_LOCAL
-        if strat:
-            strat_scope = kwargs.get("scope") or strat.procedure_template.get("scope")
-            if strat_scope in ("PROJECT_LOCAL", LessonScope.PROJECT_LOCAL):
-                return TransferEvaluationResult(
-                    decision=TransferDecision.DENIED,
-                    transfer_confidence=0.0,
-                    semantic_similarity=0.0,
-                    tech_stack_overlap=0.0,
-                    environmental_compatibility=0.0,
-                    risk_penalty=1.0,
-                    reason="Strategy scope is PROJECT_LOCAL; cross-project transfer prohibited",
-                )
-
-        # Check risk tolerance
+        # 2. Risk Tolerance Pre-check
         if "risk_tolerance" in kwargs:
             risk_tol = float(kwargs["risk_tolerance"])
             if risk_tol < 0.20 and strat and strat.total_attempts == 0:
@@ -824,141 +850,230 @@ class ProjectExperienceEngine:
                     environmental_compatibility=0.0,
                     risk_penalty=1.0,
                     reason="Low confidence strategy rejected under strict risk tolerance",
+                    strategy_id=strategy_id,
                 )
 
-        # 2. Fetch or auto-resolve Lesson
+        # 3. Calculate Semantic Similarity
+        s_set = set(src_proj.tech_stack)
+        t_set = set(tgt_proj.tech_stack)
+        common_kw = s_set.intersection(t_set)
+        if common_kw or (lsn_domain and (lsn_domain in tgt_proj.description.lower() or lsn_domain in " ".join(tgt_proj.tech_stack).lower())):
+            sem_sim = 0.85
+        else:
+            sem_sim = 0.60
+
+        # 4. Target Failure Statistics & Experience Verification
+        target_failure_stats = self._get_target_failure_stats(strat.strategy_id if strat else None, tgt_id)
+
+        src_conf = strat.reliability_score if strat else 0.75
+        verified_count = 0
         conn = self._manager.get_connection()
-        if not conn:
-            raise RuntimeError("PostgreSQL connection unavailable")
-
-        try:
-            with conn.cursor() as cur:
-                if lesson_id:
-                    cur.execute("SELECT confidence_score, domain, scope FROM lessons WHERE lesson_id = %s;", (lesson_id,))
-                    lsn_row = cur.fetchone()
-                    if not lsn_row:
-                        raise ValueError(f"Lesson '{lesson_id}' not found")
-                    src_conf = float(lsn_row[0])
-                    lsn_domain = lsn_row[1]
-                    lsn_scope = lsn_row[2]
-
-                    if lsn_scope == "PROJECT_LOCAL":
-                        return TransferEvaluationResult(
-                            decision=TransferDecision.DENIED,
-                            transfer_confidence=0.0,
-                            semantic_similarity=0.0,
-                            tech_stack_overlap=0.0,
-                            environmental_compatibility=0.0,
-                            risk_penalty=1.0,
-                            reason="Lesson scope is PROJECT_LOCAL; cross-project transfer prohibited",
-                        )
-                else:
+        if conn:
+            try:
+                with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT MAX(confidence_score) FROM experiences
+                        SELECT MAX(confidence_score), COUNT(*)
+                        FROM experiences
                         WHERE (strategy_applied->>'strategy_id' = %s OR project_id = %s)
                           AND outcome_status = 'SUCCESS';
                     """, (strategy_id, src_id))
-                    exp_c = cur.fetchone()
-                    if exp_c and exp_c[0]:
-                        src_conf = max(strat.reliability_score if strat else 0.5, float(exp_c[0]))
-                    else:
-                        src_conf = strat.reliability_score if strat else 0.75
+                    exp_row = cur.fetchone()
+                    if exp_row and exp_row[0] is not None:
+                        src_conf = max(strat.reliability_score if strat else 0.5, float(exp_row[0]))
+                        verified_count = int(exp_row[1])
+            finally:
+                self._manager.release_connection(conn)
 
-                    lsn_domain = src_id
-                    lesson_id = f"lsn_auto_{src_id}"
-                    # Ensure auto lesson exists in lessons table
-                    cur.execute("""
-                        INSERT INTO lessons (
-                            lesson_id, title, summary, domain, scope, confidence_score
-                        ) VALUES (%s, %s, %s, %s, 'CROSS_PROJECT_ELIGIBLE', %s)
-                        ON CONFLICT (lesson_id) DO NOTHING;
-                    """, (lesson_id, f"Transferable lesson for {src_id}", "Auto lesson for transfer", src_id, src_conf))
+        # 5. Execute Governance Engine Evaluation
+        extra_ctx = dict(kwargs)
+        if "source_confidence" not in extra_ctx:
+            extra_ctx["source_confidence"] = src_conf
+        if "verified_experience_count" not in extra_ctx:
+            extra_ctx["verified_experience_count"] = verified_count
+        if kwargs.get("scope"):
+            extra_ctx["scope"] = kwargs.get("scope")
+        elif strat and isinstance(strat.procedure_template, dict) and strat.procedure_template.get("scope"):
+            extra_ctx["scope"] = strat.procedure_template.get("scope")
 
-            # 3. Calculate Tech Stack Overlap (Dice / Jaccard blend)
-            s_set = set(src_proj.tech_stack)
-            t_set = set(tgt_proj.tech_stack)
-            if not s_set and not t_set:
-                tech_overlap = 0.80  # Default general software overlap
-            elif not s_set or not t_set:
-                tech_overlap = 0.50
-            else:
-                intersection = len(s_set.intersection(t_set))
-                prereqs = set(strat.recommended_tools) if strat else set()
-                if prereqs and prereqs.issubset(t_set):
-                    tech_overlap = max(0.70, float(2.0 * intersection / (len(s_set) + len(t_set))))
-                else:
-                    total_len = len(s_set) + len(t_set)
-                    tech_overlap = float(2.0 * intersection / total_len) if total_len > 0 else 0.50
+        gov_decision = governance_engine.evaluate_transfer(
+            strategy=strat,
+            source_project=src_proj,
+            target_project=tgt_proj,
+            semantic_similarity=sem_sim,
+            target_environment={"environmental_compatibility": environmental_compatibility},
+            target_failure_stats=target_failure_stats,
+            extra_context=extra_ctx,
+        )
 
-            # 4. Semantic Similarity between project descriptions/domains
-            common_kw = s_set.intersection(t_set)
-            if common_kw or (lsn_domain and (lsn_domain in tgt_proj.description.lower() or lsn_domain in " ".join(tgt_proj.tech_stack).lower())):
-                sem_sim = 0.85
-            else:
-                sem_sim = 0.60
+        # 6. Record in project_transfer_matrix (if persist=True)
+        transfer_id = f"txm_{uuid.uuid4().hex[:12]}" if persist else None
+        if persist:
+            conn = self._manager.get_connection()
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO project_transfer_matrix (
+                                transfer_id, source_project_id, target_project_id,
+                                lesson_id, strategy_id, semantic_similarity,
+                                tech_stack_overlap, transfer_confidence, status,
+                                rejection_reason, created_at, policy_version, risk_penalty
+                            ) VALUES (
+                                %s, %s, %s,
+                                %s, %s, %s,
+                                %s, %s, %s,
+                                %s, CURRENT_TIMESTAMP, %s, %s
+                            );
+                        """, (
+                            transfer_id, src_id, tgt_id,
+                            lesson_id, strategy_id, gov_decision.semantic_similarity,
+                            gov_decision.tech_stack_overlap, gov_decision.transfer_confidence,
+                            "APPROVED" if gov_decision.decision == TransferDecision.ALLOWED else (
+                                "EVALUATED" if gov_decision.decision == TransferDecision.CONDITIONAL else (
+                                    "ABSTAIN" if gov_decision.decision == TransferDecision.ABSTAIN else "REJECTED"
+                                )
+                            ),
+                            gov_decision.decision_reason if gov_decision.decision in (TransferDecision.DENIED, TransferDecision.ABSTAIN) else None,
+                            gov_decision.policy_version, gov_decision.risk_penalty,
+                        ))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    logger.error(f"[PROJECT ENGINE] Transfer matrix persist failed: {e}")
+                    raise
+                finally:
+                    self._manager.release_connection(conn)
 
-            # 5. Calculate Transfer Confidence
-            c_transfer = calculate_transfer_confidence(
-                source_confidence=src_conf,
-                semantic_similarity=sem_sim,
-                tech_stack_overlap=tech_overlap,
-                environmental_compatibility=environmental_compatibility,
-                risk_penalty=risk_penalty,
-            )
+        res = gov_decision.to_legacy_result()
+        res.transfer_id = transfer_id
+        res.strategy_id = strategy_id
+        return res
 
-            # 6. Verdict
-            if c_transfer >= 0.35:
-                dec = TransferDecision.ALLOWED
-                reason = f"High transfer confidence ({c_transfer:.2f}) across compatible domains"
-                stat = TransferStatus.APPROVED
-            elif c_transfer >= 0.20:
-                dec = TransferDecision.CONDITIONAL
-                reason = f"Moderate transfer confidence ({c_transfer:.2f}); environmental verification recommended"
-                stat = TransferStatus.EVALUATED
-            else:
-                dec = TransferDecision.DENIED
-                reason = f"Low transfer confidence ({c_transfer:.2f}) below threshold (0.20)"
-                stat = TransferStatus.REJECTED
+    def retrieve_applicable_strategies(
+        self,
+        project_id: str,
+        intent_category: Optional[str] = None,
+        limit: int = 5,
+        target_environment: Optional[Dict[str, Any]] = None,
+        allow_cross_project: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        V5.3.7.3: Retrieves applicable strategies for a target project.
+        - Evaluates local strategies directly (full reliability, ALLOWED).
+        - Evaluates cross-project candidates through GovernanceEngine (strictly read-only, persist=False).
+        - Resolves conflicts and applies target-local precedence via ConflictEngine.
+        - Strictly read-only: dI/dN_retrieval = 0.
+        """
+        tgt_proj = self.get_project(project_id)
+        if not tgt_proj:
+            return []
 
-            # 7. Record in project_transfer_matrix (if persist=True)
-            transfer_id = f"txm_{uuid.uuid4().hex[:12]}" if persist else None
-            if persist:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO project_transfer_matrix (
-                            transfer_id, source_project_id, target_project_id,
-                            lesson_id, strategy_id, semantic_similarity,
-                            tech_stack_overlap, transfer_confidence, status,
-                            rejection_reason, created_at
-                        ) VALUES (
-                            %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s, %s,
-                            %s, CURRENT_TIMESTAMP
-                        );
-                    """, (
-                        transfer_id, src_id, tgt_id,
-                        lesson_id, strategy_id, sem_sim,
-                        tech_overlap, c_transfer, stat.value,
-                        reason if dec == TransferDecision.DENIED else None,
-                    ))
-                conn.commit()
+        conn = self._manager.get_connection()
+        if not conn:
+            return []
 
-            return TransferEvaluationResult(
-                decision=dec,
-                transfer_confidence=c_transfer,
-                semantic_similarity=sem_sim,
-                tech_stack_overlap=tech_overlap,
-                environmental_compatibility=environmental_compatibility,
-                risk_penalty=risk_penalty,
-                reason=reason,
-                transfer_id=transfer_id,
-                strategy_id=strategy_id,
-            )
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"[PROJECT ENGINE] Transfer evaluation failed: {e}")
-            raise
+        candidates = []
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT strategy_id, name, intent_category, procedure_template,
+                           recommended_tools, disallowed_tools, environmental_preconditions,
+                           total_attempts, successful_attempts, failed_attempts,
+                           reliability_score, is_deprecated, created_at, updated_at
+                    FROM strategies
+                    WHERE is_deprecated = FALSE;
+                """)
+                all_strats = cur.fetchall()
+
+            for row in all_strats:
+                strat_id = row[0]
+                strat_name = row[1]
+                strat_cat = row[2]
+                strat_proc = row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}")
+                rec_tools = row[4] if isinstance(row[4], list) else json.loads(row[4] or "[]")
+                dis_tools = row[5] if isinstance(row[5], list) else json.loads(row[5] or "[]")
+                env_pre = row[6] if isinstance(row[6], dict) else json.loads(row[6] or "{}")
+                tot_att = row[7]
+                succ_att = row[8]
+                fail_att = row[9]
+                rel_score = float(row[10])
+
+                strat_rec = StrategyRecord(
+                    strategy_id=strat_id,
+                    name=strat_name,
+                    intent_category=strat_cat,
+                    procedure_template=strat_proc,
+                    recommended_tools=rec_tools,
+                    disallowed_tools=dis_tools,
+                    environmental_preconditions=env_pre,
+                    total_attempts=tot_att,
+                    successful_attempts=succ_att,
+                    failed_attempts=fail_att,
+                    reliability_score=rel_score,
+                )
+
+                # Check intent matching if requested
+                if intent_category and strat_cat.lower() != intent_category.lower() and strat_proc.get("intent") != intent_category:
+                    continue
+
+                origin_proj_id = strat_proc.get("applicable_project_id") or strat_cat
+                is_local = (origin_proj_id.lower() == project_id.lower())
+
+                if is_local:
+                    candidates.append({
+                        "strategy_id": strat_id,
+                        "name": strat_name,
+                        "intent_category": strat_cat,
+                        "reliability_score": rel_score,
+                        "transfer_confidence": rel_score,
+                        "is_transferred": False,
+                        "source_project_id": project_id,
+                        "target_project_id": project_id,
+                        "recommended_tools": rec_tools,
+                        "disallowed_tools": dis_tools,
+                        "procedure_template": strat_proc,
+                        "success_count": succ_att,
+                        "failure_count": fail_att,
+                        "transfer_decision": TransferDecision.ALLOWED.value,
+                        "defensive_warnings": [],
+                    })
+                elif allow_cross_project:
+                    src_proj = self.get_project(origin_proj_id)
+                    if not src_proj:
+                        continue
+                    # Read-only evaluation (persist=False)
+                    res = self.evaluate_cross_project_transfer(
+                        source_project_id=origin_proj_id,
+                        target_project_id=project_id,
+                        strategy_id=strat_id,
+                        persist=False,
+                    )
+                    if res.decision in (TransferDecision.ALLOWED, TransferDecision.CONDITIONAL):
+                        candidates.append({
+                            "strategy_id": strat_id,
+                            "name": strat_name,
+                            "intent_category": strat_cat,
+                            "reliability_score": rel_score,
+                            "transfer_confidence": res.transfer_confidence,
+                            "is_transferred": True,
+                            "source_project_id": origin_proj_id,
+                            "target_project_id": project_id,
+                            "recommended_tools": rec_tools,
+                            "disallowed_tools": dis_tools,
+                            "procedure_template": strat_proc,
+                            "success_count": succ_att,
+                            "failure_count": fail_att,
+                            "transfer_decision": res.decision.value,
+                            "defensive_warnings": res.defensive_warnings,
+                        })
+
+            # Apply ConflictEngine
+            resolved = ConflictEngine.resolve_conflicts(candidates, target_project_id=project_id)
+            # Filter out ABSTAIN or DENIED
+            survivors = [c for c in resolved if c.get("transfer_decision") in (TransferDecision.ALLOWED.value, TransferDecision.CONDITIONAL.value)]
+            # Sort by transfer_confidence descending
+            survivors.sort(key=lambda x: x.get("transfer_confidence", 0.0), reverse=True)
+            return survivors[:limit]
         finally:
             self._manager.release_connection(conn)
 

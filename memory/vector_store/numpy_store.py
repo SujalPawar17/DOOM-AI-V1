@@ -44,6 +44,7 @@ class NumPyVectorStorageAdapter(VectorStore):
         self._search_count: int = 0
         self._delete_count: int = 0
         self._stale_upsert_rejections: int = 0
+        self._matrix_cache: Optional[Tuple[np.ndarray, List[StoredVectorRecord]]] = None
         self._sync_generations_from_db()
 
     @property
@@ -208,6 +209,7 @@ class NumPyVectorStorageAdapter(VectorStore):
 
             self._records[key] = record
             self._store_count += 1
+            self._matrix_cache = None
 
         # Persist durable vector state
         self._persist_vector_state(clean_mid, generation, True)
@@ -280,6 +282,7 @@ class NumPyVectorStorageAdapter(VectorStore):
 
             if deleted:
                 self._delete_count += 1
+                self._matrix_cache = None
 
         # Persist tombstone to durable memory_vector_state
         self._persist_vector_state(clean_mid, effective_gen, False)
@@ -318,24 +321,34 @@ class NumPyVectorStorageAdapter(VectorStore):
 
         with self._lock:
             self._search_count += 1
-            candidates: List[StoredVectorRecord] = []
 
-            for key, rec in self._records.items():
-                if model is not None and rec.model != model.strip():
-                    continue
-                if model_version is not None and rec.model_version != model_version.strip():
-                    continue
-                # Optional metadata filters (e.g. memory_id exclusion)
-                if filters and "exclude_memory_ids" in filters:
-                    if rec.memory_id in filters["exclude_memory_ids"]:
+            if filters is None and model is None and model_version is None:
+                if self._matrix_cache is not None:
+                    matrix, candidates = self._matrix_cache
+                else:
+                    candidates = list(self._records.values())
+                    if not candidates:
+                        return []
+                    matrix = np.asarray([c.embedding for c in candidates], dtype=np.float32)
+                    self._matrix_cache = (matrix, candidates)
+            else:
+                candidates: List[StoredVectorRecord] = []
+                for key, rec in self._records.items():
+                    if model is not None and rec.model != model.strip():
                         continue
-                candidates.append(rec)
+                    if model_version is not None and rec.model_version != model_version.strip():
+                        continue
+                    # Optional metadata filters (e.g. memory_id exclusion)
+                    if filters and "exclude_memory_ids" in filters:
+                        if rec.memory_id in filters["exclude_memory_ids"]:
+                            continue
+                    candidates.append(rec)
 
-            if not candidates:
-                return []
+                if not candidates:
+                    return []
 
-            # Stack matrix: shape (N, dimension)
-            matrix = np.vstack([c.embedding for c in candidates])
+                matrix = np.asarray([c.embedding for c in candidates], dtype=np.float32)
+
             # Dot products: shape (N,)
             sims = np.dot(matrix, clean_q)
             # Clip numerical precision drift
@@ -387,3 +400,4 @@ class NumPyVectorStorageAdapter(VectorStore):
         with self._lock:
             self._records.clear()
             self._max_generation.clear()
+            self._matrix_cache = None

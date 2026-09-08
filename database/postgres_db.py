@@ -527,6 +527,7 @@ class PostgresManager:
             conn.commit()
             self._migrate_v5371_constraints(conn)
             self._migrate_v5372_outbox_schema(conn)
+            self._migrate_v5373_governance_schema(conn)
             self._init_v52_vector_schema(conn)
             print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records, memory_lifecycle_events")
         except Exception as e:
@@ -589,6 +590,35 @@ class PostgresManager:
                 except Exception as ce:
                     pass
         conn.commit()
+
+    def _migrate_v5373_governance_schema(self, conn):
+        """V5.3.7.3: Idempotently extends project_transfer_matrix with policy versioning and risk penalty."""
+        if not conn:
+            return
+        migrations = [
+            "ALTER TABLE project_transfer_matrix ADD COLUMN IF NOT EXISTS policy_version VARCHAR(32) NOT NULL DEFAULT 'GOV_POLICY_V1';",
+            "ALTER TABLE project_transfer_matrix ADD COLUMN IF NOT EXISTS risk_penalty DOUBLE PRECISION NOT NULL DEFAULT 0.00;",
+            "ALTER TABLE project_transfer_matrix ALTER COLUMN lesson_id DROP NOT NULL;",
+            "ALTER TABLE project_transfer_matrix DROP CONSTRAINT IF EXISTS project_transfer_matrix_status_check;",
+            "ALTER TABLE project_transfer_matrix ADD CONSTRAINT project_transfer_matrix_status_check CHECK (status IN ('EVALUATED', 'APPROVED', 'REJECTED', 'SUPERSEDED', 'ABSTAIN'));",
+            "CREATE INDEX IF NOT EXISTS idx_transfer_matrix_policy ON project_transfer_matrix(policy_version);",
+            # V5.3.7.3: Idempotently extend experiences table for atomic evidence recording
+            "ALTER TABLE experiences ADD COLUMN IF NOT EXISTS strategy_id VARCHAR(64);",
+            "ALTER TABLE experiences ADD COLUMN IF NOT EXISTS idempotency_hash VARCHAR(64);",
+            "ALTER TABLE experiences ADD COLUMN IF NOT EXISTS client_transaction_id VARCHAR(64);",
+            "ALTER TABLE experiences ADD COLUMN IF NOT EXISTS quarantine_reason VARCHAR(256);",
+            "ALTER TABLE experiences ADD COLUMN IF NOT EXISTS privacy_class VARCHAR(32) NOT NULL DEFAULT 'NORMAL';",
+            "CREATE INDEX IF NOT EXISTS idx_experiences_idempotency_hash ON experiences(idempotency_hash);",
+            "CREATE INDEX IF NOT EXISTS idx_experiences_client_tx ON experiences(client_transaction_id);",
+            "CREATE INDEX IF NOT EXISTS idx_experiences_strat_tx ON experiences(strategy_id, client_transaction_id);",
+        ]
+        for sql in migrations:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
     def _init_v52_vector_schema(self, conn):
         """Initializes V5.2 memory_embeddings table if pgvector extension is available."""

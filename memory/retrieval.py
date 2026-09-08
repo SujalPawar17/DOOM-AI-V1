@@ -99,18 +99,10 @@ class MemoryRetriever:
                     for c in cands:
                         raw_lexical_map[c.memory_id] = c
             else:
-                if project_id:
-                    for c in memory_repository.search(
-                        query=None,
-                        status=MemoryStatus.ACTIVE,
-                        project_id=project_id,
-                        privacy_classes=privacy_classes,
-                        limit=MAX_LEXICAL_CANDIDATES,
-                    ):
-                        raw_lexical_map[c.memory_id] = c
                 for c in memory_repository.search(
                     query=None,
                     status=MemoryStatus.ACTIVE,
+                    project_id=project_id,
                     privacy_classes=privacy_classes,
                     limit=MAX_LEXICAL_CANDIDATES,
                 ):
@@ -123,31 +115,30 @@ class MemoryRetriever:
                 significant_words = [w for w in raw_words if w.lower() not in stopwords]
                 search_terms = significant_words[:3] if significant_words else raw_words[:2]
                 for term in search_terms:
-                    kw_cands = memory_repository.search(
+                    cands = memory_repository.search(
                         query=term,
-                        status=MemoryStatus.ACTIVE,
+                        status=[MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED],
                         privacy_classes=privacy_classes,
                         limit=MAX_LEXICAL_CANDIDATES,
                     )
-                    for c in kw_cands:
-                        raw_lexical_map[c.memory_id] = c
+                    sup_ids = []
+                    for c in cands:
+                        if c.status == MemoryStatus.ACTIVE:
+                            raw_lexical_map[c.memory_id] = c
+                        elif c.status == MemoryStatus.SUPERSEDED:
+                            sup_ids.append(c.memory_id)
 
                     # V5.3.4: Check superseded records for active successors
-                    sup_cands = memory_repository.search(
-                        query=term,
-                        status=MemoryStatus.SUPERSEDED,
-                        privacy_classes=privacy_classes,
-                        limit=MAX_LEXICAL_CANDIDATES,
-                    )
-                    if sup_cands:
+                    if sup_ids:
                         try:
                             from memory.relationship_engine import relationship_engine
-                            sup_ids = [s.memory_id for s in sup_cands]
                             resolved_map = relationship_engine.resolve_lineage(sup_ids)
-                            for old_id, succ_id in resolved_map.items():
-                                succ_rec = memory_repository.get_by_id(succ_id)
-                                if succ_rec and succ_rec.status == MemoryStatus.ACTIVE:
-                                    raw_lexical_map[succ_rec.memory_id] = succ_rec
+                            if resolved_map:
+                                succ_records = memory_repository.get_by_ids(list(resolved_map.values()))
+                                for old_id, succ_id in resolved_map.items():
+                                    succ_rec = succ_records.get(succ_id)
+                                    if succ_rec and succ_rec.status == MemoryStatus.ACTIVE:
+                                        raw_lexical_map[succ_rec.memory_id] = succ_rec
                         except Exception:
                             pass
 
@@ -196,14 +187,13 @@ class MemoryRetriever:
                             model=emb_res.model,
                             model_version=emb_res.model_version,
                         )
+                        valid_matches = [m for m in raw_matches if m.similarity >= SEMANTIC_SIMILARITY_THRESHOLD]
+                        matched_ids = [m.memory_id for m in valid_matches]
+                        records_by_id = memory_repository.get_by_ids(matched_ids) if hasattr(memory_repository, "get_by_ids") else {}
 
-                        for m in raw_matches:
-                            # Hard similarity threshold check (0.40)
-                            if m.similarity < SEMANTIC_SIMILARITY_THRESHOLD:
-                                continue
-
+                        for m in valid_matches:
                             # Authoritative PostgreSQL validation (Phase 19)
-                            rec = memory_repository.get_by_id(m.memory_id)
+                            rec = records_by_id.get(m.memory_id) if m.memory_id in records_by_id else memory_repository.get_by_id(m.memory_id)
                             if not rec:
                                 # Orphan vector: exists in VectorStore but missing from PostgreSQL
                                 try:
@@ -396,8 +386,8 @@ class MemoryRetriever:
 
             # Touch access timestamps (non-blocking, non-fatal)
             try:
-                for sm in scored_memories:
-                    memory_repository.touch_accessed(sm.record.memory_id)
+                if scored_memories:
+                    memory_repository.touch_accessed_batch([sm.record.memory_id for sm in scored_memories])
             except Exception:
                 pass
 
@@ -540,7 +530,12 @@ class MemoryRetriever:
 
             # Sort combined results by reliability score
             results.sort(key=lambda x: x.get("reliability_score", 0.0), reverse=True)
-            return results[:max_results]
+            try:
+                from memory.conflict_engine import ConflictEngine
+                resolved = ConflictEngine.resolve_conflicts(results, target_project_id=project_id)
+                return resolved[:max_results]
+            except Exception:
+                return results[:max_results]
 
         except Exception as e:
             return []

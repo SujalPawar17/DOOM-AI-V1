@@ -251,5 +251,40 @@ from memory.project_context import (
     resolve_project_context,
 )
 
+# V5.3.7.3 Strategy Governance, Evidence Transactions & Reconciliation
+from memory.governance import (
+    governance_engine,
+    GovernanceEngine,
+    GovernanceDecision,
+    GovernancePolicy,
+)
+from memory.governance_gates import (
+    GovernanceGateId,
+    GateResult,
+    GovernanceGateEvaluator,
+)
+from memory.conflict_engine import (
+    ConflictEngine,
+    ConflictResolutionResult,
+)
+from memory.evidence_transaction import (
+    EvidenceTransaction,
+    EvidenceTransactionStatus,
+    EvidenceTransactionError,
+    EvidenceValidationError,
+    EvidenceIdempotencyConflictError,
+)
+from memory.governance_reconciliation import (
+    governance_reconciliation_engine,
+    GovernanceReconciliationEngine,
+    GovernanceReconciliationReport,
+)
 
-
+__all__.extend([
+    "governance_engine", "GovernanceEngine", "GovernanceDecision", "GovernancePolicy",
+    "GovernanceGateId", "GateResult", "GovernanceGateEvaluator",
+    "ConflictEngine", "ConflictResolutionResult",
+    "EvidenceTransaction", "EvidenceTransactionStatus", "EvidenceTransactionError",
+    "EvidenceValidationError", "EvidenceIdempotencyConflictError",
+    "governance_reconciliation_engine", "GovernanceReconciliationEngine", "GovernanceReconciliationReport",
+])

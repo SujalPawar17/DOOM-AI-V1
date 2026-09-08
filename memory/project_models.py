@@ -56,6 +56,7 @@ class TransferDecision(str, Enum):
     ALLOWED     = "ALLOWED"
     DENIED      = "DENIED"
     CONDITIONAL = "CONDITIONAL"
+    ABSTAIN     = "ABSTAIN"
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +348,6 @@ class TransferMatrixRecord:
             "rejection_reason": self.rejection_reason,
             "created_at": self.created_at,
         }
-
-
 @dataclass
 class TransferEvaluationResult:
     """Detailed verdict and calculation breakdown of transfer evaluation."""
@@ -361,6 +360,12 @@ class TransferEvaluationResult:
     reason: str
     transfer_id: Optional[str] = None
     strategy_id: Optional[str] = None
+    policy_version: str = "GOV_POLICY_V1"
+    gates_evaluated: List[str] = field(default_factory=list)
+    failed_gate: Optional[str] = None
+    defensive_warnings: List[str] = field(default_factory=list)
+    provenance_hash: Optional[str] = None
+    is_data_only: bool = True
 
     @property
     def matrix_id(self) -> Optional[str]:
@@ -398,6 +403,7 @@ class StrategyExplainabilityProfile:
     @property
     def explainability_summary(self) -> str:
         return f"{self.summary_rationale} Provenance backed by Task Outcomes and verified execution traces."
+
 
 
 
@@ -480,20 +486,27 @@ def calculate_transfer_confidence(
     tech_stack_overlap: float,
     environmental_compatibility: float = 1.0,
     risk_penalty: float = 0.0,
+    evidence_weight: float = 1.0,
     *args,
     **kwargs,
 ) -> float:
     """
-    Approved V5.3.6 cross-project transfer confidence formula:
-    C_transfer = C_source * S_sem * S_tech * S_env * (1.0 - P_risk)
+    V5.3.7.3 cross-project transfer confidence formula:
+    C_transfer = C_source * S_sem * S_tech * S_env * W_evidence * (1.0 - P_risk)
     """
+    if "evidence_weight" in kwargs:
+        evidence_weight = float(kwargs["evidence_weight"])
+    elif len(args) >= 1:
+        evidence_weight = float(args[0])
+
     source_c = max(0.01, min(1.0, float(source_confidence)))
     s_sem = max(0.0, min(1.0, float(semantic_similarity)))
     s_tech = max(0.0, min(1.0, float(tech_stack_overlap)))
     s_env = max(0.0, min(1.0, float(environmental_compatibility)))
+    w_evi = max(0.5, min(1.0, float(evidence_weight)))
     p_risk = max(0.0, min(1.0, float(risk_penalty)))
 
-    raw_c = source_c * s_sem * s_tech * s_env * (1.0 - p_risk)
+    raw_c = source_c * s_sem * s_tech * s_env * w_evi * (1.0 - p_risk)
     return round(float(max(0.01, min(1.0, raw_c))), 4)
 
 
