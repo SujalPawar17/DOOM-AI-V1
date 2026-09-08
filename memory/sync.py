@@ -111,6 +111,10 @@ class VectorSyncWorkItem:
     max_attempts: int = 5
     available_at: str = field(default_factory=_utcnow)
     locked_until: Optional[str] = None
+    worker_id: Optional[str] = None
+    lease_acquired_at: Optional[str] = None
+    lease_expires_at: Optional[str] = None
+    heartbeat_at: Optional[str] = None
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
     last_error_class: Optional[str] = None
@@ -129,6 +133,10 @@ class VectorSyncWorkItem:
             "max_attempts": self.max_attempts,
             "available_at": str(self.available_at),
             "locked_until": str(self.locked_until) if self.locked_until else None,
+            "worker_id": self.worker_id,
+            "lease_acquired_at": str(self.lease_acquired_at) if self.lease_acquired_at else None,
+            "lease_expires_at": str(self.lease_expires_at) if self.lease_expires_at else None,
+            "heartbeat_at": str(self.heartbeat_at) if self.heartbeat_at else None,
             "created_at": str(self.created_at),
             "updated_at": str(self.updated_at),
             "last_error_class": self.last_error_class,
@@ -149,6 +157,10 @@ class VectorSyncWorkItem:
             max_attempts=int(data.get("max_attempts", 5)),
             available_at=str(data.get("available_at", _utcnow())),
             locked_until=str(data["locked_until"]) if data.get("locked_until") else None,
+            worker_id=data.get("worker_id"),
+            lease_acquired_at=str(data["lease_acquired_at"]) if data.get("lease_acquired_at") else None,
+            lease_expires_at=str(data["lease_expires_at"]) if data.get("lease_expires_at") else None,
+            heartbeat_at=str(data["heartbeat_at"]) if data.get("heartbeat_at") else None,
             created_at=str(data.get("created_at", _utcnow())),
             updated_at=str(data.get("updated_at", _utcnow())),
             last_error_class=data.get("last_error_class"),
@@ -184,6 +196,10 @@ class ReconciliationReport:
     sensitive_vectors_purged: int = 0
     stale_generations_detected: int = 0
     stale_generations_repaired: int = 0
+    corrupt_queue_items_detected: int = 0
+    corrupt_queue_items_pruned: int = 0
+    missing_state_rows_detected: int = 0
+    missing_state_rows_repaired: int = 0
     duration_ms: float = 0.0
     errors: List[str] = field(default_factory=list)
     missing_vectors: List[str] = field(default_factory=list)
@@ -191,6 +207,7 @@ class ReconciliationReport:
     orphan_vectors: List[str] = field(default_factory=list)
     sensitive_vectors: List[str] = field(default_factory=list)
     stale_generations: List[str] = field(default_factory=list)
+    corrupt_queue_items: List[str] = field(default_factory=list)
 
     @property
     def fixed_count(self) -> int:
@@ -200,6 +217,8 @@ class ReconciliationReport:
             + self.orphan_vectors_purged
             + self.sensitive_vectors_purged
             + self.stale_generations_repaired
+            + self.corrupt_queue_items_pruned
+            + self.missing_state_rows_repaired
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -215,6 +234,10 @@ class ReconciliationReport:
             "sensitive_vectors_purged": self.sensitive_vectors_purged,
             "stale_generations_detected": self.stale_generations_detected,
             "stale_generations_repaired": self.stale_generations_repaired,
+            "corrupt_queue_items_detected": self.corrupt_queue_items_detected,
+            "corrupt_queue_items_pruned": self.corrupt_queue_items_pruned,
+            "missing_state_rows_detected": self.missing_state_rows_detected,
+            "missing_state_rows_repaired": self.missing_state_rows_repaired,
             "fixed_count": self.fixed_count,
             "duration_ms": self.duration_ms,
             "errors": self.errors,
@@ -223,6 +246,7 @@ class ReconciliationReport:
             "orphan_vectors": self.orphan_vectors,
             "sensitive_vectors": self.sensitive_vectors,
             "stale_generations": self.stale_generations,
+            "corrupt_queue_items": self.corrupt_queue_items,
         }
 
 

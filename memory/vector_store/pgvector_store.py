@@ -309,6 +309,21 @@ class PgVectorStorageAdapter(VectorStore):
                     cur.execute("SELECT generation FROM memory_records WHERE memory_id = %s;", (clean_mid,))
                     grow = cur.fetchone()
                     target_gen = int(grow[0]) if grow and grow[0] is not None else 0
+                else:
+                    # Symmetrical Generation Protection (V5.3.7.2):
+                    # Check if vector state or embedding has a higher generation
+                    cur.execute("""
+                        SELECT COALESCE(MAX(gen), 0) FROM (
+                            SELECT max_generation AS gen FROM memory_vector_state WHERE memory_id = %s
+                            UNION ALL
+                            SELECT generation AS gen FROM memory_embeddings WHERE memory_id = %s
+                        ) sub;
+                    """, (clean_mid, clean_mid))
+                    row_gen = cur.fetchone()
+                    highest_observed = int(row_gen[0]) if row_gen and row_gen[0] is not None else 0
+                    if highest_observed > target_gen:
+                        # Stale DELETE: Higher generation exists. Reject delete!
+                        return False
 
                 # Monotonic tombstone update in memory_vector_state
                 cur.execute("""

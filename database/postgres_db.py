@@ -258,7 +258,7 @@ class PostgresManager:
             # V5.3.3: Monotonic generation column and index on memory_records
             "ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS generation INTEGER NOT NULL DEFAULT 1;",
             "CREATE INDEX IF NOT EXISTS idx_memory_generation ON memory_records(generation);",
-            # V5.3.3: Transactional vector synchronization queue
+            # V5.3.3 / V5.3.7.2: Transactional vector synchronization queue with worker leasing
             """
             CREATE TABLE IF NOT EXISTS vector_sync_queue (
                 sync_id VARCHAR(100) PRIMARY KEY,
@@ -272,6 +272,10 @@ class PostgresManager:
                 max_attempts INTEGER NOT NULL DEFAULT 5,
                 available_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 locked_until TIMESTAMP WITH TIME ZONE,
+                worker_id VARCHAR(100),
+                lease_acquired_at TIMESTAMP WITH TIME ZONE,
+                lease_expires_at TIMESTAMP WITH TIME ZONE,
+                heartbeat_at TIMESTAMP WITH TIME ZONE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 last_error_class VARCHAR(100),
@@ -282,6 +286,12 @@ class PostgresManager:
             "CREATE INDEX IF NOT EXISTS idx_vsq_mem_id ON vector_sync_queue(memory_id);",
             "CREATE INDEX IF NOT EXISTS idx_vsq_idempotency ON vector_sync_queue(idempotency_key);",
             "CREATE INDEX IF NOT EXISTS idx_vsq_locked_until ON vector_sync_queue(locked_until);",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100);",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS lease_acquired_at TIMESTAMP WITH TIME ZONE;",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP WITH TIME ZONE;",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP WITH TIME ZONE;",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_lease_expiry ON vector_sync_queue(sync_status, lease_expires_at);",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_worker_id ON vector_sync_queue(worker_id);",
             # V5.3.3: Durable vector generation and tombstone state registry
             """
             CREATE TABLE IF NOT EXISTS memory_vector_state (
@@ -516,6 +526,7 @@ class PostgresManager:
                     cur.execute(q)
             conn.commit()
             self._migrate_v5371_constraints(conn)
+            self._migrate_v5372_outbox_schema(conn)
             self._init_v52_vector_schema(conn)
             print("[POSTGRES] [OK] Schema tables initialized: user_profiles, episodic_memory, semantic_facts, system_telemetry, command_logs, memory_records, memory_lifecycle_events")
         except Exception as e:
@@ -559,6 +570,25 @@ class PostgresManager:
                     pass
         conn.commit()
 
+    def _migrate_v5372_outbox_schema(self, conn):
+        """V5.3.7.2: Idempotently extends vector_sync_queue with worker leasing and heartbeat columns."""
+        if not conn:
+            return
+        migrations = [
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100);",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS lease_acquired_at TIMESTAMP WITH TIME ZONE;",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP WITH TIME ZONE;",
+            "ALTER TABLE vector_sync_queue ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP WITH TIME ZONE;",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_lease_expiry ON vector_sync_queue(sync_status, lease_expires_at);",
+            "CREATE INDEX IF NOT EXISTS idx_vsq_worker_id ON vector_sync_queue(worker_id);",
+        ]
+        with conn.cursor() as cur:
+            for sql in migrations:
+                try:
+                    cur.execute(sql)
+                except Exception as ce:
+                    pass
+        conn.commit()
 
     def _init_v52_vector_schema(self, conn):
         """Initializes V5.2 memory_embeddings table if pgvector extension is available."""

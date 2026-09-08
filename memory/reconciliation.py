@@ -124,7 +124,7 @@ class VectorReconciliationEngine:
 
                 offset += len(rows)
 
-            # 2. Orphan check for in-memory NumPy store
+        # 2. Orphan check for in-memory NumPy store
             if vector_store.backend == VectorStorageBackend.NUMPY_FALLBACK and hasattr(vector_store, "_records"):
                 keys_to_check = list(vector_store._records.keys())
                 for key in keys_to_check:
@@ -138,6 +138,33 @@ class VectorReconciliationEngine:
                         if fix:
                             vector_store.delete_embedding(mid)
                             report.orphan_vectors_purged += 1
+
+            # 3. Corrupt queue item check: items referencing non-existent memory_records
+            with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT vsq.sync_id, vsq.memory_id
+                    FROM vector_sync_queue vsq
+                    LEFT JOIN memory_records mr ON vsq.memory_id = mr.memory_id
+                    WHERE mr.memory_id IS NULL;
+                """)
+                corrupt_rows = cur.fetchall()
+
+            for crow in corrupt_rows:
+                csync_id = str(crow["sync_id"])
+                report.corrupt_queue_items_detected += 1
+                report.corrupt_queue_items.append(csync_id)
+                if fix:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE vector_sync_queue
+                            SET sync_status = %s,
+                                last_error_class = 'CorruptedWorkItemError',
+                                last_error_message_safe = 'Referenced memory record does not exist',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE sync_id = %s;
+                        """, (VectorSyncStatus.FAILED.value, csync_id))
+                    conn.commit()
+                    report.corrupt_queue_items_pruned += 1
 
         except Exception as e:
             report.errors.append(str(e))
@@ -184,6 +211,7 @@ class VectorReconciliationEngine:
                         SELECT memory_id, content, privacy_class, generation
                         FROM memory_records
                         WHERE status = 'ACTIVE'
+                          AND privacy_class != 'SENSITIVE'
                         ORDER BY importance DESC, created_at DESC
                         LIMIT %s OFFSET %s;
                     """, (batch_size, offset))
@@ -209,8 +237,13 @@ class VectorReconciliationEngine:
 
                     # Generate embedding
                     emb = embedding_router.embed(content, check_policy=True)
-                    if emb is None:
+                    if emb is None or not emb.vector or (hasattr(vector_store, "dimension") and len(emb.vector) != vector_store.dimension):
                         stats["failed_embeddings"] += 1
+                        continue
+
+                    # Duplicate prevention: skip if already present at current or higher generation
+                    existing = vector_store.get_embedding(mid, emb.model, emb.model_version)
+                    if existing and getattr(existing, "generation", 0) >= gen:
                         continue
 
                     vector_store.store_embedding(
@@ -223,6 +256,9 @@ class VectorReconciliationEngine:
                         generation=gen,
                     )
                     stats["rehydrated"] += 1
+                    if stats["rehydrated"] >= max_records:
+                        stats["capacity_hit"] = True
+                        break
 
                 offset += len(rows)
 

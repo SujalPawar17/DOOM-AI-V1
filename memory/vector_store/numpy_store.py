@@ -247,11 +247,23 @@ class NumPyVectorStorageAdapter(VectorStore):
 
         with self._lock:
             target_gen = generation
+            current_max = self._max_generation.get(clean_mid)
+            if current_max is None:
+                current_max = self.get_max_generation(clean_mid)
+                self._max_generation[clean_mid] = current_max
+
+            existing_records = [r for k, r in self._records.items() if k[0] == clean_mid]
+            existing_gen = max([r.generation for r in existing_records], default=0)
+            highest_observed = max(current_max, existing_gen)
+
+            # Symmetrical Generation Protection (V5.3.7.2):
+            # If an existing vector or recorded state has a strictly higher generation than target_gen,
+            # this DELETE is stale! Reject deletion to prevent purging newer vectors.
+            if target_gen is not None and highest_observed > target_gen:
+                return False
+
             if target_gen is not None:
-                self._max_generation[clean_mid] = max(
-                    self._max_generation.get(clean_mid, 0),
-                    target_gen,
-                )
+                self._max_generation[clean_mid] = max(current_max, target_gen)
             effective_gen = self._max_generation.get(clean_mid, target_gen or 0)
 
             if model is not None and model_version is not None:

@@ -42,7 +42,7 @@ from memory.lifecycle import (
     LIFECYCLE_TRANSITIONS,
 )
 
-# V5.3.3 Vector Synchronization & Reconciliation Engine
+# V5.3.3 / V5.3.7.2 Vector Synchronization & Recovery Engine
 from memory.sync import (
     SyncOperation,
     VectorSyncStatus,
@@ -55,10 +55,13 @@ from memory.sync import (
 from memory.sync_engine import (
     vector_sync_engine,
     VectorSyncEngine,
+    startup_recovery,
+    LeaseLostException,
 )
 from memory.reconciliation import (
     vector_reconciliation_engine,
     VectorReconciliationEngine,
+    rehydrate_numpy_store,
 )
 
 # V5.3.4 Memory Relationships, Supersession DAG & Reconciliation
