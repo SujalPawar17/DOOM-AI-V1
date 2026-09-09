@@ -15,6 +15,16 @@ from core.state_machine import state_machine, DoomState
 from database.postgres_db import postgres_manager
 
 
+def _emit_task_status_safe(task_id: str, status: str) -> None:
+    """Observational V6.2.1 emit. Must not affect task outcome."""
+    try:
+        from proactive.emitters import emit_task_status
+        emit_task_status(entity_id=task_id, status=status)
+    except Exception:
+        pass
+
+
+
 class TaskStatus(str, Enum):
     CREATED = "CREATED"
     PLANNING = "PLANNING"
@@ -306,6 +316,7 @@ class TaskEngine:
         self._save_checkpoint()
         self._broadcast_task_state("TASK_COMPLETED", result=final_result, final_status=final_response_status.value)
         completed_id = self._active_task.task_id
+        _emit_task_status_safe(completed_id, TaskStatus.COMPLETED.value)
         self._active_task = None
         state_machine.transition_to(DoomState.IDLE, "Standing by, Boss.")
 
@@ -349,6 +360,8 @@ class TaskEngine:
         state_machine.transition_to(DoomState.ERROR, f"Task failure: {error_message[:40]}", task_id=self._active_task.task_id)
         self._save_checkpoint()
         self._broadcast_task_state("TASK_FAILED", error=error_message)
+        failed_id = self._active_task.task_id
+        _emit_task_status_safe(failed_id, TaskStatus.FAILED.value)
         self._active_task = None
         state_machine.transition_to(DoomState.IDLE, "Standing by, Boss.")
 
@@ -376,6 +389,7 @@ class TaskEngine:
             task_id=self._active_task.task_id
         )
         self._save_checkpoint()
+        _emit_task_status_safe(self._active_task.task_id, TaskStatus.WAITING_FOR_APPROVAL.value)
         return op_token
 
     def approve_task_action(self, task_id: str, operation_token: Optional[str] = None) -> Tuple[bool, str]:

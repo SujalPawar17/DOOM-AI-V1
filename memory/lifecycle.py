@@ -629,6 +629,21 @@ def _emit_lifecycle_telemetry(
         pass
 
 
+def _emit_proactive_lifecycle(memory_id: str, event_id: Optional[str], event_type: Optional[str]) -> None:
+    """Observational V6.2.1 emit after lifecycle persist. Non-fatal."""
+    try:
+        if not memory_id or not event_id or not event_type:
+            return
+        from proactive.emitters import emit_lifecycle
+        emit_lifecycle(
+            memory_id=str(memory_id),
+            event_id=str(event_id),
+            event_type=str(event_type),
+        )
+    except Exception:
+        pass
+
+
 # ============================================================================
 # 6. AUTHORITATIVE MEMORY LIFECYCLE ENGINE (V5.3.2)
 # ============================================================================
@@ -715,6 +730,9 @@ class MemoryLifecycleEngine:
                                 duration_ms=duration_ms,
                                 success=True,
                                 idempotent_replay=True,
+                            )
+                            _emit_proactive_lifecycle(
+                                memory_id, existing_evt["event_id"], existing_evt["new_status"]
                             )
                             return LifecycleTransitionResult(
                                 success=True,
@@ -844,6 +862,9 @@ class MemoryLifecycleEngine:
                 except Exception as pc_err:
                     print(f"[MEMORY LIFECYCLE] Post-commit vector sync failed (non-fatal): {pc_err}")
 
+            _emit_proactive_lifecycle(
+                memory_id, event_id, target_s.value if target_s else None
+            )
             return LifecycleTransitionResult(
                 success=True,
                 memory_id=memory_id,
@@ -958,6 +979,9 @@ class MemoryLifecycleEngine:
                                 duration_ms=duration_ms,
                                 success=True,
                                 idempotent_replay=True,
+                            )
+                            _emit_proactive_lifecycle(
+                                old_memory_id, existing_evt["event_id"], existing_evt["new_status"]
                             )
                             return LifecycleTransitionResult(
                                 success=True,
@@ -1156,6 +1180,7 @@ class MemoryLifecycleEngine:
                 except Exception as pc2:
                     print(f"[MEMORY LIFECYCLE] Post-commit vector sync failed (new): {pc2}")
 
+            _emit_proactive_lifecycle(old_memory_id, event_id, MemoryStatus.SUPERSEDED.value)
             return LifecycleTransitionResult(
                 success=True,
                 memory_id=old_memory_id,

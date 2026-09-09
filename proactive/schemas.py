@@ -63,6 +63,9 @@ INJECTION_MARKERS = (
     "send message",
     "delete memory",
     "change policy",
+    "[/data_only]",
+    "[data_only]",
+    "system:",
 )
 
 CREDENTIAL_VALUE_MARKERS = (
