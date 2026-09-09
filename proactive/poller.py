@@ -9,9 +9,11 @@ import uuid
 from proactive.config import (
     CALENDAR_POLL_SEC,
     CONNECTOR_BACKOFF_SEC,
+    EMAIL_POLL_SEC,
     GITHUB_POLL_SEC,
     OWNER_ID,
     is_calendar_enabled,
+    is_email_enabled,
     is_github_enabled,
     is_proactive_enabled,
 )
@@ -127,11 +129,54 @@ def persist_fenced_record(account: dict, rec) -> str:
         return ""
 
 
+def persist_email_commitment(account: dict, rec, fact_id: str) -> str:
+    """PRIVATE commitment from ephemeral fenced text. Never stores snippet/subject."""
+    try:
+        if rec.connector_type != "gmail" or rec.privacy_class != "PRIVATE":
+            return ""
+        eph = rec.ephemeral if isinstance(rec.ephemeral, dict) else {}
+        from proactive.commitments import extract_commitment, fingerprint
+        extracted = extract_commitment(
+            str(eph.get("subject") or ""),
+            str(eph.get("snippet") or ""),
+            float(rec.occurred_at or 0),
+            str(eph.get("date_hdr") or ""),
+        )
+        if not extracted:
+            return ""
+        aid = str(account.get("account_id") or "")
+        mid = str(rec.source_record_id or "")
+        fp = fingerprint(aid, mid, extracted["commitment_type"], extracted.get("due_at"))
+        due = extracted.get("due_at")
+        valid_until = (due + 7 * 86400) if due else (float(rec.occurred_at or 0) + 30 * 86400)
+        payload = rec.payload if isinstance(rec.payload, dict) else {}
+        return proactive_store.upsert_commitment({
+            "commitment_id": str(uuid.uuid4()),
+            "owner_id": account.get("owner_id") or OWNER_ID,
+            "account_id": aid,
+            "source_connector": "gmail",
+            "source_message_id": mid,
+            "source_thread_id": str(payload.get("thread_id") or ""),
+            "source_ts": rec.occurred_at,
+            "commitment_type": extracted["commitment_type"],
+            "normalized_code": extracted.get("normalized_code") or extracted["commitment_type"],
+            "due_at": due,
+            "timezone": extracted.get("timezone") or "",
+            "confidence": extracted.get("confidence") or 0,
+            "provenance": {"fact_id": fact_id[:64], "message_id": mid[:64]},
+            "evidence_ref": fact_id[:64],
+            "fingerprint": fp,
+            "valid_until": valid_until if valid_until else None,
+        })
+    except Exception:
+        return ""
+
+
 def poll_connectors() -> None:
     """READ connectors only. Zero HTTP when flags are off."""
     if not is_proactive_enabled():
         return
-    if not is_calendar_enabled() and not is_github_enabled():
+    if not is_calendar_enabled() and not is_github_enabled() and not is_email_enabled():
         return
     try:
         from proactive.connectors.http_safe import SafeHttpError
@@ -143,7 +188,11 @@ def poll_connectors() -> None:
         return
     now = time.time()
     for ctype, reader in readers.items():
-        interval = CALENDAR_POLL_SEC if ctype == "calendar_google" else GITHUB_POLL_SEC
+        interval = CALENDAR_POLL_SEC
+        if ctype == "github":
+            interval = GITHUB_POLL_SEC
+        elif ctype == "gmail":
+            interval = EMAIL_POLL_SEC
         try:
             accounts = proactive_store.list_active_accounts(ctype)
         except Exception:
@@ -160,7 +209,8 @@ def poll_connectors() -> None:
             try:
                 records, cursor = reader.fetch_updates(account, sync.get("cursor") or "")
                 for rec in records or []:
-                    persist_fenced_record(account, rec)
+                    fid = persist_fenced_record(account, rec)
+                    persist_email_commitment(account, rec, fid)
                 proactive_store.upsert_sync_state(
                     aid,
                     cursor=cursor or None,

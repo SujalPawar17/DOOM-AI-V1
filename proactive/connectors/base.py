@@ -18,6 +18,7 @@ class FencedRecord:
     fact_kind: str = ""
     signal_type: str = ""
     project_id: str = ""
+    ephemeral: Dict[str, Any] = field(default_factory=dict)  # in-memory only; never persisted
 
 
 class ReadConnector(ABC):

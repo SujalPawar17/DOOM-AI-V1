@@ -922,6 +922,156 @@ class ProactiveStore:
         finally:
             self._release(conn)
 
+    def upsert_commitment(self, row: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        cid = str(row.get("commitment_id") or "")[:64]
+        if not cid:
+            return ""
+        try:
+            due = row.get("due_at")
+            src_ts = row.get("source_ts")
+            valid_until = row.get("valid_until")
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO proactive_commitments (
+                        commitment_id, owner_id, account_id, source_connector,
+                        source_message_id, source_thread_id, source_ts,
+                        commitment_type, normalized_code, due_at, timezone,
+                        status, confidence, privacy_class, provenance, evidence_ref,
+                        fingerprint, valid_from, valid_until
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        %s,%s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        %s,'OPEN',%s,'PRIVATE',%s::jsonb,%s,%s,NOW(),
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END
+                    )
+                    ON CONFLICT (account_id, fingerprint) DO UPDATE SET
+                        due_at = EXCLUDED.due_at,
+                        confidence = EXCLUDED.confidence,
+                        evidence_ref = EXCLUDED.evidence_ref,
+                        timezone = EXCLUDED.timezone,
+                        updated_at = NOW()
+                    RETURNING commitment_id
+                    """,
+                    (
+                        cid,
+                        str(row.get("owner_id") or OWNER_ID)[:64],
+                        str(row.get("account_id") or "")[:64],
+                        str(row.get("source_connector") or "")[:32],
+                        str(row.get("source_message_id") or "")[:128],
+                        str(row.get("source_thread_id") or "")[:128],
+                        src_ts, src_ts,
+                        str(row.get("commitment_type") or "")[:32],
+                        str(row.get("normalized_code") or "")[:32],
+                        due, due,
+                        str(row.get("timezone") or "")[:40],
+                        float(row.get("confidence") or 0),
+                        json.dumps(row.get("provenance") or {}),
+                        row.get("evidence_ref"),
+                        str(row.get("fingerprint") or "")[:48],
+                        valid_until, valid_until,
+                    ),
+                )
+                got = cur.fetchone()
+            conn.commit()
+            return got[0] if got else ""
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def list_open_commitments(self, owner_id: str = OWNER_ID, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT commitment_id, commitment_type, EXTRACT(EPOCH FROM due_at),
+                           confidence, privacy_class, source_connector, status,
+                           evidence_ref, account_id
+                    FROM proactive_commitments
+                    WHERE owner_id = %s AND status = 'OPEN'
+                      AND (valid_until IS NULL OR valid_until > NOW())
+                      AND privacy_class = 'PRIVATE'
+                    ORDER BY due_at NULLS LAST, updated_at DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "commitment_id": r[0],
+                    "commitment_type": r[1],
+                    "due_at": float(r[2]) if r[2] is not None else None,
+                    "confidence": float(r[3] or 0),
+                    "privacy_class": r[4],
+                    "source": r[5],
+                    "status": r[6],
+                    "evidence_ref": r[7],
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def count_email_unread_facts(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM external_facts
+                    WHERE owner_id = %s AND fact_kind = 'EMAIL_META'
+                      AND privacy_class = 'PRIVATE'
+                      AND COALESCE((payload->>'unread')::int, 0) = 1
+                    """,
+                    (owner_id,),
+                )
+                row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+        except Exception:
+            return 0
+        finally:
+            self._release(conn)
+
+    def gmail_connector_health(self, owner_id: str = OWNER_ID) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT health FROM connector_accounts
+                    WHERE owner_id = %s AND connector_type = 'gmail' AND status = 'ACTIVE'
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (owner_id,),
+                )
+                row = cur.fetchone()
+            return str(row[0] or "") if row else ""
+        except Exception:
+            return ""
+        finally:
+            self._release(conn)
+
 
 proactive_store = ProactiveStore()
+
 

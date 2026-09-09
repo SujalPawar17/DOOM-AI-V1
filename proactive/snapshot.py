@@ -23,6 +23,9 @@ class WorldSnapshot:
     last_request_at: Optional[float] = None
     partial: bool = False
     sources: List[str] = field(default_factory=list)
+    commitments: List[Dict[str, Any]] = field(default_factory=list)
+    email_unread_count: int = 0
+    email_health: str = ""
 
     def is_fresh(self) -> bool:
         return time.time() < self.valid_until
@@ -124,6 +127,38 @@ def build_world_snapshot(force: bool = False) -> WorldSnapshot:
         snap.last_request_at = getattr(state_machine, "_last_changed", None)
     except Exception:
         pass
+    try:
+        from proactive.store import proactive_store
+        snap.commitments = proactive_store.list_open_commitments(OWNER_ID, 20)
+        cal = _q(
+            """
+            SELECT fact_id, fact_kind, EXTRACT(EPOCH FROM occurred_at) AS start_ts,
+                   EXTRACT(EPOCH FROM valid_until) AS end_ts, project_id, confidence,
+                   EXTRACT(EPOCH FROM observed_at) AS observed_at, connector_type
+            FROM external_facts
+            WHERE owner_id = %s AND fact_kind = 'CAL_EVENT' AND privacy_class = 'NORMAL'
+              AND occurred_at > NOW() AND occurred_at < NOW() + INTERVAL '72 hours'
+            ORDER BY occurred_at ASC LIMIT 20
+            """,
+            (OWNER_ID,),
+        )
+        for row in cal:
+            snap.commitments.append({
+                "fact_id": row.get("fact_id"),
+                "kind": row.get("fact_kind"),
+                "start": row.get("start_ts"),
+                "end": row.get("end_ts"),
+                "project_id": row.get("project_id"),
+                "confidence": row.get("confidence"),
+                "observed_at": row.get("observed_at"),
+                "source": row.get("connector_type"),
+                "privacy_class": "NORMAL",
+            })
+        snap.email_unread_count = proactive_store.count_email_unread_facts(OWNER_ID)
+        snap.email_health = proactive_store.gmail_connector_health(OWNER_ID)
+        snap.sources.append("commitments")
+    except Exception:
+        snap.partial = True
     _cache = snap
     return snap
 

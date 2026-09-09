@@ -65,6 +65,7 @@ TTS_PROACTIVE_ALLOWED = False  # V6.1: never
 # V6.2.2 connector flags — default OFF. Hot-read like PROACTIVE_ENABLED.
 CALENDAR_POLL_SEC = _int_env("PROACTIVE_CALENDAR_POLL_SEC", 900)
 GITHUB_POLL_SEC = _int_env("PROACTIVE_GITHUB_POLL_SEC", 600)
+EMAIL_POLL_SEC = _int_env("PROACTIVE_EMAIL_POLL_SEC", 900)
 CONNECTOR_BACKOFF_SEC = _int_env("PROACTIVE_CONNECTOR_BACKOFF_SEC", 900)
 
 
@@ -74,6 +75,10 @@ def is_calendar_enabled() -> bool:
 
 def is_github_enabled() -> bool:
     return _bool_env("PROACTIVE_GITHUB_ENABLED", False)
+
+
+def is_email_enabled() -> bool:
+    return _bool_env("PROACTIVE_EMAIL_ENABLED", False)
 
 
 def connector_vault_path() -> str:

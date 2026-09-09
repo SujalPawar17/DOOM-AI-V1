@@ -130,7 +130,6 @@ class TestV622Connectors(unittest.TestCase):
         root = Path(__file__).resolve().parent / "proactive" / "connectors"
         self.assertTrue(root.is_dir())
         self.assertFalse((root / "write.py").exists())
-        self.assertFalse((root / "email_gmail.py").exists())
         for path in root.glob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):

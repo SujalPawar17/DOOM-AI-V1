@@ -404,6 +404,42 @@ class PostgresManager:
             """,
             "CREATE INDEX IF NOT EXISTS idx_ext_facts_owner_kind_occ ON external_facts (owner_id, fact_kind, occurred_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_ext_facts_valid ON external_facts (valid_until);",
+            # V6.2.3: durable PRIVATE email/calendar-derived commitments (not memory)
+            """
+            CREATE TABLE IF NOT EXISTS proactive_commitments (
+                commitment_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL DEFAULT 'sujal',
+                account_id VARCHAR(64) NOT NULL
+                    REFERENCES connector_accounts(account_id) ON DELETE CASCADE,
+                source_connector VARCHAR(32) NOT NULL,
+                source_message_id VARCHAR(128) NOT NULL,
+                source_thread_id VARCHAR(128) NOT NULL DEFAULT '',
+                source_ts TIMESTAMPTZ,
+                commitment_type VARCHAR(32) NOT NULL
+                    CHECK (commitment_type IN (
+                        'DEADLINE','PROMISE','FOLLOW_UP','MEETING','REPLY_REQUIRED',
+                        'DELIVERY','ACTION_REQUIRED','PAYMENT','REVIEW_REQUIRED'
+                    )),
+                normalized_code VARCHAR(32) NOT NULL DEFAULT '',
+                due_at TIMESTAMPTZ,
+                timezone VARCHAR(40) NOT NULL DEFAULT '',
+                status VARCHAR(16) NOT NULL DEFAULT 'OPEN'
+                    CHECK (status IN ('OPEN','CANCELLED','COMPLETED')),
+                confidence REAL NOT NULL DEFAULT 0,
+                privacy_class VARCHAR(16) NOT NULL DEFAULT 'PRIVATE'
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                provenance JSONB NOT NULL DEFAULT '{}',
+                evidence_ref VARCHAR(64),
+                fingerprint VARCHAR(48) NOT NULL,
+                valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                valid_until TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (account_id, fingerprint)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_pcommit_owner_status_due ON proactive_commitments (owner_id, status, due_at);",
+            "CREATE INDEX IF NOT EXISTS idx_pcommit_account_msg ON proactive_commitments (account_id, source_message_id);",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

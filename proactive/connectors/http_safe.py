@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Callable, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -10,8 +11,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 ALLOWED_GET_HOSTS = frozenset({
     "www.googleapis.com",
     "calendar.googleapis.com",
+    "gmail.googleapis.com",
     "api.github.com",
 })
+_GMAIL_LIST = "/gmail/v1/users/me/messages"
+_GMAIL_GET = re.compile(r"^/gmail/v1/users/me/messages/[A-Za-z0-9._-]+$")
 TOKEN_POST_URL = "https://oauth2.googleapis.com/token"
 TOKEN_POST_HOST = "oauth2.googleapis.com"
 MAX_BODY = 256 * 1024
@@ -52,6 +56,12 @@ def _validate_url(method: str, url: str) -> None:
     if method == "GET":
         if host not in ALLOWED_GET_HOSTS:
             raise SafeHttpError("GET host not allowlisted")
+        if host == "gmail.googleapis.com" or (
+            host == "www.googleapis.com" and parsed.path.startswith("/gmail/")
+        ):
+            path = parsed.path or ""
+            if path != _GMAIL_LIST and not _GMAIL_GET.match(path):
+                raise SafeHttpError("Gmail GET path not allowlisted")
         return
     if method == "POST":
         canon = f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
