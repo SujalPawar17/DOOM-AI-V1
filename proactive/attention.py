@@ -10,8 +10,10 @@ from core.state_machine import DoomState, state_machine
 from proactive.config import (
     COOLDOWN_SECONDS,
     DAILY_INFORM_BUDGET,
+    DAILY_SUGGEST_BUDGET,
     OWNER_ID,
     QUIET_HOURS,
+    SUGGEST_COOLDOWN_SECONDS,
 )
 from proactive.store import proactive_store
 
@@ -72,3 +74,26 @@ def may_inform(dedupe_key: str, owner_id: str = OWNER_ID) -> Tuple[bool, str]:
 
 def record_inform(dedupe_key: str, owner_id: str = OWNER_ID) -> None:
     proactive_store.bump_attention(owner_id, dedupe_key, _day_key())
+
+
+def may_suggest(dedupe_key: str, owner_id: str = OWNER_ID) -> Tuple[bool, str]:
+    if cognition_busy():
+        return False, "busy"
+    if in_quiet_hours():
+        return False, "quiet_hours"
+    att = proactive_store.get_attention(owner_id, _day_key())
+    if int(att.get("suggest_count") or 0) >= DAILY_SUGGEST_BUDGET:
+        return False, "budget"
+    cd = att.get("cooldowns") or {}
+    last = cd.get("suggest|" + dedupe_key)
+    try:
+        last_ts = float(last) if last is not None else 0.0
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    if last_ts and (time.time() - last_ts) < SUGGEST_COOLDOWN_SECONDS:
+        return False, "cooldown"
+    return True, "ok"
+
+
+def record_suggest(dedupe_key: str, owner_id: str = OWNER_ID) -> None:
+    proactive_store.bump_suggest_attention(owner_id, "suggest|" + dedupe_key, _day_key())

@@ -529,6 +529,70 @@ class PostgresManager:
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_wpe_pred ON world_prediction_events (prediction_id, created_at);",
+            # V6.2.5: world suggestions (not proactive_insights)
+            """
+            CREATE TABLE IF NOT EXISTS world_suggestions (
+                suggestion_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                project_id VARCHAR(64) REFERENCES projects(project_id) ON DELETE SET NULL,
+                prediction_id VARCHAR(64) NOT NULL
+                    REFERENCES world_predictions(prediction_id) ON DELETE CASCADE,
+                suggestion_type VARCHAR(40) NOT NULL
+                    CHECK (suggestion_type IN (
+                        'CONSIDER_REVIEW_WORK','CONSIDER_CONFIRM_OPEN',
+                        'CONSIDER_RECONCILE_TIME','CONSIDER_UNBLOCK','CONSIDER_COMPLETE_REVIEW')),
+                claim_code VARCHAR(40) NOT NULL,
+                template_id VARCHAR(64) NOT NULL,
+                safe_params JSONB NOT NULL DEFAULT '{}',
+                priority VARCHAR(16) NOT NULL
+                    CHECK (priority IN ('LOW','MEDIUM','HIGH')),
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                risk_class VARCHAR(16) NOT NULL
+                    CHECK (risk_class IN ('NONE','LOW','MEDIUM','HIGH')),
+                privacy_class VARCHAR(16) NOT NULL
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                fingerprint VARCHAR(64) NOT NULL,
+                rule_id VARCHAR(40) NOT NULL,
+                rule_version VARCHAR(16) NOT NULL DEFAULT 'v625.1',
+                status VARCHAR(16) NOT NULL DEFAULT 'OPEN'
+                    CHECK (status IN ('OPEN','DELIVERED','DISMISSED','EXPIRED','SUPERSEDED')),
+                valid_until TIMESTAMPTZ NOT NULL,
+                provenance JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                evaluated_at TIMESTAMPTZ NOT NULL,
+                dismissed_at TIMESTAMPTZ,
+                UNIQUE (owner_id, fingerprint)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wsug_owner_status_valid ON world_suggestions (owner_id, status, valid_until);",
+            "CREATE INDEX IF NOT EXISTS idx_wsug_prediction ON world_suggestions (prediction_id);",
+            """
+            CREATE TABLE IF NOT EXISTS world_suggestion_deliveries (
+                delivery_id VARCHAR(64) PRIMARY KEY,
+                suggestion_id VARCHAR(64) NOT NULL
+                    REFERENCES world_suggestions(suggestion_id) ON DELETE CASCADE,
+                channel VARCHAR(16) NOT NULL DEFAULT 'hud'
+                    CHECK (channel IN ('hud')),
+                status VARCHAR(16) NOT NULL DEFAULT 'DELIVERED'
+                    CHECK (status IN ('DELIVERED','FAILED')),
+                attempts INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (suggestion_id, channel)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_suggestion_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                suggestion_id VARCHAR(64) NOT NULL
+                    REFERENCES world_suggestions(suggestion_id) ON DELETE CASCADE,
+                from_status VARCHAR(16),
+                to_status VARCHAR(16) NOT NULL,
+                reason VARCHAR(40) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wse_sug ON world_suggestion_events (suggestion_id, created_at);",
+            "ALTER TABLE proactive_attention ADD COLUMN IF NOT EXISTS suggest_count INTEGER NOT NULL DEFAULT 0;",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

@@ -594,23 +594,28 @@ class ProactiveStore:
     def get_attention(self, owner_id: str, day_key: str) -> Dict[str, Any]:
         conn = self._conn()
         if not conn:
-            return {"inform_count": 0, "cooldowns": {}}
+            return {"inform_count": 0, "suggest_count": 0, "cooldowns": {}}
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT inform_count, cooldowns FROM proactive_attention
+                    SELECT inform_count, cooldowns, suggest_count FROM proactive_attention
                     WHERE owner_id = %s AND day_key = %s::date
                     """,
                     (owner_id, day_key),
                 )
                 row = cur.fetchone()
             if not row:
-                return {"inform_count": 0, "cooldowns": {}}
+                return {"inform_count": 0, "suggest_count": 0, "cooldowns": {}}
             cd = row[1] if isinstance(row[1], dict) else (json.loads(row[1]) if row[1] else {})
-            return {"inform_count": int(row[0] or 0), "cooldowns": cd}
+            sc = 0
+            try:
+                sc = int(row[2] or 0)
+            except (IndexError, TypeError, ValueError):
+                sc = 0
+            return {"inform_count": int(row[0] or 0), "suggest_count": sc, "cooldowns": cd}
         except Exception:
-            return {"inform_count": 0, "cooldowns": {}}
+            return {"inform_count": 0, "suggest_count": 0, "cooldowns": {}}
         finally:
             self._release(conn)
 
@@ -1442,6 +1447,465 @@ class ProactiveStore:
             return str(row[0] or "") if row else ""
         except Exception:
             return ""
+        finally:
+            self._release(conn)
+
+    def list_suggest_candidates(self, owner_id: str = OWNER_ID, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT prediction_id, prediction_type, claim_code, confidence, risk_class,
+                           privacy_class, provenance, fingerprint, subject_key, status, project_id,
+                           EXTRACT(EPOCH FROM horizon_end), EXTRACT(EPOCH FROM valid_until)
+                    FROM world_predictions
+                    WHERE owner_id = %s AND status = 'ACTIVE'
+                      AND valid_until > NOW()
+                      AND privacy_class <> 'SENSITIVE'
+                    ORDER BY horizon_end NULLS LAST
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                prov = r[6] if isinstance(r[6], dict) else (json.loads(r[6]) if r[6] else {})
+                out.append({
+                    "prediction_id": r[0],
+                    "prediction_type": r[1],
+                    "claim_code": r[2],
+                    "confidence": float(r[3] or 0),
+                    "risk_class": r[4],
+                    "privacy_class": r[5],
+                    "provenance": prov or {},
+                    "evidence_ids": (prov or {}).get("evidence_ids") or [],
+                    "fingerprint": r[7],
+                    "subject_key": r[8],
+                    "status": r[9],
+                    "project_id": r[10],
+                    "horizon_end": float(r[11]) if r[11] is not None else None,
+                    "valid_until": float(r[12]) if r[12] is not None else None,
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def get_suggestion_by_fingerprint(self, owner_id: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT suggestion_id, owner_id, prediction_id, suggestion_type, template_id,
+                           status, privacy_class, fingerprint, EXTRACT(EPOCH FROM valid_until)
+                    FROM world_suggestions
+                    WHERE owner_id = %s AND fingerprint = %s
+                    """,
+                    (owner_id, fingerprint),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            return {
+                "suggestion_id": r[0], "owner_id": r[1], "prediction_id": r[2],
+                "suggestion_type": r[3], "template_id": r[4], "status": r[5],
+                "privacy_class": r[6], "fingerprint": r[7],
+                "valid_until": float(r[8]) if r[8] is not None else None,
+            }
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def touch_suggestion_evaluated(self, suggestion_id: str, owner_id: str, now: float) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_suggestions
+                    SET evaluated_at = to_timestamp(%s)
+                    WHERE suggestion_id = %s AND owner_id = %s
+                    """,
+                    (float(now), suggestion_id, owner_id),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def upsert_world_suggestion(self, row: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        sid = str(row.get("suggestion_id") or uuid.uuid4())[:64]
+        try:
+            params = row.get("safe_params") if isinstance(row.get("safe_params"), dict) else {}
+            prov = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+            vu = float(row.get("valid_until") or time.time() + 86400)
+            evl = float(row.get("evaluated_at") or time.time())
+            owner = str(row.get("owner_id") or OWNER_ID)[:64]
+            fp = str(row.get("fingerprint") or "")[:64]
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_suggestions (
+                        suggestion_id, owner_id, project_id, prediction_id, suggestion_type,
+                        claim_code, template_id, safe_params, priority, confidence, risk_class,
+                        privacy_class, fingerprint, rule_id, rule_version, status,
+                        valid_until, provenance, evaluated_at
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,'OPEN',
+                        to_timestamp(%s), %s::jsonb, to_timestamp(%s)
+                    )
+                    ON CONFLICT (owner_id, fingerprint) DO UPDATE SET
+                        evaluated_at = EXCLUDED.evaluated_at,
+                        confidence = EXCLUDED.confidence,
+                        risk_class = EXCLUDED.risk_class,
+                        valid_until = EXCLUDED.valid_until,
+                        claim_code = EXCLUDED.claim_code,
+                        safe_params = EXCLUDED.safe_params
+                    WHERE world_suggestions.status IN ('OPEN', 'DELIVERED')
+                    RETURNING suggestion_id, (xmax = 0) AS inserted
+                    """,
+                    (
+                        sid, owner,
+                        (str(row.get("project_id"))[:64] if row.get("project_id") else None),
+                        str(row.get("prediction_id") or "")[:64],
+                        str(row.get("suggestion_type") or "")[:40],
+                        str(row.get("claim_code") or "")[:40],
+                        str(row.get("template_id") or "")[:64],
+                        json.dumps(params),
+                        str(row.get("priority") or "MEDIUM")[:16],
+                        float(row.get("confidence") or 0),
+                        str(row.get("risk_class") or "NONE")[:16],
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        fp,
+                        str(row.get("rule_id") or "")[:40],
+                        str(row.get("rule_version") or "v625.1")[:16],
+                        vu, json.dumps(prov), evl,
+                    ),
+                )
+                got = cur.fetchone()
+                inserted = False
+                out_id = ""
+                if got:
+                    out_id = got[0]
+                    inserted = bool(got[1])
+                    if inserted:
+                        cur.execute(
+                            """
+                            INSERT INTO world_suggestion_events
+                            (event_id, suggestion_id, from_status, to_status, reason)
+                            VALUES (%s,%s,NULL,'OPEN','eval')
+                            """,
+                            (str(uuid.uuid4())[:64], out_id),
+                        )
+                else:
+                    cur.execute(
+                        """
+                        SELECT suggestion_id FROM world_suggestions
+                        WHERE owner_id = %s AND fingerprint = %s
+                        """,
+                        (owner, fp),
+                    )
+                    r2 = cur.fetchone()
+                    out_id = r2[0] if r2 else ""
+            conn.commit()
+            return out_id
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def sync_suggestion_lifecycle(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        n = 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.suggestion_id, s.status
+                    FROM world_suggestions s
+                    JOIN world_predictions p ON s.prediction_id = p.prediction_id
+                    WHERE s.owner_id = %s
+                      AND s.status IN ('OPEN', 'DELIVERED')
+                      AND (p.status = 'EXPIRED' OR s.valid_until <= NOW())
+                    """,
+                    (owner_id,),
+                )
+                expire_rows = list(cur.fetchall() or [])
+                for sid, from_st in expire_rows:
+                    cur.execute(
+                        """
+                        UPDATE world_suggestions SET status = 'EXPIRED'
+                        WHERE suggestion_id = %s AND owner_id = %s AND status IN ('OPEN','DELIVERED')
+                        """,
+                        (sid, owner_id),
+                    )
+                    if cur.rowcount:
+                        cur.execute(
+                            """
+                            INSERT INTO world_suggestion_events
+                            (event_id, suggestion_id, from_status, to_status, reason)
+                            VALUES (%s,%s,%s,'EXPIRED','lifecycle')
+                            """,
+                            (str(uuid.uuid4())[:64], sid, from_st),
+                        )
+                        n += 1
+                cur.execute(
+                    """
+                    SELECT s.suggestion_id, s.status
+                    FROM world_suggestions s
+                    JOIN world_predictions p ON s.prediction_id = p.prediction_id
+                    WHERE s.owner_id = %s
+                      AND s.status IN ('OPEN', 'DELIVERED')
+                      AND p.status IN ('SUPERSEDED', 'INVALIDATED')
+                    """,
+                    (owner_id,),
+                )
+                sup_rows = list(cur.fetchall() or [])
+                for sid, from_st in sup_rows:
+                    cur.execute(
+                        """
+                        UPDATE world_suggestions SET status = 'SUPERSEDED'
+                        WHERE suggestion_id = %s AND owner_id = %s AND status IN ('OPEN','DELIVERED')
+                        """,
+                        (sid, owner_id),
+                    )
+                    if cur.rowcount:
+                        cur.execute(
+                            """
+                            INSERT INTO world_suggestion_events
+                            (event_id, suggestion_id, from_status, to_status, reason)
+                            VALUES (%s,%s,%s,'SUPERSEDED','lifecycle')
+                            """,
+                            (str(uuid.uuid4())[:64], sid, from_st),
+                        )
+                        n += 1
+            conn.commit()
+            return n
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def list_hud_suggestions(self, owner_id: str = OWNER_ID, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT suggestion_id, suggestion_type, template_id, safe_params, priority,
+                           privacy_class, status, fingerprint
+                    FROM world_suggestions
+                    WHERE owner_id = %s
+                      AND privacy_class = 'NORMAL'
+                      AND status IN ('OPEN', 'DELIVERED')
+                      AND valid_until > NOW()
+                    ORDER BY evaluated_at DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                params = r[3] if isinstance(r[3], dict) else (json.loads(r[3]) if r[3] else {})
+                out.append({
+                    "suggestion_id": r[0],
+                    "suggestion_type": r[1],
+                    "template_id": r[2],
+                    "safe_params": params if isinstance(params, dict) else {},
+                    "priority": r[4],
+                    "privacy_class": r[5],
+                    "status": r[6],
+                    "fingerprint": r[7],
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def dismiss_suggestion(self, suggestion_id: str, owner_id: str) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT status FROM world_suggestions
+                    WHERE suggestion_id = %s AND owner_id = %s
+                    """,
+                    (suggestion_id, owner_id),
+                )
+                before = cur.fetchone()
+                cur.execute(
+                    """
+                    UPDATE world_suggestions
+                    SET status = 'DISMISSED', dismissed_at = NOW()
+                    WHERE suggestion_id = %s AND owner_id = %s
+                      AND status IN ('OPEN', 'DELIVERED')
+                    RETURNING suggestion_id
+                    """,
+                    (suggestion_id, owner_id),
+                )
+                got = cur.fetchone()
+                if got:
+                    from_st = before[0] if before else "OPEN"
+                    cur.execute(
+                        """
+                        INSERT INTO world_suggestion_events
+                        (event_id, suggestion_id, from_status, to_status, reason)
+                        VALUES (%s,%s,%s,'DISMISSED','dismiss')
+                        """,
+                        (str(uuid.uuid4())[:64], suggestion_id, from_st),
+                    )
+            conn.commit()
+            return bool(got)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def persist_normal_suggestion_delivery(self, suggestion_id: str, owner_id: str) -> tuple:
+        did = str(uuid.uuid4())
+        conn = self._conn()
+        if not conn:
+            return "", False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_suggestion_deliveries
+                    (delivery_id, suggestion_id, channel, status, attempts)
+                    VALUES (%s,%s,'hud','DELIVERED',1)
+                    ON CONFLICT (suggestion_id, channel) DO NOTHING
+                    RETURNING delivery_id
+                    """,
+                    (did, suggestion_id),
+                )
+                row = cur.fetchone()
+                created = bool(row)
+                if row:
+                    cur.execute(
+                        """
+                        UPDATE world_suggestions
+                        SET status = 'DELIVERED'
+                        WHERE suggestion_id = %s AND owner_id = %s AND status = 'OPEN'
+                        """,
+                        (suggestion_id, owner_id),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO world_suggestion_events
+                        (event_id, suggestion_id, from_status, to_status, reason)
+                        VALUES (%s,%s,'OPEN','DELIVERED','deliver')
+                        """,
+                        (str(uuid.uuid4())[:64], suggestion_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT delivery_id FROM world_suggestion_deliveries
+                        WHERE suggestion_id = %s AND channel = 'hud'
+                        """,
+                        (suggestion_id,),
+                    )
+                    row = cur.fetchone()
+            conn.commit()
+            return (row[0], created) if row else ("", False)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return "", False
+        finally:
+            self._release(conn)
+
+    def upsert_suggestion_delivery(self, suggestion_id: str, channel: str = "hud") -> tuple:
+        return self.persist_normal_suggestion_delivery(suggestion_id, OWNER_ID)
+
+    def suggestion_delivery_exists(self, suggestion_id: str, channel: str = "hud") -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM world_suggestion_deliveries
+                    WHERE suggestion_id = %s AND channel = %s
+                    """,
+                    (suggestion_id, channel),
+                )
+                return bool(cur.fetchone())
+        except Exception:
+            return False
+        finally:
+            self._release(conn)
+
+    def bump_suggest_attention(self, owner_id: str, dedupe_key: str, day_key: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO proactive_attention
+                    (owner_id, day_key, inform_count, suggest_count, cooldowns)
+                    VALUES (%s, %s::date, 0, 1, jsonb_build_object(%s, EXTRACT(EPOCH FROM NOW())))
+                    ON CONFLICT (owner_id, day_key) DO UPDATE SET
+                        suggest_count = COALESCE(proactive_attention.suggest_count, 0) + 1,
+                        cooldowns = COALESCE(proactive_attention.cooldowns, '{}'::jsonb)
+                            || jsonb_build_object(%s, EXTRACT(EPOCH FROM NOW()))
+                    RETURNING suggest_count
+                    """,
+                    (owner_id, day_key, dedupe_key, dedupe_key),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
         finally:
             self._release(conn)
 

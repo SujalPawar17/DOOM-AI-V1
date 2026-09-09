@@ -331,16 +331,27 @@ async def proactive_status():
     from proactive.config import (
         DAILY_INFORM_BUDGET,
         OWNER_ID,
+        is_prediction_enabled,
         is_proactive_enabled,
+        is_suggest_enabled,
     )
     from proactive.worker import worker_alive
+    proactive_on = is_proactive_enabled()
+    suggest_on = bool(proactive_on and is_prediction_enabled() and is_suggest_enabled())
+    if not proactive_on:
+        ceiling = "NONE"
+    elif suggest_on:
+        ceiling = "SUGGEST"
+    else:
+        ceiling = "INFORM"
     return {
-        "enabled": is_proactive_enabled(),
-        "worker_alive": worker_alive() if is_proactive_enabled() else False,
+        "enabled": proactive_on,
+        "worker_alive": worker_alive() if proactive_on else False,
         "owner_id": OWNER_ID,
         "daily_inform_budget": DAILY_INFORM_BUDGET,
         "tts_proactive": False,
-        "max_intervention": "INFORM" if is_proactive_enabled() else "NONE",
+        "suggest_enabled": suggest_on,
+        "max_intervention": ceiling,
     }
 
 
@@ -386,6 +397,64 @@ async def proactive_insights(limit: int = 20):
             continue
     bounded = out[:MAX_HUD]
     return {"insights": bounded, "count": len(bounded), "enabled": True}
+
+
+@app.get("/api/proactive/suggestions")
+async def proactive_suggestions(limit: int = 20):
+    from proactive.config import OWNER_ID, is_prediction_enabled, is_proactive_enabled, is_suggest_enabled
+    from proactive.delivery import MAX_HUD
+    from proactive.store import proactive_store
+    from proactive.suggest_templates import render_suggest
+    enabled = bool(is_proactive_enabled() and is_prediction_enabled() and is_suggest_enabled())
+    if not enabled:
+        return {"suggestions": [], "count": 0, "enabled": False}
+    try:
+        cap = min(max(int(limit or 20), 1), MAX_HUD)
+    except (TypeError, ValueError):
+        cap = 20
+    try:
+        rows = proactive_store.list_hud_suggestions(owner_id=OWNER_ID, limit=cap)
+    except Exception:
+        return {"suggestions": [], "count": 0, "enabled": True, "error": "store_unavailable"}
+    out = []
+    for r in rows or []:
+        try:
+            if r.get("privacy_class") != "NORMAL":
+                continue
+            params = r.get("safe_params") if isinstance(r.get("safe_params"), dict) else {}
+            out.append({
+                "suggestion_id": r.get("suggestion_id"),
+                "intervention": "SUGGEST",
+                "suggestion_type": r.get("suggestion_type"),
+                "template_id": r.get("template_id"),
+                "message": render_suggest(r.get("template_id") or "suggest_review_work", params),
+                "priority": r.get("priority"),
+                "status": r.get("status"),
+                "tts": False,
+            })
+        except Exception:
+            continue
+    bounded = out[:MAX_HUD]
+    return {"suggestions": bounded, "count": len(bounded), "enabled": True}
+
+
+@app.post("/api/proactive/suggestions/{suggestion_id}/dismiss")
+async def dismiss_proactive_suggestion(suggestion_id: str):
+    from proactive.config import OWNER_ID, is_prediction_enabled, is_proactive_enabled, is_suggest_enabled
+    from proactive.otp import emit_proactive
+    from proactive.store import proactive_store
+    if not (is_proactive_enabled() and is_prediction_enabled() and is_suggest_enabled()):
+        return {"ok": False, "error": "disabled"}
+    sid = str(suggestion_id or "")[:64]
+    ok = proactive_store.dismiss_suggestion(sid, OWNER_ID)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    emit_proactive(
+        "proactive.suggestion.dismissed",
+        attributes={"suggestion_id": sid[:36]},
+    )
+    return {"ok": True}
+
 
 @app.get("/api/tools")
 async def list_tools():

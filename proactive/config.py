@@ -86,6 +86,18 @@ def is_prediction_enabled() -> bool:
     return _bool_env("PROACTIVE_PREDICTION_ENABLED", False)
 
 
+def is_suggest_enabled() -> bool:
+    """V6.2.5. Default false. Call sites also require proactive + prediction flags."""
+    return _bool_env("PROACTIVE_SUGGEST_ENABLED", False)
+
+
+DAILY_SUGGEST_BUDGET = _int_env("PROACTIVE_DAILY_SUGGEST_BUDGET", 4)
+SUGGEST_COOLDOWN_SECONDS = _int_env("PROACTIVE_SUGGEST_COOLDOWN_SECONDS", 14400)
+SUGGEST_CANDIDATE_CAP = _int_env("PROACTIVE_SUGGEST_CANDIDATE_CAP", 50)
+SUGGEST_CONFIDENCE_FLOOR = 0.70
+SUGGEST_RULE_VERSION = "v625.1"
+
+
 PREDICTION_EMIT_FLOOR = _float_env("PROACTIVE_PREDICTION_EMIT_FLOOR", 0.70)
 C_MAX_EMAIL_SINGLE = 0.55
 C_MAX_DEFAULT = 0.95

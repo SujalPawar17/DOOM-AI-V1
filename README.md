@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB)](https://www.python.org/)
 [![PostgreSQL](https://img.shields.io/badge/postgresql-authoritative_store-4169E1)](https://www.postgresql.org/)
-[![Release](https://img.shields.io/badge/release-v6.2.4-2ea44f)](https://github.com/SujalPawar17/DOOM-AI-V1/releases/tag/v6.2.4)
+[![Release](https://img.shields.io/badge/release-v6.2.5-2ea44f)](https://github.com/SujalPawar17/DOOM-AI-V1/releases/tag/v6.2.5)
 [![Branch](https://img.shields.io/badge/branch-DOOM--V5.2-24292e)](https://github.com/SujalPawar17/DOOM-AI-V1)
 
 > A persistent autonomous intelligence platform designed to understand, reason, plan, execute, verify, remember, and progressively operate across a user's digital environment.
@@ -21,12 +21,12 @@ Inspired in spirit by the idea of a personal operating intelligence—not positi
 
 | | |
 |---|---|
-| **Current release** | **v6.2.4** — **RELEASED** (SHA in the annotated tag) |
+| **Current release** | **v6.2.5** — **RELEASED** (SHA in the annotated tag) |
 | **Branch** | `DOOM-V5.2` |
 | **Architecture** | Personal AI Operating System |
 | **Core** | Cognition + memory + world model + autonomous task engine |
-| **Released proactive line** | V6.1 INFORM; V6.2.1 emitters; V6.2.2 Calendar/GitHub READ + vault; V6.2.3 Email READ + commitments; **V6.2.4 evidence + deterministic prediction** |
-| **Next (not started)** | V6.2.5 — SUGGEST |
+| **Released proactive line** | V6.1 INFORM; V6.2.1 emitters; V6.2.2 Calendar/GitHub READ + vault; V6.2.3 Email READ + commitments; V6.2.4 evidence + deterministic prediction; **V6.2.5 SUGGEST** |
+| **Next (not started)** | V6.2.6 — PREPARE |
 
 Status labels used below: **RELEASED**, **PLANNED**.
 
@@ -119,7 +119,7 @@ PostgreSQL is the authoritative store for memory records, task checkpoints, proa
 | V3 | Autonomous task orchestration, resume, partial success | RELEASED |
 | V4 | Cognitive execution loop | RELEASED |
 | V5 | Persistent memory, retrieval, lifecycle, projects, experience, governance, routing, observability | RELEASED |
-| V6 | Proactive intelligence and external world observation | RELEASED through v6.2.4 |
+| V6 | Proactive intelligence and external world observation | RELEASED through v6.2.5 |
 | V7 | Computer / OS agent as a unified ACT surface | PLANNED |
 
 V4 cognition (implemented) is a bounded loop:
@@ -152,7 +152,7 @@ Also implemented: semantic embeddings with hybrid ranking, freshness, evidence a
 
 `WorldSnapshot` is **derived, cacheable, TTL-bound, and non-authoritative**. It must not become a second canonical memory store.
 
-V6.2.3 (RELEASED) adds PRIVATE commitment rows and unread counts into the snapshot **without** subjects or email bodies. V6.2.4 (RELEASED, flag-gated) adds `world_evidence` citations and five deterministic `world_predictions` types on the snapshot. Predictions do **not** INFORM and are **not** HUD cards.
+V6.2.3 (RELEASED) adds PRIVATE commitment rows and unread counts into the snapshot **without** subjects or email bodies. V6.2.4 (RELEASED, flag-gated) adds `world_evidence` citations and five deterministic `world_predictions` types on the snapshot. Predictions do **not** INFORM and are **not** HUD cards. V6.2.5 (RELEASED, flag-gated) adds deterministic `world_suggestions` and NORMAL HUD/WS cards (`proactive_suggestion`). Suggestions are **not** stored on `WorldSnapshot` and do **not** INFORM via `proactive_insights`.
 
 ---
 
@@ -181,7 +181,7 @@ DOOM is not designed for unrestricted autonomous action. Authority is intended t
 
 `OBSERVE → ANALYZE → INFORM → SUGGEST → PREPARE → ASK → ACT`
 
-**Current V6.2 work remains below ACT.** V6.1 delivers INFORM-only HUD obligations. V6.2.4 predictions are derived world-model rows only. SUGGEST / PREPARE / ASK / ACT are **PLANNED**. Dashboard task-approval binding (session, CSRF, ownership, param hash) is a documented **release blocker** for ASK—not a workaround.
+**Current V6.2 work remains below ACT.** V6.1 delivers INFORM-only HUD obligations. V6.2.4 predictions are derived world-model rows only. V6.2.5 SUGGEST is advisory HUD/WS only (no tools, no LLM, no ACT). PREPARE / ASK / ACT are **PLANNED**. Dashboard task-approval binding (session, CSRF, ownership, param hash) is a documented **release blocker** for ASK—not a workaround.
 
 Also implemented: risk-aware governance gates, privacy classes (`NORMAL` / `PRIVATE` / `SENSITIVE`), DATA_ONLY payload fencing, DPAPI connector vault (`secret_ref` in PostgreSQL, not raw tokens), allowlisted HTTP (GET plus a single OAuth token POST URL), tool invocation as an explicit registry, ABSTAIN/fail-closed on injection and credential-shaped content, and telemetry redaction.
 
@@ -204,10 +204,11 @@ Intended pipeline (only some stages are live):
 | Calendar / GitHub READ, vault, `external_facts` | RELEASED (V6.2.2) |
 | Gmail READ + commitment extraction | **RELEASED (V6.2.3)** |
 | Evidence + deterministic prediction | **RELEASED (V6.2.4)** — flag-gated; no INFORM from predictions |
-| SUGGEST, PREPARE, ASK, bounded LLM drafts | PLANNED |
+| SUGGEST (advisory, dedicated tables, NORMAL HUD/WS) | **RELEASED (V6.2.5)** — flag-gated; requires prediction flags; default off |
+| PREPARE, ASK, bounded LLM drafts | PLANNED |
 | ACT / SEND / MERGE / Gmail write | PLANNED (not V6.2) |
 
-Flags default **off** (`PROACTIVE_ENABLED`, connector flags, `PROACTIVE_PREDICTION_ENABLED`). Global proactive off implies **zero** connector HTTP. Email-derived facts are PRIVATE and do not auto-INFORM. Worker code does not call `process_request` and does not write `memory_records`.
+Flags default **off** (`PROACTIVE_ENABLED`, connector flags, `PROACTIVE_PREDICTION_ENABLED`, `PROACTIVE_SUGGEST_ENABLED`). Global proactive off implies **zero** connector HTTP. Email-derived facts are PRIVATE and do not auto-INFORM. Worker code does not call `process_request` and does not write `memory_records`. SUGGEST does not use `claim_batch`.
 
 ---
 
@@ -262,7 +263,7 @@ DOOM/
 └── test_doom.py            # Plus versioned test_v*.py suites at repository root
 ```
 
-V6.2.3 (tag `v6.2.3`) includes `proactive/connectors/email_gmail.py`, `proactive/commitments.py`, and `test_v623_email_commitments.py`. V6.2.4 (tag `v6.2.4`) includes `proactive/evidence.py`, `proactive/predict.py`, `proactive/temporal.py`, and `test_v624_evidence_prediction.py`.
+V6.2.3 (tag `v6.2.3`) includes `proactive/connectors/email_gmail.py`, `proactive/commitments.py`, and `test_v623_email_commitments.py`. V6.2.4 (tag `v6.2.4`) includes `proactive/evidence.py`, `proactive/predict.py`, `proactive/temporal.py`, and `test_v624_evidence_prediction.py`. V6.2.5 (tag `v6.2.5`) includes `proactive/suggest.py`, `proactive/suggest_templates.py`, `world_suggestions` schema, and `test_v625_suggest.py`.
 
 ---
 
@@ -321,7 +322,7 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 | Gmail READ | RELEASED (V6.2.3) |
 | Commitment intelligence | RELEASED (V6.2.3) |
 | Prediction (deterministic, no INFORM) | RELEASED (V6.2.4) |
-| SUGGEST | PLANNED (V6.2.5) |
+| SUGGEST | RELEASED (V6.2.5) |
 | PREPARE | PLANNED (V6.2.6) |
 | ASK (authenticated approval) | PLANNED (V6.2.7) |
 | Bounded LLM drafts | PLANNED (V6.2.8) |
@@ -346,18 +347,18 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 | V6.2.2 | External READ connectors + DPAPI vault |
 | V6.2.3 | Email READ + commitment intelligence |
 | V6.2.4 | Evidence + deterministic prediction |
+| V6.2.5 | SUGGEST (advisory HUD/WS; dedicated `world_suggestions`) |
 
 ### Planned (not started)
 
 | Version | Scope | Status |
 |---|---|---|
-| V6.2.5 | SUGGEST | PLANNED |
+| V6.2.6 | PREPARE | PLANNED |
 
 ### Later planned
 
 | Version | Scope |
 |---|---|
-| V6.2.6 | PREPARE |
 | V6.2.7 | ASK |
 | V6.2.8 | Bounded LLM assistance |
 | V6.3 | ACT |
@@ -382,7 +383,10 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 **Proactive INFORM (released, flag-gated)**  
 Observational HUD cards for high-significance INTERNAL signals. Not email send, not ACT. Predictions do not INFORM.
 
-**PLANNED — do not treat as available:** SUGGEST, autonomous email send, merge, ASK execution, V7 OS agent.
+**Proactive SUGGEST (V6.2.5 RELEASED, flag-gated)**  
+Advisory NORMAL HUD/WS cards from ACTIVE predictions. PRIVATE persist-only. SENSITIVE never persisted. Not PREPARE, ASK, tools, or ACT. Requires `PROACTIVE_ENABLED`, `PROACTIVE_PREDICTION_ENABLED`, and `PROACTIVE_SUGGEST_ENABLED`.
+
+**PLANNED — do not treat as available:** PREPARE, autonomous email send, merge, ASK execution, V7 OS agent.
 
 ---
 
@@ -462,4 +466,4 @@ Built as an independent AI systems engineering project.
 
 ---
 
-*Tag `v6.2.4` is the current official release (evidence + deterministic prediction). V6.2.5 SUGGEST is not started.*
+*Tag `v6.2.5` is the current official release (deterministic SUGGEST). V6.2.6 PREPARE is not started. Tag `v6.2.4` remains immutable.*

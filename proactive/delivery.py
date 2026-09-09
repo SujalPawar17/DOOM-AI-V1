@@ -92,6 +92,73 @@ def deliver_inform(insight) -> bool:
     return True
 
 
+def deliver_suggest(suggestion: Dict[str, Any]) -> bool:
+    """NORMAL HUD/WS only. Persistence+DELIVERED commit before WS. Do not touch INFORM _hud."""
+    if TTS_PROACTIVE_ALLOWED:
+        return False
+    if str(suggestion.get("privacy_class") or "") != "NORMAL":
+        return False
+    sid = str(suggestion.get("suggestion_id") or "")
+    owner = str(suggestion.get("owner_id") or OWNER_ID)
+    if not sid:
+        return False
+    did, created = proactive_store.persist_normal_suggestion_delivery(sid, owner)
+    if not did:
+        emit_proactive(
+            "proactive.suggestion.delivered",
+            status="error",
+            attributes={"suggestion_id": sid[:36], "reason": "persist_failed"},
+        )
+        return False
+    if not created:
+        emit_proactive(
+            "proactive.suggestion.delivered",
+            status="skipped",
+            attributes={"suggestion_id": sid[:36], "reason": "duplicate"},
+        )
+        return True
+    try:
+        from proactive.attention import record_suggest
+        record_suggest(str(suggestion.get("fingerprint") or sid), owner)
+    except Exception:
+        pass
+    from proactive.suggest_templates import render_suggest
+    card = {
+        "type": "proactive_suggestion",
+        "suggestion_id": sid,
+        "intervention": "SUGGEST",
+        "template_id": suggestion.get("template_id"),
+        "message": render_suggest(str(suggestion.get("template_id") or ""), suggestion.get("safe_params") or {}),
+        "priority": suggestion.get("priority") or "MEDIUM",
+        "privacy_class": "NORMAL",
+        "tts": False,
+    }
+    emit_proactive(
+        "proactive.suggestion.delivered",
+        attributes={
+            "suggestion_id": sid[:36],
+            "suggestion_type": str(suggestion.get("suggestion_type") or "")[:40],
+            "privacy_class": "NORMAL",
+        },
+    )
+    try:
+        from dashboard.server import dashboard_loop, connected_clients
+        import asyncio
+        import json
+        if dashboard_loop:
+            for client in list(connected_clients):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        client.send_text(json.dumps(card)),
+                        dashboard_loop,
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return True
+
+
 def hud_cards() -> List[Dict[str, Any]]:
     with _lock:
         return list(_hud)
