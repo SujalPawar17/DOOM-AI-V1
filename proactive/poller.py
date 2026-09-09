@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
+import uuid
 
+from proactive.config import (
+    CALENDAR_POLL_SEC,
+    CONNECTOR_BACKOFF_SEC,
+    GITHUB_POLL_SEC,
+    OWNER_ID,
+    is_calendar_enabled,
+    is_github_enabled,
+    is_proactive_enabled,
+)
 from proactive.ingest import ingest_signal
+from proactive.otp import emit_proactive
+from proactive.schemas import dump_bounded_payload
+from proactive.store import proactive_store
 
 
 def poll_internal_sources() -> None:
@@ -65,3 +79,121 @@ def poll_internal_sources() -> None:
             )
     except Exception:
         pass
+
+
+def persist_fenced_record(account: dict, rec) -> str:
+    """Upsert external_facts and ingest a typed signal. No secrets. Never raises."""
+    try:
+        if rec.privacy_class == "SENSITIVE":
+            return ""
+        payload = rec.payload if isinstance(rec.payload, dict) else {}
+        sha = hashlib.sha256(dump_bounded_payload(payload).encode("utf-8")).hexdigest()
+        aid = str(account.get("account_id") or "")
+        kind = str(rec.fact_kind or "")
+        src = str(rec.source_record_id or "")
+        idem = f"{aid}|{kind}|{src}"[:160]
+        fid = str(uuid.uuid4())
+        occurred = float(rec.occurred_at or 0) or None
+        proactive_store.upsert_external_fact({
+            "fact_id": fid,
+            "owner_id": account.get("owner_id") or OWNER_ID,
+            "account_id": aid,
+            "connector_type": rec.connector_type,
+            "source_record_id": src,
+            "fact_kind": kind,
+            "project_id": rec.project_id or account.get("project_id"),
+            "privacy_class": rec.privacy_class,
+            "occurred_at": occurred,
+            "valid_until": (occurred + 7 * 86400) if occurred else None,
+            "confidence": 0.85,
+            "payload": payload,
+            "content_sha256": sha,
+            "idempotency_key": idem,
+        })
+        if rec.privacy_class != "NORMAL":
+            return fid
+        ingest_signal(
+            signal_type=rec.signal_type,
+            source=rec.connector_type,
+            entity_type="external",
+            entity_id=src[:120],
+            payload=payload,
+            privacy_class="NORMAL",
+            occurred_at=float(rec.occurred_at or time.time()),
+            extra_idem=src,
+        )
+        return fid
+    except Exception:
+        return ""
+
+
+def poll_connectors() -> None:
+    """READ connectors only. Zero HTTP when flags are off."""
+    if not is_proactive_enabled():
+        return
+    if not is_calendar_enabled() and not is_github_enabled():
+        return
+    try:
+        from proactive.connectors.http_safe import SafeHttpError
+        from proactive.connectors.registry import get_enabled_readers
+    except Exception:
+        return
+    readers = get_enabled_readers()
+    if not readers:
+        return
+    now = time.time()
+    for ctype, reader in readers.items():
+        interval = CALENDAR_POLL_SEC if ctype == "calendar_google" else GITHUB_POLL_SEC
+        try:
+            accounts = proactive_store.list_active_accounts(ctype)
+        except Exception:
+            continue
+        for account in accounts:
+            aid = account.get("account_id") or ""
+            sync = proactive_store.get_sync_state(aid)
+            backoff = float(sync.get("backoff_until") or 0)
+            if backoff > now:
+                continue
+            last_ok = float(sync.get("last_success_at") or 0)
+            if last_ok and (now - last_ok) < interval:
+                continue
+            try:
+                records, cursor = reader.fetch_updates(account, sync.get("cursor") or "")
+                for rec in records or []:
+                    persist_fenced_record(account, rec)
+                proactive_store.upsert_sync_state(
+                    aid,
+                    cursor=cursor or None,
+                    last_success=True,
+                    last_error_type="",
+                    backoff_until=None,
+                )
+                proactive_store.set_account_health(aid, "OK", "")
+            except SafeHttpError as exc:
+                status = int(getattr(exc, "status", 0) or 0)
+                if status in (403, 429):
+                    err, health, detail = "RATE_LIMIT", "DEGRADED", "rate_limit"
+                elif status == 401:
+                    err, health, detail = "AUTH", "DEGRADED", "auth_expired"
+                else:
+                    err, health, detail = "NETWORK", "DOWN", "fetch_failed"
+                proactive_store.upsert_sync_state(
+                    aid,
+                    last_success=False,
+                    last_error_type=err,
+                    backoff_until=now + CONNECTOR_BACKOFF_SEC,
+                )
+                proactive_store.set_account_health(aid, health, detail)
+                emit_proactive(
+                    "proactive.outcome",
+                    status="error",
+                    attributes={"reason": detail, "connector_id": str(aid)[:36]},
+                )
+            except Exception:
+                proactive_store.upsert_sync_state(
+                    aid,
+                    last_success=False,
+                    last_error_type="NETWORK",
+                    backoff_until=now + CONNECTOR_BACKOFF_SEC,
+                )
+                proactive_store.set_account_health(aid, "DOWN", "fetch_failed")

@@ -22,7 +22,7 @@ from proactive.config import (
 )
 from proactive.delivery import deliver_inform
 from proactive.otp import emit_proactive
-from proactive.poller import poll_internal_sources
+from proactive.poller import poll_connectors, poll_internal_sources
 from proactive.schemas import Insight
 from proactive.significance import evaluate_significance
 from proactive.snapshot import build_world_snapshot
@@ -181,6 +181,7 @@ def process_once(worker_id: str = "v61-worker") -> int:
         proactive_store.recover_expired_leases()
         proactive_store.expire_stale()
         poll_internal_sources()
+        poll_connectors()
         batch = proactive_store.claim_batch(worker_id)
         for item in batch:
             try:

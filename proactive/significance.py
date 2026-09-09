@@ -77,6 +77,14 @@ def evaluate_significance(signal: Dict[str, Any], snapshot: WorldSnapshot) -> Si
         score, reason = 0.30, "project_change"
     elif st == "REQUEST_COMPLETED":
         score, reason = 0.12, "request_noise"
+    elif st == "CALENDAR_EVENT":
+        score, reason = 0.22, "calendar_novelty"
+    elif st == "GITHUB_ISSUE":
+        score, reason = 0.25, "github_issue"
+    elif st == "GITHUB_NOTIFICATION":
+        score, reason = 0.20, "github_notification"
+    elif st == "GITHUB_REVIEW_REQUEST":
+        score, reason = 0.55, "github_review"
 
     if not snapshot.is_fresh():
         return SignificanceResult(0.0, confidence, "none", "", insight_type, False, "stale_snapshot")

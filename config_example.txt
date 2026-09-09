@@ -59,3 +59,13 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=Doom
 DB_SSLMODE=disable
+
+# V6.1 / V6.2 proactive intelligence (all default off — do not enable in production until ready)
+# PROACTIVE_ENABLED=false
+# PROACTIVE_CALENDAR_ENABLED=false
+# PROACTIVE_GITHUB_ENABLED=false
+# PROACTIVE_CALENDAR_POLL_SEC=900
+# PROACTIVE_GITHUB_POLL_SEC=600
+# DOOM_CONNECTOR_VAULT_PATH=%LOCALAPPDATA%\DOOM\connector_vault.dpapi
+# Bootstrap GitHub READ (optional): copy into the DPAPI vault once; never store PATs in PostgreSQL.
+# DOOM_GITHUB_PAT=

@@ -347,6 +347,63 @@ class PostgresManager:
                 PRIMARY KEY (owner_id, day_key)
             );
             """,
+            # V6.2.2: connector accounts + fenced external fact cache (no secrets)
+            """
+            CREATE TABLE IF NOT EXISTS connector_accounts (
+                account_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL DEFAULT 'sujal',
+                connector_type VARCHAR(32) NOT NULL
+                    CHECK (connector_type IN ('calendar_google','github','gmail')),
+                project_id VARCHAR(64),
+                secret_ref VARCHAR(64) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'
+                    CHECK (status IN ('ACTIVE','DISABLED','EXPIRED')),
+                privacy_class_default VARCHAR(16) NOT NULL DEFAULT 'NORMAL'
+                    CHECK (privacy_class_default IN ('NORMAL','PRIVATE','SENSITIVE')),
+                health VARCHAR(16) NOT NULL DEFAULT 'OK'
+                    CHECK (health IN ('OK','DEGRADED','DOWN')),
+                health_detail VARCHAR(64) NOT NULL DEFAULT '',
+                policy_version INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_connector_acct_owner_type_proj ON connector_accounts (owner_id, connector_type, (COALESCE(project_id, '')));",
+            "CREATE INDEX IF NOT EXISTS idx_connector_acct_owner_status ON connector_accounts (owner_id, status);",
+            """
+            CREATE TABLE IF NOT EXISTS connector_sync_state (
+                account_id VARCHAR(64) PRIMARY KEY
+                    REFERENCES connector_accounts(account_id) ON DELETE CASCADE,
+                cursor TEXT,
+                last_success_at TIMESTAMPTZ,
+                last_error_type VARCHAR(64),
+                backoff_until TIMESTAMPTZ
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS external_facts (
+                fact_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL DEFAULT 'sujal',
+                account_id VARCHAR(64) NOT NULL
+                    REFERENCES connector_accounts(account_id) ON DELETE CASCADE,
+                connector_type VARCHAR(32) NOT NULL,
+                source_record_id VARCHAR(128) NOT NULL,
+                fact_kind VARCHAR(32) NOT NULL
+                    CHECK (fact_kind IN ('CAL_EVENT','GH_ISSUE','GH_PR','GH_REVIEW','EMAIL_META')),
+                project_id VARCHAR(64),
+                privacy_class VARCHAR(16) NOT NULL DEFAULT 'NORMAL'
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                occurred_at TIMESTAMPTZ,
+                observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                valid_until TIMESTAMPTZ,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                payload JSONB NOT NULL DEFAULT '{}',
+                content_sha256 VARCHAR(64) NOT NULL,
+                idempotency_key VARCHAR(160) NOT NULL UNIQUE
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_ext_facts_owner_kind_occ ON external_facts (owner_id, fact_kind, occurred_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_ext_facts_valid ON external_facts (valid_until);",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

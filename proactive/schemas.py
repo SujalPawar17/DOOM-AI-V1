@@ -19,6 +19,10 @@ SIGNAL_TYPES = frozenset({
     "HOST_TELEMETRY",
     "PROVIDER_CIRCUIT",
     "INACTIVITY",
+    "CALENDAR_EVENT",
+    "GITHUB_NOTIFICATION",
+    "GITHUB_ISSUE",
+    "GITHUB_REVIEW_REQUEST",
 })
 
 SOURCES = frozenset({
@@ -32,6 +36,8 @@ SOURCES = frozenset({
     "circuit_breaker",
     "clock",
     "test",
+    "calendar_google",
+    "github",
 })
 
 PRIVACY_CLASSES = frozenset({"NORMAL", "PRIVATE", "SENSITIVE"})

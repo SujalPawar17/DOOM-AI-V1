@@ -61,3 +61,24 @@ CONFIDENCE_FLOOR = _float_env("PROACTIVE_CONFIDENCE_FLOOR", 0.50)
 # Quiet hours as "22-07" (local) or empty to disable
 QUIET_HOURS = os.getenv("PROACTIVE_QUIET_HOURS", "").strip()
 TTS_PROACTIVE_ALLOWED = False  # V6.1: never
+
+# V6.2.2 connector flags — default OFF. Hot-read like PROACTIVE_ENABLED.
+CALENDAR_POLL_SEC = _int_env("PROACTIVE_CALENDAR_POLL_SEC", 900)
+GITHUB_POLL_SEC = _int_env("PROACTIVE_GITHUB_POLL_SEC", 600)
+CONNECTOR_BACKOFF_SEC = _int_env("PROACTIVE_CONNECTOR_BACKOFF_SEC", 900)
+
+
+def is_calendar_enabled() -> bool:
+    return _bool_env("PROACTIVE_CALENDAR_ENABLED", False)
+
+
+def is_github_enabled() -> bool:
+    return _bool_env("PROACTIVE_GITHUB_ENABLED", False)
+
+
+def connector_vault_path() -> str:
+    override = (os.getenv("DOOM_CONNECTOR_VAULT_PATH") or "").strip()
+    if override:
+        return override
+    local = os.getenv("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.join(local, "DOOM", "connector_vault.dpapi")

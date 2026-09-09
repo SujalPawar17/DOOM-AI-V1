@@ -652,4 +652,276 @@ class ProactiveStore:
             self._release(conn)
 
 
+    def upsert_connector_account(self, account: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        aid = str(account.get("account_id") or "")[:64]
+        if not aid:
+            return ""
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO connector_accounts (
+                        account_id, owner_id, connector_type, project_id, secret_ref,
+                        status, privacy_class_default, health, health_detail, policy_version
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (account_id) DO UPDATE SET
+                        project_id = EXCLUDED.project_id,
+                        secret_ref = EXCLUDED.secret_ref,
+                        status = EXCLUDED.status,
+                        privacy_class_default = EXCLUDED.privacy_class_default,
+                        health = EXCLUDED.health,
+                        health_detail = EXCLUDED.health_detail,
+                        policy_version = EXCLUDED.policy_version,
+                        updated_at = NOW()
+                    RETURNING account_id
+                    """,
+                    (
+                        aid,
+                        str(account.get("owner_id") or OWNER_ID)[:64],
+                        str(account.get("connector_type") or "")[:32],
+                        account.get("project_id"),
+                        str(account.get("secret_ref") or "")[:64],
+                        str(account.get("status") or "ACTIVE")[:16],
+                        str(account.get("privacy_class_default") or "NORMAL")[:16],
+                        str(account.get("health") or "OK")[:16],
+                        str(account.get("health_detail") or "")[:64],
+                        int(account.get("policy_version") or 1),
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else ""
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def list_active_accounts(self, connector_type: str, owner_id: str = OWNER_ID) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT account_id, owner_id, connector_type, project_id, secret_ref,
+                           status, privacy_class_default, health, health_detail, policy_version
+                    FROM connector_accounts
+                    WHERE owner_id = %s AND connector_type = %s AND status = 'ACTIVE'
+                    """,
+                    (owner_id, connector_type),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "account_id": r[0], "owner_id": r[1], "connector_type": r[2],
+                    "project_id": r[3], "secret_ref": r[4], "status": r[5],
+                    "privacy_class_default": r[6], "health": r[7],
+                    "health_detail": r[8], "policy_version": r[9],
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def set_account_health(self, account_id: str, health: str, detail: str = "") -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE connector_accounts
+                    SET health = %s, health_detail = %s, updated_at = NOW()
+                    WHERE account_id = %s
+                    """,
+                    (str(health)[:16], str(detail)[:64], account_id),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def get_sync_state(self, account_id: str) -> Dict[str, Any]:
+        conn = self._conn()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT cursor, EXTRACT(EPOCH FROM last_success_at), last_error_type,
+                           EXTRACT(EPOCH FROM backoff_until)
+                    FROM connector_sync_state WHERE account_id = %s
+                    """,
+                    (account_id,),
+                )
+                row = cur.fetchone()
+            if not row:
+                return {}
+            return {
+                "cursor": row[0] or "",
+                "last_success_at": float(row[1] or 0),
+                "last_error_type": row[2] or "",
+                "backoff_until": float(row[3] or 0),
+            }
+        except Exception:
+            return {}
+        finally:
+            self._release(conn)
+
+    def upsert_sync_state(
+        self,
+        account_id: str,
+        cursor: Optional[str] = None,
+        last_success: bool = False,
+        last_error_type: Optional[str] = None,
+        backoff_until: Optional[float] = None,
+    ) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO connector_sync_state (account_id, cursor, last_success_at, last_error_type, backoff_until)
+                    VALUES (
+                        %s, %s,
+                        CASE WHEN %s THEN NOW() ELSE NULL END,
+                        %s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END
+                    )
+                    ON CONFLICT (account_id) DO UPDATE SET
+                        cursor = COALESCE(EXCLUDED.cursor, connector_sync_state.cursor),
+                        last_success_at = CASE
+                            WHEN EXCLUDED.last_success_at IS NOT NULL THEN EXCLUDED.last_success_at
+                            ELSE connector_sync_state.last_success_at
+                        END,
+                        last_error_type = COALESCE(EXCLUDED.last_error_type, connector_sync_state.last_error_type),
+                        backoff_until = EXCLUDED.backoff_until
+                    """,
+                    (
+                        account_id,
+                        cursor,
+                        last_success,
+                        last_error_type,
+                        backoff_until,
+                        backoff_until,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def upsert_external_fact(self, fact: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        fid = str(fact.get("fact_id") or "")[:64]
+        if not fid:
+            return ""
+        try:
+            occurred = fact.get("occurred_at")
+            valid_until = fact.get("valid_until")
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO external_facts (
+                        fact_id, owner_id, account_id, connector_type, source_record_id,
+                        fact_kind, project_id, privacy_class, occurred_at, observed_at,
+                        valid_until, confidence, payload, content_sha256, idempotency_key
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        NOW(),
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        %s, %s::jsonb, %s, %s
+                    )
+                    ON CONFLICT (idempotency_key) DO UPDATE SET
+                        payload = EXCLUDED.payload,
+                        content_sha256 = EXCLUDED.content_sha256,
+                        occurred_at = EXCLUDED.occurred_at,
+                        observed_at = NOW(),
+                        valid_until = EXCLUDED.valid_until,
+                        confidence = EXCLUDED.confidence,
+                        privacy_class = EXCLUDED.privacy_class,
+                        project_id = EXCLUDED.project_id
+                    RETURNING fact_id
+                    """,
+                    (
+                        fid,
+                        str(fact.get("owner_id") or OWNER_ID)[:64],
+                        str(fact.get("account_id") or "")[:64],
+                        str(fact.get("connector_type") or "")[:32],
+                        str(fact.get("source_record_id") or "")[:128],
+                        str(fact.get("fact_kind") or "")[:32],
+                        fact.get("project_id"),
+                        str(fact.get("privacy_class") or "NORMAL")[:16],
+                        occurred, occurred,
+                        valid_until, valid_until,
+                        float(fact.get("confidence") or 0.8),
+                        json.dumps(fact.get("payload") or {}),
+                        str(fact.get("content_sha256") or "")[:64],
+                        str(fact.get("idempotency_key") or "")[:160],
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else ""
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def map_github_repo_to_project(self, owner_repo: str) -> Optional[str]:
+        needle = str(owner_repo or "").strip().lower().rstrip("/")
+        if not needle or "/" not in needle:
+            return None
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT project_id, git_remote FROM projects WHERE git_remote IS NOT NULL AND git_remote <> ''"
+                )
+                rows = cur.fetchall()
+            for pid, remote in rows:
+                rem = str(remote or "").lower().replace("\\", "/")
+                if rem.endswith(".git"):
+                    rem = rem[:-4]
+                if f"github.com/{needle}" in rem or rem.endswith(f":{needle}"):
+                    return str(pid)
+            return None
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+
 proactive_store = ProactiveStore()
+

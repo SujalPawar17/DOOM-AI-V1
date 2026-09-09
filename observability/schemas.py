@@ -42,6 +42,7 @@ ALLOWED_ATTR_KEYS = frozenset({
     "event", "privacy_ok", "has_memories", "status",
     "insight_id", "signal_id", "intervention", "score_bucket",
     "owner_id", "queue_depth", "signal_type", "privacy_ok",
+    "connector_id", "fact_id", "capability",
 })
 
 
