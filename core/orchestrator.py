@@ -115,88 +115,93 @@ class DOOMCore:
 
         start_time = time.time()
         user_prompt = user_input.strip()
-        print(f"\n[DOOM CORE] [*] Initiating Autonomous Goal: '{user_prompt}' (lang: {lang or 'auto'})")
+        from observability.telemetry import emit, request_scope
 
-        # Step 1: Record user turn in short-term memory
-        short_term_memory.add_user_turn(user_prompt)
+        with request_scope() as corr:
+            print(f"\n[DOOM CORE] [*] Initiating Autonomous Goal (len={len(user_prompt)}, lang: {lang or 'auto'}) req={corr.doom_request_id}")
 
-        # Step 2: Invoke V4 / V5.3.7.1 Cognitive Core Lifecycle
-        t_cog_start = time.time()
-        try:
-            merged_context = dict(context or {})
-            if lang:
-                merged_context["lang"] = lang
-            if project_id:
-                merged_context["project_id"] = project_id
-            cognitive_state = self.cognition.process(
-                user_prompt,
-                context=merged_context,
-                project_id=project_id,
-            )
-        except Exception as cog_err:
-            print(f"[DOOM CORE] [COGNITIVE ERROR] {cog_err}")
-            state_machine.transition_to(DoomState.ERROR, str(cog_err))
-            return f"I encountered an anomaly in the cognitive core, Boss: {cog_err}"
+            short_term_memory.add_user_turn(user_prompt)
 
-
-        cog_ms = (time.time() - t_cog_start) * 1000.0
-        total_duration_ms = (time.time() - start_time) * 1000.0
-
-        # Telemetry & Performance Profiling
-        print(
-            f"[PERF] Total: {total_duration_ms:.1f}ms | "
-            f"Cognition: {cognitive_state.telemetry.total_cognitive_ms:.1f}ms | "
-            f"Understand: {cognitive_state.telemetry.understanding_ms:.1f}ms | "
-            f"Reason: {cognitive_state.telemetry.reasoning_ms:.1f}ms | "
-            f"Decide: {cognitive_state.telemetry.decision_ms:.1f}ms | "
-            f"Plan: {cognitive_state.telemetry.planning_ms:.1f}ms | "
-            f"Exec: {cognitive_state.telemetry.execution_ms:.1f}ms | "
-            f"Verify: {cognitive_state.telemetry.verification_ms:.1f}ms"
-        )
-
-        final_text = cognitive_state.final_response
-        obs_canonical = [
-            CanonicalToolResult(
-                tool=o.tool,
-                success=o.success,
-                stdout=o.stdout,
-                stderr=o.stderr,
-                output=o.output,
-                exit_code=o.exit_code,
-                action=o.action,
-                artifact=o.artifacts[0] if o.artifacts else {}
-            )
-            for o in cognitive_state.observations
-        ]
-
-        # Step 3: Polish spoken response for TTS
-        spoken_text = self.verifier.polish_response(final_text, obs_canonical)
-
-        # Non-blocking voice playback in background thread
-        try:
-            import threading
-            from core.cinematic_voice import stop_speaking, speak
-            stop_speaking()
-            threading.Thread(target=speak, args=(spoken_text,), daemon=True).start()
-        except Exception as ve:
-            print(f"[VOICE] Deferred voice output: {ve}")
-
-        # PostgreSQL Audit Log
-        try:
-            from database.postgres_db import postgres_manager
-            if postgres_manager.is_connected():
-                used_tool_names = [o.tool for o in obs_canonical if o.action != "skip_redundant"]
-                postgres_manager.log_command(
-                    user_command=user_prompt,
-                    response_text=spoken_text,
-                    tools_used=used_tool_names,
-                    latency_ms=total_duration_ms
+            t_cog_start = time.time()
+            try:
+                merged_context = dict(context or {})
+                if lang:
+                    merged_context["lang"] = lang
+                if project_id:
+                    merged_context["project_id"] = project_id
+                cognitive_state = self.cognition.process(
+                    user_prompt,
+                    context=merged_context,
+                    project_id=project_id,
                 )
-        except Exception:
-            pass
+            except Exception as cog_err:
+                print(f"[DOOM CORE] [COGNITIVE ERROR] {type(cog_err).__name__}")
+                emit(
+                    "cognitive.error",
+                    "cognitive",
+                    status="error",
+                    component="orchestrator",
+                    operation="process",
+                    error_type="COGNITIVE_ERROR",
+                    retryable=False,
+                )
+                state_machine.transition_to(DoomState.ERROR, str(cog_err))
+                return f"I encountered an anomaly in the cognitive core, Boss: {cog_err}"
 
-        print(f"[DOOM CORE] [FINAL RESPONSE] {spoken_text}")
-        return spoken_text
+            cog_ms = (time.time() - t_cog_start) * 1000.0
+            total_duration_ms = (time.time() - start_time) * 1000.0
+
+            print(
+                f"[PERF] Total: {total_duration_ms:.1f}ms | "
+                f"Cognition: {cognitive_state.telemetry.total_cognitive_ms:.1f}ms | "
+                f"Understand: {cognitive_state.telemetry.understanding_ms:.1f}ms | "
+                f"Reason: {cognitive_state.telemetry.reasoning_ms:.1f}ms | "
+                f"Decide: {cognitive_state.telemetry.decision_ms:.1f}ms | "
+                f"Plan: {cognitive_state.telemetry.planning_ms:.1f}ms | "
+                f"Exec: {cognitive_state.telemetry.execution_ms:.1f}ms | "
+                f"Verify: {cognitive_state.telemetry.verification_ms:.1f}ms"
+            )
+
+            final_text = cognitive_state.final_response
+            obs_canonical = [
+                CanonicalToolResult(
+                    tool=o.tool,
+                    success=o.success,
+                    stdout=o.stdout,
+                    stderr=o.stderr,
+                    output=o.output,
+                    exit_code=o.exit_code,
+                    action=o.action,
+                    artifact=o.artifacts[0] if o.artifacts else {}
+                )
+                for o in cognitive_state.observations
+            ]
+
+            spoken_text = self.verifier.polish_response(final_text, obs_canonical)
+
+            try:
+                import threading
+                from core.cinematic_voice import stop_speaking, speak
+                stop_speaking()
+                threading.Thread(target=speak, args=(spoken_text,), daemon=True).start()
+            except Exception as ve:
+                print(f"[VOICE] Deferred voice output: {type(ve).__name__}")
+
+            try:
+                from database.postgres_db import postgres_manager
+                if postgres_manager.is_connected():
+                    used_tool_names = [o.tool for o in obs_canonical if o.action != "skip_redundant"]
+                    postgres_manager.log_command(
+                        user_command=user_prompt,
+                        response_text=spoken_text,
+                        tools_used=used_tool_names,
+                        latency_ms=total_duration_ms
+                    )
+            except Exception:
+                pass
+
+            print(f"[DOOM CORE] [FINAL RESPONSE] len={len(spoken_text or '')}")
+            return spoken_text
 
     def _synthesize_final_response(
         self,

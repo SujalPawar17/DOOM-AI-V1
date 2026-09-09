@@ -75,6 +75,23 @@ async def on_server_startup():
                 pass
     task_engine.set_state_broadcaster(broadcast_task_state)
     cognitive_engine.set_broadcaster(broadcast_task_state)
+
+    def _ws_ops_event(event):
+        try:
+            payload = {"type": "operational_event", **event.to_dict()}
+            for client in list(connected_clients):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        client.send_text(json.dumps(payload)),
+                        dashboard_loop
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    from observability.bus import telemetry_bus
+    telemetry_bus.subscribe(_ws_ops_event)
     print("[DASHBOARD] [OK] Task and Cognitive state broadcasters registered")
 
 @app.on_event("shutdown")
@@ -709,32 +726,32 @@ async def agent_chat_endpoint(req: AgentChatRequest):
         ]
 
         try:
-            # Canonical path: ModelRouter owns selection, policy, cascade, and fallback.
-            if selected_model_name == "auto":
-                provider_override = None
-                steps.append({"type": "tool", "title": "DOOM Auto-Router", "desc": "Autonomous router selected best available"})
-            elif selected_model_name in model_router.providers:
-                provider_override = selected_model_name
-                steps.append({"type": "tool", "title": "Invoked Model", "desc": f"ModelRouter override={provider_override}"})
-            else:
-                # Preserve prior default: unknown UI ids execute as groq via the router.
-                provider_override = "groq"
-                steps.append({"type": "tool", "title": "Invoked Model", "desc": "ModelRouter override=groq"})
+            from observability.telemetry import request_scope
+            with request_scope():
+                if selected_model_name == "auto":
+                    provider_override = None
+                    steps.append({"type": "tool", "title": "DOOM Auto-Router", "desc": "Autonomous router selected best available"})
+                elif selected_model_name in model_router.providers:
+                    provider_override = selected_model_name
+                    steps.append({"type": "tool", "title": "Invoked Model", "desc": f"ModelRouter override={provider_override}"})
+                else:
+                    provider_override = "groq"
+                    steps.append({"type": "tool", "title": "Invoked Model", "desc": "ModelRouter override=groq"})
 
-            router_result = model_router.generate(
-                prompt=full_prompt,
-                system_prompt=system_prompt,
-                task_type="general",
-                provider_override=provider_override,
-            )
-            raw_response = _extract_text(router_result)
+                router_result = model_router.generate(
+                    prompt=full_prompt,
+                    system_prompt=system_prompt,
+                    task_type="general",
+                    provider_override=provider_override,
+                )
+                raw_response = _extract_text(router_result)
 
-            if not raw_response.strip():
-                raw_response = "[DOOM] Model returned an empty response. Please try again."
+                if not raw_response.strip():
+                    raw_response = "[DOOM] Model returned an empty response. Please try again."
 
         except Exception as model_err:
-            print(f"[AGENT STUDIO] Model error: {model_err}")
-            raw_response = f"[DOOM] Model invocation error: {model_err}"
+            print(f"[AGENT STUDIO] Model error: {type(model_err).__name__}")
+            raw_response = f"[DOOM] Model invocation error: {type(model_err).__name__}"
 
         duration_ms = round((time.time() - start_time) * 1000, 2)
 

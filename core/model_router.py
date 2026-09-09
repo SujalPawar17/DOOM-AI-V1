@@ -220,6 +220,11 @@ class ModelRouter:
         Raises NoCapableProviderError if no capable provider is available.
         """
         from core.reliability.circuit_breaker import provider_circuit_breaker
+        from core.reliability.correlation import get_current_correlation
+        from observability.telemetry import emit
+        from observability.schemas import classify_error
+        import time as _time
+
         key = (task_type or "general").lower()
         required_caps = self.capability_requirements.get(key, ["tool_calling"])
 
@@ -231,32 +236,112 @@ class ModelRouter:
         # Filter cascade to only capable providers
         capable_cascade = [name for name in cascade if self._has_capability(name, required_caps)]
 
+        hop = 0
+        last_error_type = None
         for name in capable_cascade:
-            provider = self.providers.get(name)
-            if not provider or not provider.is_available():
+            p = self.providers.get(name)
+            if not p or not p.is_available():
                 continue
             if not provider_circuit_breaker.can_attempt(name):
-                print(f"[MODEL ROUTER] Circuit open for '{name}' -> skipping to next provider.")
+                emit(
+                    "fallback.circuit_skipped",
+                    "retry",
+                    status="skipped",
+                    component="model_router",
+                    operation="generate",
+                    attributes={"provider": name, "circuit_skipped": True, "capability": key},
+                )
                 continue
+            hop += 1
+            corr = get_current_correlation().new_provider_call(name)
+            t0 = _time.perf_counter()
+            cost = getattr(p, "cost_tier", "")
+            model = getattr(p, "model", getattr(p, "name", name))
+            if callable(model):
+                try:
+                    model = p.model
+                except Exception:
+                    model = name
             try:
-                response = provider.generate(prompt=prompt, system_prompt=system_prompt, tools=tools)
+                response = p.generate(prompt=prompt, system_prompt=system_prompt, tools=tools)
+                lat = (_time.perf_counter() - t0) * 1000.0
                 if response and (response.text or response.tool_calls):
                     provider_circuit_breaker.record_success(name)
+                    emit(
+                        "provider.generate.completed",
+                        "provider",
+                        status="ok" if hop == 1 else "fallback",
+                        latency_ms=lat,
+                        component="model_router",
+                        operation="generate",
+                        attributes={
+                            "provider": name,
+                            "model": str(model)[:80],
+                            "cost_tier": str(cost),
+                            "capability": key,
+                            "attempt": hop,
+                            "fallback": hop > 1,
+                            "final_provider": name,
+                        },
+                    )
+                    if hop > 1:
+                        emit(
+                            "fallback.completed",
+                            "retry",
+                            status="ok",
+                            latency_ms=lat,
+                            component="model_router",
+                            operation="fallback",
+                            attributes={"final_provider": name, "attempt_number": hop, "failed_provider": ""},
+                        )
                     return response
+                emit(
+                    "provider.generate.empty",
+                    "provider",
+                    status="fallback",
+                    latency_ms=lat,
+                    component="model_router",
+                    operation="generate",
+                    attributes={"provider": name, "attempt": hop, "capability": key, "cost_tier": str(cost)},
+                )
+                emit(
+                    "fallback.started",
+                    "retry",
+                    status="fallback",
+                    component="model_router",
+                    operation="empty_response",
+                    attributes={"failed_provider": name, "attempt_number": hop, "reason": "empty_response"},
+                )
             except Exception as e:
                 provider_circuit_breaker.record_failure(name)
-                print(f"[MODEL ROUTER] Provider '{name}' failed with {e}. Failing over...")
-                print(f"[MODEL ROUTER] Provider '{name}' failed ({e}). Attempting capability-preserving failover...")
+                lat = (_time.perf_counter() - t0) * 1000.0
+                last_error_type = classify_error(e)
+                emit(
+                    "provider.generate.failed",
+                    "provider",
+                    status="timeout" if last_error_type == "TIMEOUT" else "error",
+                    latency_ms=lat,
+                    component="model_router",
+                    operation="generate",
+                    error_type=last_error_type,
+                    retryable=True,
+                    attributes={"provider": name, "attempt": hop, "capability": key, "cost_tier": str(cost)},
+                )
+                emit(
+                    "fallback.started",
+                    "retry",
+                    status="fallback",
+                    component="model_router",
+                    operation="failover",
+                    attributes={"failed_provider": name, "attempt_number": hop, "reason": last_error_type},
+                )
                 continue
 
-        # No capable provider available - raise exception for orchestrator to handle
         available_providers = [name for name in self.capability_priorities.get(key, [])
                                if self.providers.get(name) and self.providers[name].is_available()]
         if available_providers:
-            # Providers available but none with required capability
             raise NoCapableProviderError(task_type, available_providers)
 
-        # No providers available at all - this is a hard outage
         raise NoCapableProviderError(task_type, [])
 
     def get_provider_status(self) -> Dict[str, bool]:

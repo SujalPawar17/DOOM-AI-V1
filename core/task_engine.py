@@ -158,6 +158,23 @@ class TaskEngine:
         if not self._state_broadcaster or not self._active_task:
             return
         try:
+            from observability.telemetry import emit
+            name_map = {
+                "TASK_CREATED": "task.created",
+                "PLAN_SET": "task.planning",
+                "TASK_COMPLETED": "task.completed",
+                "TASK_PARTIAL": "task.partial_success",
+                "TASK_PAUSED": "task.paused",
+                "TASK_FAILED": "task.failed",
+                "TASK_CANCELLED": "task.cancelled",
+            }
+            emit(
+                name_map.get(event_type, "task.running"),
+                "task",
+                component="task_engine",
+                operation=event_type.lower(),
+                attributes={"event": name_map.get(event_type, event_type.lower())[:40]},
+            )
             payload = {
                 "type": "task_state",
                 "event": event_type,
@@ -167,8 +184,12 @@ class TaskEngine:
                 "progress": self._active_task.progress,
                 "resume_available": self._active_task.resume_available,
                 "timestamp": time.strftime("%H:%M:%S"),
-                **extra
+                "ts_unix_ms": int(time.time() * 1000),
             }
+            if "step_count" in extra:
+                payload["step_count"] = extra["step_count"]
+            if "task_type" in extra:
+                payload["task_type"] = extra["task_type"]
             self._state_broadcaster(payload)
         except Exception:
             pass
@@ -190,7 +211,12 @@ class TaskEngine:
             self._task_history.pop()
 
         state_machine.transition_to(DoomState.PLANNING, f"Planning: {goal[:40]}...", task_id=task_id)
-        self._broadcast_task_state("TASK_CREATED", goal=goal, task_type=task_type)
+        from core.reliability.correlation import get_current_correlation
+        from observability.telemetry import emit
+        c = get_current_correlation()
+        c.task_id = task_id
+        emit("task.created", "task", component="task_engine", operation="create", attributes={"event": "task.created"})
+        self._broadcast_task_state("TASK_CREATED", task_type=task_type)
         return task
 
     def set_plan_steps(self, step_descriptions: List[str], plan: Optional[Dict[str, Any]] = None) -> None:

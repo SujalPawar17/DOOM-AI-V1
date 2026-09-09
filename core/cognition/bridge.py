@@ -373,11 +373,34 @@ class CognitiveBridge:
                                 )
                             else:
                                 try:
-                                    correlation.new_tool_execution(current_step.tool_name)
+                                    correlation = correlation.new_tool_execution(current_step.tool_name)
+                                    t_tool = time.time()
                                     raw_result = tool_obj.execute(**current_step.tool_args)
+                                    from observability.telemetry import emit
+                                    emit(
+                                        "tool.completed",
+                                        "tool",
+                                        status="ok",
+                                        latency_ms=(time.time() - t_tool) * 1000.0,
+                                        component="tool_registry",
+                                        operation="execute",
+                                        attributes={"tool": current_step.tool_name},
+                                    )
                                     state.telemetry.tools_executed.append(current_step.tool_name)
                                     task_engine.record_tool_call(current_step.tool_name)
                                 except Exception as te:
+                                    from observability.telemetry import emit
+                                    from observability.schemas import classify_error
+                                    emit(
+                                        "tool.failed",
+                                        "tool",
+                                        status="error",
+                                        component="tool_registry",
+                                        operation="execute",
+                                        error_type=classify_error(te),
+                                        retryable=True,
+                                        attributes={"tool": current_step.tool_name},
+                                    )
                                     raw_result = CanonicalToolResult(tool=current_step.tool_name, success=False, stderr=str(te))
                         else:
                             raw_result = CanonicalToolResult(
@@ -548,8 +571,20 @@ class CognitiveBridge:
             ]
 
             t_ver = time.time()
+            get_current_correlation().new_verification()
             state.verification_results = verifier.verify_ground_truth(state.normalized_goal, obs_canonical)
             state.telemetry.verification_ms = (time.time() - t_ver) * 1000.0
+            from observability.telemetry import emit as _vemit
+            _vemit(
+                "verification.completed",
+                "verify",
+                status="ok" if state.verification_results.get("verified") else "error",
+                latency_ms=state.telemetry.verification_ms,
+                component="verifier",
+                operation="verify_ground_truth",
+                error_type=None if state.verification_results.get("verified") else "VERIFICATION_ERROR",
+                attributes={"verdict": str(state.verification_results.get("status", "UNKNOWN"))[:40]},
+            )
             self._broadcast(
                 "VERIFICATION_COMPLETE",
                 verified=state.verification_results.get("verified", False),

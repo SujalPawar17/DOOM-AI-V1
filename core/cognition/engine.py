@@ -43,9 +43,39 @@ class CognitiveEngine:
         cognitive_bridge.set_broadcaster(broadcaster)
 
     def _broadcast(self, event_type: str, **payload) -> None:
+        from observability.telemetry import emit
+        from observability.schemas import ALLOWED_ATTR_KEYS
+        mapped = dict(payload)
+        if "count" in mapped:
+            mapped["selected_count"] = mapped.pop("count")
+        if "decision" in mapped:
+            mapped["decision_type"] = mapped.pop("decision")
+        lat = mapped.pop("latency_ms", None)
+        safe_attrs = {}
+        for k, v in mapped.items():
+            if k in ALLOWED_ATTR_KEYS and isinstance(v, (str, int, float, bool)):
+                safe_attrs[k] = v
+        cat = "memory" if "MEMORY" in event_type else "cognitive"
+        emit(
+            event_type.lower(),
+            cat,
+            latency_ms=lat,
+            component="cognitive_engine",
+            operation=event_type.lower(),
+            attributes=safe_attrs,
+        )
         if self._broadcaster:
             try:
-                self._broadcaster({"type": "cognitive_event", "event": event_type, **payload})
+                from core.reliability.correlation import get_current_correlation
+                corr = get_current_correlation()
+                self._broadcaster({
+                    "type": "cognitive_event",
+                    "event": event_type,
+                    "doom_request_id": corr.doom_request_id,
+                    "task_id": corr.task_id,
+                    "ts_unix_ms": int(time.time() * 1000),
+                    **safe_attrs,
+                })
             except Exception:
                 pass
 
@@ -98,6 +128,8 @@ class CognitiveEngine:
         V5.3.7.1: Resolves dynamic project context and propagates it throughout execution.
         """
         t0 = time.time()
+        from core.reliability.correlation import get_current_correlation
+        get_current_correlation().new_cycle(1)
         from memory.project_context import resolve_project_context
         proj_ctx = resolve_project_context(explicit_project_id=project_id, context=context)
         state = CognitiveState(
@@ -105,7 +137,7 @@ class CognitiveEngine:
             project_id=proj_ctx.project_id,
             project_context=proj_ctx,
         )
-        self._broadcast("COGNITION_STARTED", request=user_request, project_id=proj_ctx.project_id)
+        self._broadcast("COGNITION_STARTED", prompt_len=len(user_request or ""), event="cognitive_started")
 
         # ---------------------------------------------------------------------
         # 1. MEMORY CONTEXT RETRIEVAL (V5.1 / V5.3.7.1)
@@ -113,7 +145,7 @@ class CognitiveEngine:
         t_mem = time.time()
         try:
             from memory.retrieval import memory_retriever
-            self._broadcast("MEMORY_RETRIEVAL_STARTED", query=user_request[:60], project_id=proj_ctx.project_id)
+            self._broadcast("MEMORY_RETRIEVAL_STARTED", event="memory_retrieval_started")
             mem_ctx = memory_retriever.retrieve(query=user_request, project_id=proj_ctx.project_id)
             state.memory_context = mem_ctx
             state.telemetry.memory_retrieval_ms = (time.time() - t_mem) * 1000.0
@@ -125,7 +157,8 @@ class CognitiveEngine:
                 }
                 self._broadcast("MEMORY_RETRIEVAL_COMPLETED",
                                count=mem_ctx.memory_count,
-                               latency_ms=mem_ctx.retrieval_latency_ms)
+                               latency_ms=mem_ctx.retrieval_latency_ms,
+                               retrieval_mode=mem_ctx.retrieval_mode)
             else:
                 # Legacy fallback for profile/system facts
                 state.relevant_memory = self.retrieve_relevant_memory(
@@ -155,7 +188,7 @@ class CognitiveEngine:
             state.task_type
         ) = understanding_engine.understand(user_request, context)
         state.telemetry.understanding_ms = (time.time() - t_und) * 1000.0
-        self._broadcast("UNDERSTANDING_COMPLETE", intent=state.intent.value, goal=state.normalized_goal)
+        self._broadcast("UNDERSTANDING_COMPLETE", intent=state.intent.value, stage="understand", latency_ms=state.telemetry.understanding_ms)
 
         # Early return if clarification is required
         if state.needs_clarification:
@@ -186,7 +219,7 @@ class CognitiveEngine:
             state.relevant_memory
         )
         state.telemetry.reasoning_ms = (time.time() - t_reas) * 1000.0
-        self._broadcast("REASONING_COMPLETE", summary=state.reasoning_summary)
+        self._broadcast("REASONING_COMPLETE", stage="reason", latency_ms=state.telemetry.reasoning_ms)
 
         # ---------------------------------------------------------------------
         # 4. DECIDE
@@ -202,7 +235,7 @@ class CognitiveEngine:
             state.entities
         )
         state.telemetry.decision_ms = (time.time() - t_dec) * 1000.0
-        self._broadcast("DECISION_MADE", decision=state.decision.value, basis=state.decision_basis)
+        self._broadcast("DECISION_MADE", decision=state.decision.value, stage="decide")
 
         # Fast-Path / Direct Decision Resolution
         if state.decision == CognitiveDecisionType.ANSWER_DIRECTLY:
@@ -304,7 +337,7 @@ class CognitiveEngine:
             project_id=proj_ctx.project_id,
         )
         state.telemetry.planning_ms = (time.time() - t_plan) * 1000.0
-        self._broadcast("PLAN_CREATED", step_count=len(state.current_plan))
+        self._broadcast("PLAN_CREATED", step_count=len(state.current_plan), stage="plan", latency_ms=state.telemetry.planning_ms)
 
         # ---------------------------------------------------------------------
         # 6. COGNITIVE -> V3.3 BRIDGE EXECUTION

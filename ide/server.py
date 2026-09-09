@@ -347,12 +347,19 @@ async def ai_ide_chat(req: AIChatRequest):
         # Auto pick best available
         provider = model_router.route("general")
     
-    try:
-        response_text = provider.generate(full_prompt)
-    except Exception as e:
-        # Fallback to local
-        fallback = model_router.providers.get("fallback")
-        response_text = f"Primary model notice: {str(e)}\n\n" + (fallback.generate(full_prompt) if fallback else str(e))
+    from observability.telemetry import request_scope
+    with request_scope():
+        try:
+            raw = provider.generate(full_prompt)
+            response_text = raw.text if hasattr(raw, "text") else str(raw)
+        except Exception as e:
+            fallback = model_router.providers.get("fallback")
+            if fallback:
+                raw = fallback.generate(full_prompt)
+                tail = raw.text if hasattr(raw, "text") else str(raw)
+                response_text = f"Primary model notice: {type(e).__name__}\n\n" + tail
+            else:
+                response_text = f"Primary model notice: {type(e).__name__}"
 
     # Extract code blocks from markdown
     import re

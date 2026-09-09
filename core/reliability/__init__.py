@@ -5,7 +5,8 @@ Plan Validation, Input Firewalls, Circuit Breakers, and Correlation Tracing.
 """
 
 from core.reliability.correlation import (
-    CorrelationContext, get_current_correlation, set_current_correlation
+    CorrelationContext, get_current_correlation, set_current_correlation,
+    bind_request, reset_request
 )
 from core.reliability.idempotency import (
     IdempotencyManager, IdempotencyReceipt, ExecutionState, idempotency_manager
@@ -30,6 +31,8 @@ __all__ = [
     "CorrelationContext",
     "get_current_correlation",
     "set_current_correlation",
+    "bind_request",
+    "reset_request",
     "IdempotencyManager",
     "IdempotencyReceipt",
     "ExecutionState",

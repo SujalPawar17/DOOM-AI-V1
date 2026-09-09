@@ -246,6 +246,33 @@ class PostgresManager:
             "CREATE INDEX IF NOT EXISTS idx_lifecycle_task ON memory_lifecycle_events(task_id);",
             "ALTER TABLE memory_lifecycle_events ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(100);",
             "CREATE INDEX IF NOT EXISTS idx_lifecycle_idempotency ON memory_lifecycle_events(idempotency_key);",
+            # V5.3.7.4: bounded operational telemetry (metadata only — not a content store)
+            """
+            CREATE TABLE IF NOT EXISTS operational_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                ts_unix_ms BIGINT NOT NULL,
+                doom_request_id VARCHAR(64),
+                task_id VARCHAR(100),
+                cognitive_cycle_id VARCHAR(100),
+                step_id VARCHAR(100),
+                tool_execution_id VARCHAR(120),
+                provider_call_id VARCHAR(120),
+                category VARCHAR(32) NOT NULL,
+                name VARCHAR(120) NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                latency_ms REAL,
+                component VARCHAR(80),
+                operation VARCHAR(80),
+                error_type VARCHAR(64),
+                retryable BOOLEAN,
+                attributes JSONB DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_opev_request ON operational_events(doom_request_id);",
+            "CREATE INDEX IF NOT EXISTS idx_opev_task ON operational_events(task_id);",
+            "CREATE INDEX IF NOT EXISTS idx_opev_ts ON operational_events(ts_unix_ms DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_opev_cat_name ON operational_events(category, name);",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$
