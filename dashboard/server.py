@@ -647,14 +647,26 @@ class AgentTerminalRunRequest(BaseModel):
 @app.get("/api/agent/models")
 async def get_agent_models():
     """Returns available AI models and active provider states."""
-    return {
-        "models": [
-            {"id": "groq", "name": "⚡ Groq LPU (LLaMA 3.3 70B / GPT-OSS 20B)", "speed": "500 T/S", "status": "ONLINE", "desc": "Sub-second instant reasoning"},
-            {"id": "gemini", "name": "🌟 Google Gemini 2.0 Flash", "speed": "FAST", "status": "ONLINE", "desc": "Multimodal & deep code logic"},
-            {"id": "ollama", "name": "🦙 Local Ollama (LLaMA 3)", "speed": "LOCAL", "status": "STANDBY", "desc": "100% offline & private"},
-            {"id": "auto", "name": "🔄 DOOM Auto-Router", "speed": "DYNAMIC", "status": "ACTIVE", "desc": "Autonomously routes fastest & smartest brain"}
-        ]
-    }
+    providers = model_router.get_provider_status()
+    metadata = model_router.get_intelligence_matrix()
+    # Build model list from router metadata
+    models_list = []
+    for m in metadata:
+        models_list.append({
+            "id": m["key"],
+            "name": m["name"],
+            "model": m["model"],
+            "role": m["role"],
+            "cost_tier": m["cost_tier"],
+            "speed": m.get("role", "").split("(")[-1].replace(")", "") if "(" in m.get("role", "") else "STANDARD",
+            "status": "ONLINE" if m["is_available"] and m["is_enabled"] else ("DISABLED" if not m["is_enabled"] else "STANDBY"),
+            "desc": m["role"],
+            "enabled": m["is_enabled"],
+            "available": m["is_available"],
+        })
+    # Add auto router option
+    models_list.append({"id": "auto", "name": "🔄 DOOM Auto-Router", "speed": "DYNAMIC", "status": "ACTIVE", "desc": "Autonomously routes fastest & smartest brain"})
+    return {"models": models_list, "provider_status": providers}
 
 @app.post("/api/agent/chat")
 async def agent_chat_endpoint(req: AgentChatRequest):
@@ -697,32 +709,25 @@ async def agent_chat_endpoint(req: AgentChatRequest):
         ]
 
         try:
-            if selected_model_name == "gemini":
-                from models.gemini_provider import GeminiProvider
-                provider = GeminiProvider()
-                steps.append({"type": "tool", "title": "Invoked Model", "desc": "Google Gemini 2.0 Flash Engine"})
-                raw_response = _extract_text(provider.generate(full_prompt, system_prompt=system_prompt))
-            elif selected_model_name == "ollama":
-                try:
-                    from models.ollama_provider import OllamaProvider
-                    provider = OllamaProvider()
-                    steps.append({"type": "tool", "title": "Invoked Model", "desc": "Local Ollama LLaMA 3"})
-                    raw_response = _extract_text(provider.generate(full_prompt, system_prompt=system_prompt))
-                except Exception:
-                    from models.groq_provider import GroqProvider
-                    provider = GroqProvider()
-                    steps.append({"type": "tool", "title": "Fallback Model", "desc": "Groq LPU (Ollama unavailable)"})
-                    raw_response = _extract_text(provider.generate(full_prompt, system_prompt=system_prompt))
-            elif selected_model_name == "auto":
-                steps.append({"type": "tool", "title": "DOOM Auto-Router", "desc": "Autonomous router selected Groq 500 T/S"})
-                from models.groq_provider import GroqProvider
-                provider = GroqProvider()
-                raw_response = _extract_text(provider.generate(full_prompt, system_prompt=system_prompt))
-            else:  # Default: Groq
-                from models.groq_provider import GroqProvider
-                provider = GroqProvider()
-                steps.append({"type": "tool", "title": "Invoked Model", "desc": "Groq LPU (GPT-OSS 20B @ 500 T/S)"})
-                raw_response = _extract_text(provider.generate(full_prompt, system_prompt=system_prompt))
+            # Canonical path: ModelRouter owns selection, policy, cascade, and fallback.
+            if selected_model_name == "auto":
+                provider_override = None
+                steps.append({"type": "tool", "title": "DOOM Auto-Router", "desc": "Autonomous router selected best available"})
+            elif selected_model_name in model_router.providers:
+                provider_override = selected_model_name
+                steps.append({"type": "tool", "title": "Invoked Model", "desc": f"ModelRouter override={provider_override}"})
+            else:
+                # Preserve prior default: unknown UI ids execute as groq via the router.
+                provider_override = "groq"
+                steps.append({"type": "tool", "title": "Invoked Model", "desc": "ModelRouter override=groq"})
+
+            router_result = model_router.generate(
+                prompt=full_prompt,
+                system_prompt=system_prompt,
+                task_type="general",
+                provider_override=provider_override,
+            )
+            raw_response = _extract_text(router_result)
 
             if not raw_response.strip():
                 raw_response = "[DOOM] Model returned an empty response. Please try again."
@@ -961,6 +966,7 @@ async def ide_chat(req: IDEChatRequest):
         # Map IDE model names to DOOM router models
         model_map = {
             "groq": "groq",
+            "nim": "nim",
             "bedrock_claude": "bedrock",
             "bedrock_nova": "bedrock",
             "gemini": "gemini",

@@ -2,7 +2,7 @@ import os
 import json
 import time
 from typing import List, Dict, Any, Optional
-from models.base_provider import BaseLLMProvider, LLMResponse
+from models.base_provider import BaseLLMProvider, LLMResponse, ProviderCostTier, ProviderDeploymentMode, ProviderRateLimitError, ProviderModelNotFoundError, ProviderAuthError, ProviderUnavailableError
 
 try:
     from dotenv import load_dotenv
@@ -56,6 +56,16 @@ class BedrockProvider(BaseLLMProvider):
     Region: ap-southeast-1 (Singapore) — where the account has access.
     """
     name = "bedrock"
+    display_name = "Amazon Bedrock (Claude / Nova / GPT)"
+    cost_tier = ProviderCostTier.PAID.value
+    deployment_mode = ProviderDeploymentMode.HOSTED_CLOUD.value
+    billing_possible = True
+    capabilities = ["tool_calling", "code_generation", "reasoning", "vision", "coding"]
+    models = list(BEDROCK_MODELS.values())
+    context_limit = 200000
+    streaming = False  # Not implemented in current version
+    tool_calling = True
+    multimodal = True
 
     def __init__(self):
         self.access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
@@ -69,6 +79,47 @@ class BedrockProvider(BaseLLMProvider):
 
         self._client = None
         self._verified = None  # Cache availability result
+        self._verified_at = 0.0
+        self._enabled = False  # Disabled by default per BEDROCK_ENABLED flag
+
+    def is_configured(self) -> bool:
+        return BOTO3_AVAILABLE and bool(self.access_key and self.secret_key)
+
+    def is_authenticated(self) -> bool:
+        return self.is_available()
+
+    def is_available(self) -> bool:
+        if not self._enabled:
+            return False
+        if not BOTO3_AVAILABLE:
+            return False
+        if not self.access_key or not self.secret_key:
+            return False
+        return True
+
+    def is_healthy(self) -> bool:
+        """Health check - only runs when enabled. Skips actual inference probe."""
+        if not self._enabled:
+            return False
+        if not self.is_available():
+            return False
+        # When enabled, we could do a lightweight STS check only
+        # Skip actual inference probe to avoid latency/cost
+        return True
+
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def enable(self):
+        """Enable Bedrock provider."""
+        self._enabled = True
+        # Refresh availability on enable
+        self._verified = None
+
+    def disable(self):
+        """Disable Bedrock provider - stops all routing, health checks, and invocations."""
+        self._enabled = False
+        self._verified = False
 
     def _get_client(self):
         if self._client is None and BOTO3_AVAILABLE and self.access_key and self.secret_key:
@@ -84,17 +135,25 @@ class BedrockProvider(BaseLLMProvider):
         return self._client
 
     def is_available(self) -> bool:
+        if not self._enabled:
+            return False
         if not BOTO3_AVAILABLE:
             return False
         if not self.access_key or not self.secret_key:
             return False
+        return True
 
-        # Use cached availability result (re-check every 5 min)
+    # Note: Full health check with invoke_model probe is now in _verify_bedrock()
+    # which is only called when explicitly needed, not during routine is_available() checks.
+
+    def _verify_bedrock(self) -> bool:
+        """Explicit verification with actual inference probe. Called on-demand when enabled."""
+        if not self.is_available():
+            return False
+
         now = time.time()
-        if self._verified is not None:
-            cache_age = now - getattr(self, "_verified_at", 0)
-            if cache_age < 3600:  # 1-hour negative cache (plan V3.2 spec: eliminate 10-15s STS timeout overhead)
-                return self._verified
+        if self._verified is not None and (now - self._verified_at) < 3600:
+            return self._verified
 
         try:
             import boto3 as b3
@@ -285,10 +344,17 @@ class BedrockProvider(BaseLLMProvider):
                  temperature: float = 0.7,
                  task_type: str = "general") -> LLMResponse:
         """Main generation method — auto-selects best model and invocation format."""
+        if not self.is_available():
+            return LLMResponse(
+                text="Amazon Bedrock is disabled or not configured. Using fallback engine.",
+                tool_calls=[],
+                model_name="bedrock/unavailable"
+            )
+
         client = self._get_client()
         if not client:
             return LLMResponse(
-                text="Amazon Bedrock is not available. Using fallback engine, Sujal.",
+                text="Amazon Bedrock is not available. Using fallback engine.",
                 tool_calls=[],
                 model_name="bedrock/unavailable"
             )
@@ -324,7 +390,7 @@ class BedrockProvider(BaseLLMProvider):
                 if "being verified" in error_msg:
                     print(f"[BEDROCK] Account under AWS verification — will retry in 2 hours.")
                     return LLMResponse(
-                        text="Amazon Bedrock is currently undergoing AWS account verification. This typically takes less than 2 hours. I'll fall back to the local engine for now, Sujal.",
+                        text="Amazon Bedrock is currently undergoing AWS account verification. This typically takes less than 2 hours. I'll fall back to the local engine for now.",
                         tool_calls=[],
                         model_name="bedrock/pending_verification"
                     )
@@ -364,6 +430,7 @@ class BedrockProvider(BaseLLMProvider):
     def get_status(self) -> Dict[str, Any]:
         """Returns full diagnostic status."""
         return {
+            "enabled": self._enabled,
             "available": self.is_available(),
             "region": self.region,
             "primary_model": self.primary_model,
@@ -373,3 +440,13 @@ class BedrockProvider(BaseLLMProvider):
             "boto3_installed": BOTO3_AVAILABLE,
             "total_models_catalog": len(BEDROCK_MODELS)
         }
+
+    def disable(self):
+        self._enabled = False
+
+    def enable(self):
+        self._enabled = True
+        self._verified = None
+
+    def is_enabled(self) -> bool:
+        return self._enabled

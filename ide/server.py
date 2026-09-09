@@ -289,15 +289,22 @@ async def upload_files(target_dir: str = Form(""), files: List[UploadFile] = Fil
 async def get_ai_models():
     """Returns available LLMs configured in DOOM environment."""
     providers = model_router.get_provider_status()
-    models_list = [
-        {"id": "groq", "name": "Groq LPU (LLaMA 3.3 70B)", "speed": "500 T/S", "badge": "Ultra-Fast", "available": bool(os.getenv("GROQ_API_KEY"))},
-        {"id": "bedrock_claude", "name": "Claude 3.5 Sonnet (AWS Bedrock)", "speed": "Priority 1", "badge": "Smartest", "available": bool(os.getenv("AWS_ACCESS_KEY_ID"))},
-        {"id": "bedrock_nova", "name": "Amazon Nova Pro (AWS Bedrock)", "speed": "High", "badge": "Nova", "available": bool(os.getenv("AWS_ACCESS_KEY_ID"))},
-        {"id": "gemini", "name": "Google Gemini 2.0 Flash", "speed": "Fast", "badge": "Multimodal", "available": bool(os.getenv("GEMINI_API_KEY"))},
-        {"id": "openai", "name": "OpenAI GPT-4o / mini", "speed": "Standard", "badge": "Reasoning", "available": bool(os.getenv("OPENAI_API_KEY"))},
-        {"id": "ollama", "name": "Local Ollama LLM", "speed": "Offline", "badge": "Private", "available": True},
-        {"id": "fallback", "name": "DOOM Autonomous Engine", "speed": "Instant", "badge": "Zero-Key", "available": True}
-    ]
+    metadata = model_router.get_intelligence_matrix()
+    models_list = []
+    for m in metadata:
+        models_list.append({
+            "id": m["key"],
+            "name": m["name"],
+            "model": m["model"],
+            "role": m["role"],
+            "cost_tier": m["cost_tier"],
+            "speed": m.get("role", "").split("(")[-1].replace(")", "") if "(" in m.get("role", "") else "STANDARD",
+            "badge": m["role"].split("(")[0].strip() if "(" in m.get("role", "") else m["role"],
+            "status": "ONLINE" if m["is_available"] and m["is_enabled"] else ("DISABLED" if not m["is_enabled"] else "STANDBY"),
+            "desc": m["role"],
+            "enabled": m["is_enabled"],
+            "available": m["is_available"],
+        })
     return {"models": models_list, "provider_status": providers}
 
 @app.post("/api/ai/chat")
@@ -334,11 +341,11 @@ async def ai_ide_chat(req: AIChatRequest):
         full_prompt += "\n".join(context_parts) + "\n\n"
     full_prompt += f"User Request: {req.prompt}"
 
-    # Use Model Router
+# Use Model Router
     provider = model_router.providers.get(req.model)
     if not provider:
         # Auto pick best available
-        provider = model_router.select_provider(req.prompt)
+        provider = model_router.route("general")
     
     try:
         response_text = provider.generate(full_prompt)
