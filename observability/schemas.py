@@ -43,6 +43,8 @@ ALLOWED_ATTR_KEYS = frozenset({
     "insight_id", "signal_id", "intervention", "score_bucket",
     "owner_id", "queue_depth", "signal_type", "privacy_ok",
     "connector_id", "fact_id", "capability",
+    "prediction_id", "rule_id", "evidence_n", "confidence_bucket",
+    "risk_class", "abstain_reason",
 })
 
 

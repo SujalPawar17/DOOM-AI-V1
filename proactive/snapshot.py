@@ -24,6 +24,8 @@ class WorldSnapshot:
     partial: bool = False
     sources: List[str] = field(default_factory=list)
     commitments: List[Dict[str, Any]] = field(default_factory=list)
+    calendar_facts: List[Dict[str, Any]] = field(default_factory=list)
+    predictions: List[Dict[str, Any]] = field(default_factory=list)
     email_unread_count: int = 0
     email_health: str = ""
 
@@ -143,7 +145,8 @@ def build_world_snapshot(force: bool = False) -> WorldSnapshot:
             (OWNER_ID,),
         )
         for row in cal:
-            snap.commitments.append({
+            snap.calendar_facts.append({
+                "record_kind": "FACT",
                 "fact_id": row.get("fact_id"),
                 "kind": row.get("fact_kind"),
                 "start": row.get("start_ts"),
@@ -154,6 +157,7 @@ def build_world_snapshot(force: bool = False) -> WorldSnapshot:
                 "source": row.get("connector_type"),
                 "privacy_class": "NORMAL",
             })
+        snap.predictions = proactive_store.list_active_predictions(OWNER_ID, 50)
         snap.email_unread_count = proactive_store.count_email_unread_facts(OWNER_ID)
         snap.email_health = proactive_store.gmail_connector_health(OWNER_ID)
         snap.sources.append("commitments")

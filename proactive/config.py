@@ -81,6 +81,27 @@ def is_email_enabled() -> bool:
     return _bool_env("PROACTIVE_EMAIL_ENABLED", False)
 
 
+def is_prediction_enabled() -> bool:
+    """V6.2.4. Default false. Requires PROACTIVE_ENABLED as well at call sites."""
+    return _bool_env("PROACTIVE_PREDICTION_ENABLED", False)
+
+
+PREDICTION_EMIT_FLOOR = _float_env("PROACTIVE_PREDICTION_EMIT_FLOOR", 0.70)
+C_MAX_EMAIL_SINGLE = 0.55
+C_MAX_DEFAULT = 0.95
+N_CAP = 3
+PREDICTION_EVAL_CAP = _int_env("PROACTIVE_PREDICTION_EVAL_CAP", 80)
+OPEN_REVIEW_AGING_FLOOR = 0.68
+RULE_VERSION = "v624.1"
+RELIABILITY_R = {
+    "task_engine": 0.90,
+    "calendar": 0.85,
+    "host": 0.80,
+    "github": 0.70,
+    "gmail_extract": 0.45,
+}
+
+
 def connector_vault_path() -> str:
     override = (os.getenv("DOOM_CONNECTOR_VAULT_PATH") or "").strip()
     if override:

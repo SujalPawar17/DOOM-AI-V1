@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from proactive.config import (
@@ -1021,10 +1022,383 @@ class ProactiveStore:
                     "source": r[5],
                     "status": r[6],
                     "evidence_ref": r[7],
+                    "record_kind": "COMMITMENT",
                 })
             return out
         except Exception:
             return []
+        finally:
+            self._release(conn)
+
+    def list_eval_commitments(self, owner_id: str = OWNER_ID, limit: int = 80) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.commitment_id, c.commitment_type, EXTRACT(EPOCH FROM c.due_at),
+                           c.privacy_class, c.source_connector, c.status, c.evidence_ref,
+                           c.fingerprint, EXTRACT(EPOCH FROM c.source_ts),
+                           EXTRACT(EPOCH FROM c.valid_until), c.source_message_id, a.project_id
+                    FROM proactive_commitments c
+                    LEFT JOIN connector_accounts a ON a.account_id = c.account_id
+                    WHERE c.owner_id = %s AND c.status = 'OPEN'
+                      AND (c.valid_until IS NULL OR c.valid_until > NOW())
+                      AND c.due_at IS NOT NULL
+                      AND c.due_at >= NOW() - INTERVAL '7 days'
+                      AND c.due_at <= NOW() + INTERVAL '72 hours'
+                    ORDER BY c.due_at NULLS LAST
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "commitment_id": r[0],
+                    "commitment_type": r[1],
+                    "due_at": float(r[2]) if r[2] is not None else None,
+                    "privacy_class": r[3],
+                    "source_connector": r[4],
+                    "status": r[5],
+                    "evidence_ref": r[6],
+                    "fingerprint": r[7] or "",
+                    "source_ts": float(r[8]) if r[8] is not None else None,
+                    "valid_until": float(r[9]) if r[9] is not None else None,
+                    "source_message_id": r[10] or "",
+                    "project_id": r[11] or "",
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def list_eval_cal_facts(self, owner_id: str = OWNER_ID, limit: int = 80) -> List[Dict[str, Any]]:
+        return self._list_eval_facts(
+            owner_id, ("CAL_EVENT",), limit,
+            extra_sql=" AND occurred_at IS NOT NULL AND occurred_at >= NOW() - INTERVAL '7 days' AND occurred_at <= NOW() + INTERVAL '72 hours'",
+        )
+
+    def list_eval_review_facts(self, owner_id: str = OWNER_ID, limit: int = 80) -> List[Dict[str, Any]]:
+        return self._list_eval_facts(
+            owner_id, ("GH_REVIEW", "GH_PR"), limit,
+            extra_sql=" AND occurred_at IS NOT NULL AND occurred_at <= NOW() - INTERVAL '7 days'",
+        )
+
+    def _list_eval_facts(self, owner_id: str, kinds: tuple, limit: int, extra_sql: str = "") -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT fact_id, fact_kind, connector_type, source_record_id, project_id,
+                           privacy_class, content_sha256,
+                           EXTRACT(EPOCH FROM occurred_at), EXTRACT(EPOCH FROM valid_until)
+                    FROM external_facts
+                    WHERE owner_id = %s AND fact_kind = ANY(%s)
+                    {extra_sql}
+                    ORDER BY occurred_at DESC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (owner_id, list(kinds), int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "fact_id": r[0],
+                    "fact_kind": r[1],
+                    "connector_type": r[2],
+                    "source_record_id": r[3] or "",
+                    "project_id": r[4] or "",
+                    "privacy_class": r[5],
+                    "content_sha256": r[6] or "",
+                    "occurred_at": float(r[7]) if r[7] is not None else None,
+                    "start_ts": float(r[7]) if r[7] is not None else None,
+                    "valid_until": float(r[8]) if r[8] is not None else None,
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def list_eval_blocked_tasks(self, limit: int = 80) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT task_id, status, EXTRACT(EPOCH FROM updated_at), artifacts
+                    FROM task_checkpoints
+                    WHERE UPPER(COALESCE(status,'')) IN
+                          ('FAILED','PAUSED','WAITING_FOR_APPROVAL','ERROR')
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (int(limit),),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                art = r[3]
+                if isinstance(art, str):
+                    try:
+                        art = json.loads(art)
+                    except Exception:
+                        art = {}
+                if not isinstance(art, dict):
+                    art = {}
+                pid = str(art.get("project_id") or "").strip()
+                out.append({
+                    "task_id": r[0],
+                    "status": r[1],
+                    "updated_at": float(r[2]) if r[2] is not None else None,
+                    "project_id": pid,
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def upsert_world_evidence(self, row: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        try:
+            occ = row.get("occurred_at")
+            vu = row.get("valid_until")
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_evidence (
+                        evidence_id, owner_id, project_id, source_kind, source_id,
+                        source_record_id, connector_type, reliability_class, strength,
+                        privacy_class, occurred_at, valid_until, independence_key,
+                        transform_id, transform_version, status, idempotency_key,
+                        content_sha256, provenance
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        %s,%s,%s,'ACTIVE',%s,%s,%s::jsonb
+                    )
+                    ON CONFLICT (idempotency_key) DO UPDATE SET source_id = world_evidence.source_id
+                    RETURNING evidence_id
+                    """,
+                    (
+                        str(row.get("evidence_id") or "")[:64],
+                        str(row.get("owner_id") or OWNER_ID)[:64],
+                        (str(row.get("project_id"))[:64] if row.get("project_id") else None),
+                        str(row.get("source_kind") or "")[:32],
+                        str(row.get("source_id") or "")[:128],
+                        str(row.get("source_record_id") or "")[:128],
+                        str(row.get("connector_type") or "")[:32],
+                        str(row.get("reliability_class") or "")[:32],
+                        float(row.get("strength") or 0),
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        occ, occ, vu, vu,
+                        str(row.get("independence_key") or "")[:80],
+                        str(row.get("transform_id") or "cite_v624")[:40],
+                        str(row.get("transform_version") or "v624.1")[:16],
+                        str(row.get("idempotency_key") or "")[:160],
+                        str(row.get("content_sha256") or "")[:64],
+                        json.dumps(row.get("provenance") or {}),
+                    ),
+                )
+                got = cur.fetchone()
+            conn.commit()
+            return got[0] if got else ""
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def upsert_world_prediction(self, row: Dict[str, Any], links: List[Dict[str, Any]]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        try:
+            hs, he, evl, vu = row.get("horizon_start"), row.get("horizon_end"), row.get("evaluated_at"), row.get("valid_until")
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_predictions (
+                        prediction_id, owner_id, project_id, prediction_type, subject_key,
+                        claim_code, horizon_start, horizon_end, confidence, probability,
+                        risk_class, status, privacy_class, fingerprint, rule_id, rule_version,
+                        generation, evaluated_at, valid_until, provenance
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        CASE WHEN %s IS NULL THEN NULL ELSE to_timestamp(%s) END,
+                        %s,NULL,%s,'ACTIVE',%s,%s,%s,%s,1,
+                        to_timestamp(%s), to_timestamp(%s), %s::jsonb
+                    )
+                    ON CONFLICT (owner_id, fingerprint) DO UPDATE SET
+                        confidence = EXCLUDED.confidence,
+                        risk_class = EXCLUDED.risk_class,
+                        evaluated_at = EXCLUDED.evaluated_at,
+                        valid_until = EXCLUDED.valid_until,
+                        provenance = EXCLUDED.provenance,
+                        claim_code = EXCLUDED.claim_code,
+                        status = 'ACTIVE',
+                        generation = world_predictions.generation + 1
+                    RETURNING prediction_id
+                    """,
+                    (
+                        str(row.get("prediction_id") or "")[:64],
+                        str(row.get("owner_id") or OWNER_ID)[:64],
+                        (str(row.get("project_id"))[:64] if row.get("project_id") else None),
+                        str(row.get("prediction_type") or "")[:40],
+                        str(row.get("subject_key") or "")[:160],
+                        str(row.get("claim_code") or "")[:40],
+                        hs, hs, he, he,
+                        float(row.get("confidence") or 0),
+                        str(row.get("risk_class") or "NONE")[:16],
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        str(row.get("fingerprint") or "")[:64],
+                        str(row.get("rule_id") or "")[:40],
+                        str(row.get("rule_version") or "v624.1")[:16],
+                        float(evl or time.time()),
+                        float(vu or time.time() + 86400),
+                        json.dumps(row.get("provenance") or {}),
+                    ),
+                )
+                got = cur.fetchone()
+                pid = got[0] if got else ""
+                if pid:
+                    cur.execute("DELETE FROM world_prediction_evidence WHERE prediction_id = %s", (pid,))
+                    for ln in links or []:
+                        cur.execute(
+                            """
+                            INSERT INTO world_prediction_evidence (prediction_id, evidence_id, role)
+                            VALUES (%s,%s,%s)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (pid, str(ln.get("evidence_id") or "")[:64], str(ln.get("role") or "SUPPORTING")[:16]),
+                        )
+                    cur.execute(
+                        """
+                        INSERT INTO world_prediction_events (event_id, prediction_id, from_status, to_status, reason)
+                        VALUES (%s,%s,NULL,'ACTIVE','eval')
+                        """,
+                        (str(uuid.uuid4())[:64], pid),
+                    )
+            conn.commit()
+            return pid
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def list_active_predictions(self, owner_id: str = OWNER_ID, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT prediction_id, prediction_type, claim_code, confidence, risk_class,
+                           privacy_class, provenance, EXTRACT(EPOCH FROM horizon_end)
+                    FROM world_predictions
+                    WHERE owner_id = %s AND status = 'ACTIVE'
+                      AND valid_until > NOW()
+                      AND privacy_class <> 'SENSITIVE'
+                    ORDER BY horizon_end NULLS LAST
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                prov = r[6] if isinstance(r[6], dict) else (json.loads(r[6]) if r[6] else {})
+                out.append({
+                    "record_kind": "PREDICTION",
+                    "prediction_id": r[0],
+                    "prediction_type": r[1],
+                    "claim_code": r[2],
+                    "confidence": float(r[3] or 0),
+                    "risk_class": r[4],
+                    "privacy_class": r[5],
+                    "evidence_ids": (prov or {}).get("evidence_ids") or [],
+                    "horizon_end": float(r[7]) if r[7] is not None else None,
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def expire_world_predictions(self, owner_id: str = OWNER_ID) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_predictions SET status = 'EXPIRED'
+                    WHERE owner_id = %s AND status = 'ACTIVE' AND valid_until <= NOW()
+                    """,
+                    (owner_id,),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def count_world_predictions(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM world_predictions WHERE owner_id = %s",
+                    (owner_id,),
+                )
+                row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+        except Exception:
+            return 0
+        finally:
+            self._release(conn)
+
+    def count_world_evidence(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM world_evidence WHERE owner_id = %s", (owner_id,))
+                row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+        except Exception:
+            return 0
         finally:
             self._release(conn)
 

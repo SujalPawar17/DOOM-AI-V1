@@ -440,6 +440,95 @@ class PostgresManager:
             """,
             "CREATE INDEX IF NOT EXISTS idx_pcommit_owner_status_due ON proactive_commitments (owner_id, status, due_at);",
             "CREATE INDEX IF NOT EXISTS idx_pcommit_account_msg ON proactive_commitments (account_id, source_message_id);",
+            # V6.2.4: world evidence + predictions (not memory_evidence)
+            """
+            CREATE TABLE IF NOT EXISTS world_evidence (
+                evidence_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                project_id VARCHAR(64) REFERENCES projects(project_id) ON DELETE SET NULL,
+                source_kind VARCHAR(32) NOT NULL
+                    CHECK (source_kind IN ('EXTERNAL_FACT','COMMITMENT','TASK_CHECKPOINT')),
+                source_id VARCHAR(128) NOT NULL,
+                source_record_id VARCHAR(128) NOT NULL DEFAULT '',
+                connector_type VARCHAR(32) NOT NULL DEFAULT '',
+                reliability_class VARCHAR(32) NOT NULL,
+                strength REAL NOT NULL CHECK (strength >= 0 AND strength <= 1),
+                privacy_class VARCHAR(16) NOT NULL
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                occurred_at TIMESTAMPTZ,
+                observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                valid_until TIMESTAMPTZ,
+                independence_key VARCHAR(80) NOT NULL,
+                transform_id VARCHAR(40) NOT NULL DEFAULT 'cite_v624',
+                transform_version VARCHAR(16) NOT NULL DEFAULT 'v624.1',
+                status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'
+                    CHECK (status IN ('ACTIVE','SUPERSEDED','INVALIDATED','EXPIRED')),
+                idempotency_key VARCHAR(160) NOT NULL UNIQUE,
+                content_sha256 VARCHAR(64) NOT NULL DEFAULT '',
+                provenance JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_we_owner_status ON world_evidence (owner_id, status);",
+            "CREATE INDEX IF NOT EXISTS idx_we_indep ON world_evidence (independence_key);",
+            "CREATE INDEX IF NOT EXISTS idx_we_source ON world_evidence (source_kind, source_id);",
+            """
+            CREATE TABLE IF NOT EXISTS world_predictions (
+                prediction_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                project_id VARCHAR(64) REFERENCES projects(project_id) ON DELETE SET NULL,
+                prediction_type VARCHAR(40) NOT NULL
+                    CHECK (prediction_type IN (
+                        'DEADLINE_HORIZON','STALE_OPEN_COMMITMENT','CAL_VS_COMMITMENT_CONFLICT',
+                        'TASK_BLOCKED_NEAR_DEADLINE','OPEN_REVIEW_AGING')),
+                subject_key VARCHAR(160) NOT NULL,
+                claim_code VARCHAR(40) NOT NULL,
+                horizon_start TIMESTAMPTZ,
+                horizon_end TIMESTAMPTZ,
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                probability REAL CHECK (probability IS NULL OR (probability >= 0 AND probability <= 1)),
+                risk_class VARCHAR(16) NOT NULL
+                    CHECK (risk_class IN ('NONE','LOW','MEDIUM','HIGH')),
+                status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'
+                    CHECK (status IN ('ACTIVE','SUPERSEDED','EXPIRED','INVALIDATED')),
+                privacy_class VARCHAR(16) NOT NULL
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                fingerprint VARCHAR(64) NOT NULL,
+                rule_id VARCHAR(40) NOT NULL,
+                rule_version VARCHAR(16) NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 1,
+                evaluated_at TIMESTAMPTZ NOT NULL,
+                valid_until TIMESTAMPTZ NOT NULL,
+                provenance JSONB NOT NULL DEFAULT '{}',
+                outcome VARCHAR(16),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (owner_id, fingerprint)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wp_owner_status_valid ON world_predictions (owner_id, status, valid_until);",
+            "CREATE INDEX IF NOT EXISTS idx_wp_owner_type_horizon ON world_predictions (owner_id, prediction_type, horizon_end);",
+            """
+            CREATE TABLE IF NOT EXISTS world_prediction_evidence (
+                prediction_id VARCHAR(64) NOT NULL
+                    REFERENCES world_predictions(prediction_id) ON DELETE CASCADE,
+                evidence_id VARCHAR(64) NOT NULL
+                    REFERENCES world_evidence(evidence_id) ON DELETE CASCADE,
+                role VARCHAR(16) NOT NULL CHECK (role IN ('SUPPORTING','CONFLICTING')),
+                PRIMARY KEY (prediction_id, evidence_id)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_prediction_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                prediction_id VARCHAR(64) NOT NULL
+                    REFERENCES world_predictions(prediction_id) ON DELETE CASCADE,
+                from_status VARCHAR(16),
+                to_status VARCHAR(16) NOT NULL,
+                reason VARCHAR(40) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wpe_pred ON world_prediction_events (prediction_id, created_at);",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$
