@@ -273,6 +273,80 @@ class PostgresManager:
             "CREATE INDEX IF NOT EXISTS idx_opev_task ON operational_events(task_id);",
             "CREATE INDEX IF NOT EXISTS idx_opev_ts ON operational_events(ts_unix_ms DESC);",
             "CREATE INDEX IF NOT EXISTS idx_opev_cat_name ON operational_events(category, name);",
+            # V6.1: bounded proactive intelligence (not memory; INFORM-only)
+            """
+            CREATE TABLE IF NOT EXISTS proactive_signals (
+                signal_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL DEFAULT 'sujal',
+                signal_type VARCHAR(40) NOT NULL,
+                source VARCHAR(40) NOT NULL,
+                entity_type VARCHAR(40) NOT NULL DEFAULT '',
+                entity_id VARCHAR(120) NOT NULL,
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                privacy_class VARCHAR(16) NOT NULL DEFAULT 'NORMAL'
+                    CHECK (privacy_class IN ('NORMAL', 'PRIVATE', 'SENSITIVE')),
+                idempotency_key VARCHAR(64) NOT NULL UNIQUE,
+                payload JSONB NOT NULL DEFAULT '{}',
+                status VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING','CLAIMED','PROCESSED','DEAD','DROPPED','DEDUPED')),
+                worker_id VARCHAR(64),
+                lease_until TIMESTAMPTZ,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error_type VARCHAR(64),
+                metadata JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_psig_status_lease ON proactive_signals(status, lease_until);",
+            "CREATE INDEX IF NOT EXISTS idx_psig_owner_ingested ON proactive_signals(owner_id, ingested_at DESC);",
+            """
+            CREATE TABLE IF NOT EXISTS proactive_insights (
+                insight_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL DEFAULT 'sujal',
+                insight_type VARCHAR(64) NOT NULL,
+                source_signal_ids JSONB NOT NULL DEFAULT '[]',
+                entity_type VARCHAR(40),
+                entity_id VARCHAR(120),
+                project_id VARCHAR(64),
+                significance_score REAL NOT NULL DEFAULT 0,
+                confidence REAL NOT NULL DEFAULT 0,
+                urgency VARCHAR(16) NOT NULL DEFAULT 'low',
+                privacy_class VARCHAR(16) NOT NULL DEFAULT 'NORMAL'
+                    CHECK (privacy_class IN ('NORMAL', 'PRIVATE', 'SENSITIVE')),
+                recommended_intervention VARCHAR(16) NOT NULL
+                    CHECK (recommended_intervention IN ('IGNORE','INFORM')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                valid_until TIMESTAMPTZ NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'OPEN'
+                    CHECK (status IN ('OPEN','EXPIRED','DELIVERED','SUPPRESSED')),
+                dedupe_key VARCHAR(200) NOT NULL UNIQUE,
+                template_id VARCHAR(64) NOT NULL DEFAULT '',
+                safe_params JSONB NOT NULL DEFAULT '{}',
+                proactive_cycle_id VARCHAR(64)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_pins_owner_valid ON proactive_insights(owner_id, valid_until DESC);",
+            """
+            CREATE TABLE IF NOT EXISTS proactive_deliveries (
+                delivery_id VARCHAR(64) PRIMARY KEY,
+                insight_id VARCHAR(64) NOT NULL REFERENCES proactive_insights(insight_id),
+                channel VARCHAR(16) NOT NULL DEFAULT 'hud',
+                status VARCHAR(16) NOT NULL DEFAULT 'DELIVERED',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (insight_id, channel)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS proactive_attention (
+                owner_id VARCHAR(64) NOT NULL,
+                day_key DATE NOT NULL,
+                inform_count INTEGER NOT NULL DEFAULT 0,
+                cooldowns JSONB NOT NULL DEFAULT '{}',
+                PRIMARY KEY (owner_id, day_key)
+            );
+            """,
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

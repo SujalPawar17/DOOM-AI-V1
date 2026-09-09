@@ -53,6 +53,13 @@ def startup_sequence():
         sound_detector.start_background_detector(on_clap_awakening)
     except Exception:
         pass
+    try:
+        from proactive.config import is_proactive_enabled
+        if is_proactive_enabled():
+            from proactive.worker import start_proactive_worker
+            start_proactive_worker()
+    except Exception:
+        pass
         
     lang_name = get_current_language_name()
     startup_message = f"DOOM is online and fully operational in {lang_name}. How may I assist you, Sujal?"

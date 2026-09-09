@@ -93,6 +93,14 @@ async def on_server_startup():
     from observability.bus import telemetry_bus
     telemetry_bus.subscribe(_ws_ops_event)
     print("[DASHBOARD] [OK] Task and Cognitive state broadcasters registered")
+    try:
+        from proactive.config import is_proactive_enabled
+        if is_proactive_enabled():
+            from proactive.worker import start_proactive_worker
+            start_proactive_worker()
+            print("[DASHBOARD] [OK] V6.1 proactive worker started")
+    except Exception as pe:
+        print(f"[DASHBOARD] Proactive worker skipped: {type(pe).__name__}")
 
 @app.on_event("shutdown")
 async def on_server_shutdown():
@@ -315,6 +323,69 @@ async def get_command_logs(limit: int = 20):
                     "created_at": str(r.get("created_at", ""))
                 })
     return {"logs": logs, "count": len(logs)}
+
+
+@app.get("/api/proactive/status")
+async def proactive_status():
+    """V6.1 worker health. No payloads."""
+    from proactive.config import (
+        DAILY_INFORM_BUDGET,
+        OWNER_ID,
+        is_proactive_enabled,
+    )
+    from proactive.worker import worker_alive
+    return {
+        "enabled": is_proactive_enabled(),
+        "worker_alive": worker_alive() if is_proactive_enabled() else False,
+        "owner_id": OWNER_ID,
+        "daily_inform_budget": DAILY_INFORM_BUDGET,
+        "tts_proactive": False,
+        "max_intervention": "INFORM" if is_proactive_enabled() else "NONE",
+    }
+
+
+@app.get("/api/proactive/insights")
+async def proactive_insights(limit: int = 20):
+    """HUD cards from PostgreSQL only. Empty when flag off. Never 500 on malformed rows."""
+    from proactive.config import is_proactive_enabled
+    from proactive.delivery import MAX_HUD
+    from proactive.store import proactive_store
+    from proactive.templates import render_inform
+    if not is_proactive_enabled():
+        return {"insights": [], "count": 0, "enabled": False}
+    try:
+        cap = min(max(int(limit or 20), 1), MAX_HUD)
+    except (TypeError, ValueError):
+        cap = 20
+    try:
+        rows = proactive_store.list_hud_insights(limit=cap)
+    except Exception:
+        return {"insights": [], "count": 0, "enabled": True, "error": "store_unavailable"}
+    out = []
+    for r in rows or []:
+        try:
+            if r.get("privacy_class") != "NORMAL":
+                continue
+            if (r.get("intervention") or r.get("recommended_intervention")) != "INFORM":
+                continue
+            params = r.get("safe_params") if isinstance(r.get("safe_params"), dict) else {}
+            params = dict(params)
+            params["entity_id"] = r.get("entity_id")
+            params["insight_type"] = r.get("insight_type")
+            out.append({
+                "insight_id": r.get("insight_id"),
+                "intervention": "INFORM",
+                "template_id": r.get("template_id"),
+                "message": render_inform(r.get("template_id") or "generic_event", params),
+                "urgency": r.get("urgency"),
+                "entity_id": r.get("entity_id"),
+                "tts": False,
+                "proactive_cycle_id": r.get("proactive_cycle_id"),
+            })
+        except Exception:
+            continue
+    bounded = out[:MAX_HUD]
+    return {"insights": bounded, "count": len(bounded), "enabled": True}
 
 @app.get("/api/tools")
 async def list_tools():
