@@ -14,7 +14,7 @@ if DOOM_ROOT not in sys.path:
 
 load_dotenv()
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +42,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class AskOriginMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        from dashboard.ask_session import origin_forbidden, path_is_ask_plane
+        if scope.get("type") == "http" and path_is_ask_plane(scope.get("path") or ""):
+            hdrs = {
+                k.decode("latin1").lower(): v.decode("latin1")
+                for k, v in (scope.get("headers") or [])
+            }
+            origin = (hdrs.get("origin") or "").strip().rstrip("/")
+            method = (scope.get("method") or "GET").upper()
+            from dashboard.ask_session import origin_allowed
+            class _R:
+                def __init__(self):
+                    self.headers = hdrs
+                    self.method = method
+            if not origin_allowed(_R()):
+                resp = origin_forbidden()
+                await resp(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(AskOriginMiddleware)
 
 connected_clients: List[WebSocket] = []
 dashboard_loop = None
@@ -454,6 +482,250 @@ async def dismiss_proactive_suggestion(suggestion_id: str):
         attributes={"suggestion_id": sid[:36]},
     )
     return {"ok": True}
+
+
+@app.post("/api/proactive/session")
+async def ask_session_unlock(request: Request):
+    from dashboard.ask_session import (
+        compare_unlock,
+        create_session,
+        origin_allowed,
+        origin_forbidden,
+        set_session_cookie,
+        unlock_rate_ok,
+    )
+    if not origin_allowed(request):
+        return origin_forbidden()
+    ip = (request.client.host if request.client else "") or "unknown"
+    if not unlock_rate_ok(ip):
+        return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    owner, err = compare_unlock(str((body or {}).get("unlock_secret") or ""))
+    if err:
+        return err
+    raw, csrf, exp = create_session(owner)
+    if not raw:
+        return JSONResponse({"ok": False, "error": "session_failed"}, status_code=503)
+    resp = JSONResponse({
+        "ok": True,
+        "csrf": csrf,
+        "owner_id": owner,
+        "expires_at": int(exp),
+    })
+    set_session_cookie(resp, raw)
+    return resp
+
+
+@app.get("/api/proactive/session")
+async def ask_session_get(request: Request):
+    from dashboard.ask_session import require_ask_session
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    return {
+        "ok": True,
+        "csrf": sess.get("csrf_token"),
+        "owner_id": sess.get("owner_id"),
+        "expires_at": int(sess.get("expires_at") or 0),
+    }
+
+
+@app.post("/api/proactive/session/logout")
+async def ask_session_logout(request: Request):
+    from dashboard.ask_session import clear_session_cookie, require_ask_session
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    proactive_store.revoke_ask_session(str(sess.get("session_id_hash") or ""))
+    resp = JSONResponse({"ok": True})
+    clear_session_cookie(resp)
+    return resp
+
+
+def _prepare_flags():
+    from proactive.config import (
+        is_ask_enabled,
+        is_prediction_enabled,
+        is_prepare_enabled,
+        is_proactive_enabled,
+        is_suggest_enabled,
+    )
+    prep = bool(
+        is_proactive_enabled()
+        and is_prediction_enabled()
+        and is_suggest_enabled()
+        and is_prepare_enabled()
+    )
+    ask = bool(prep and is_ask_enabled())
+    return prep, ask
+
+
+@app.get("/api/proactive/preparations")
+async def list_preparations(request: Request, limit: int = 20):
+    from dashboard.ask_session import require_ask_session
+    from proactive.delivery import MAX_HUD
+    from proactive.prepare_templates import render_prepare
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    prep_on, _ask_on = _prepare_flags()
+    if not prep_on:
+        return {"preparations": [], "count": 0, "enabled": False}
+    owner = str(sess.get("owner_id") or "")
+    try:
+        cap = min(max(int(limit or 20), 1), MAX_HUD)
+    except (TypeError, ValueError):
+        cap = 20
+    rows = proactive_store.list_hud_preparations(owner, cap)
+    out = []
+    for r in rows or []:
+        out.append({
+            "preparation_id": r.get("preparation_id"),
+            "type": "proactive_preparation",
+            "preparation_type": r.get("preparation_type"),
+            "action_type": r.get("action_type"),
+            "suggestion_id": r.get("suggestion_id"),
+            "status": r.get("status"),
+            "risk_class": r.get("risk_class"),
+            "privacy_class": r.get("privacy_class"),
+            "valid_until": r.get("valid_until"),
+            "message": render_prepare(r.get("template_id") or ""),
+            "disclaimer": "PREPARED — NOT EXECUTED.",
+            "tts": False,
+        })
+    return {"preparations": out, "count": len(out), "enabled": True}
+
+
+@app.post("/api/proactive/preparations/{preparation_id}/cancel")
+async def cancel_preparation_api(request: Request, preparation_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.ask_decisions import cancel_preparation
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    prep_on, _ask_on = _prepare_flags()
+    if not prep_on:
+        return {"ok": False, "error": "disabled"}
+    owner = str(sess.get("owner_id") or "")
+    result = cancel_preparation(str(preparation_id)[:64], owner)
+    if not result.get("ok"):
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return {"ok": True}
+
+
+@app.get("/api/proactive/approvals")
+async def list_approvals(request: Request, limit: int = 20):
+    from dashboard.ask_session import require_ask_session
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    _prep_on, ask_on = _prepare_flags()
+    if not ask_on:
+        return {"approvals": [], "count": 0, "enabled": False}
+    owner = str(sess.get("owner_id") or "")
+    try:
+        cap = min(max(int(limit or 20), 1), 50)
+    except (TypeError, ValueError):
+        cap = 20
+    rows = proactive_store.list_hud_approvals(owner, cap)
+    out = []
+    for r in rows or []:
+        out.append({
+            "approval_id": r.get("approval_id"),
+            "type": "proactive_ask",
+            "preparation_id": r.get("preparation_id"),
+            "action_type": r.get("action_type"),
+            "status": r.get("status"),
+            "risk_class": r.get("risk_class"),
+            "privacy_class": r.get("privacy_class"),
+            "valid_until": r.get("valid_until"),
+            "binding_hash": r.get("binding_hash"),
+            "disclaimer": "APPROVAL DOES NOT EXECUTE.",
+        })
+    return {"approvals": out, "count": len(out), "enabled": True}
+
+
+@app.get("/api/proactive/approvals/{approval_id}")
+async def get_approval_api(request: Request, approval_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    _prep_on, ask_on = _prepare_flags()
+    if not ask_on:
+        return {"ok": False, "error": "disabled", "enabled": False}
+    owner = str(sess.get("owner_id") or "")
+    row = proactive_store.get_approval(str(approval_id)[:64], owner)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return {
+        "ok": True,
+        "approval_id": row.get("approval_id"),
+        "preparation_id": row.get("preparation_id"),
+        "status": row.get("status"),
+        "action_type": row.get("action_type"),
+        "binding_hash": row.get("binding_hash"),
+        "valid_until": row.get("valid_until"),
+        "disclaimer": "APPROVAL DOES NOT EXECUTE.",
+    }
+
+
+async def _ask_decide(request: Request, approval_id: str, kind: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.ask_decisions import decide
+    from proactive.delivery import deliver_authorization
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    _prep_on, ask_on = _prepare_flags()
+    if not ask_on:
+        return {"ok": False, "error": "disabled"}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    owner = str(sess.get("owner_id") or "")
+    result = decide(
+        kind,
+        str(approval_id)[:64],
+        owner,
+        str(sess.get("session_id_hash") or ""),
+        str((body or {}).get("binding_hash") or ""),
+    )
+    http = int(result.pop("http", 200) or 200)
+    if not result.get("ok"):
+        code = http if http in (401, 403, 404, 409) else 409
+        return JSONResponse(result, status_code=code)
+    if kind == "approve" and not result.get("replay"):
+        row = proactive_store.get_approval(str(approval_id)[:64], owner) or {}
+        try:
+            deliver_authorization(row)
+        except Exception:
+            pass
+    return result
+
+
+@app.post("/api/proactive/approvals/{approval_id}/approve")
+async def ask_approve(request: Request, approval_id: str):
+    return await _ask_decide(request, approval_id, "approve")
+
+
+@app.post("/api/proactive/approvals/{approval_id}/reject")
+async def ask_reject(request: Request, approval_id: str):
+    return await _ask_decide(request, approval_id, "reject")
+
+
+@app.post("/api/proactive/approvals/{approval_id}/revoke")
+async def ask_revoke(request: Request, approval_id: str):
+    return await _ask_decide(request, approval_id, "revoke")
 
 
 @app.get("/api/tools")

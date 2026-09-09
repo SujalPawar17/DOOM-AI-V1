@@ -593,6 +593,137 @@ class PostgresManager:
             """,
             "CREATE INDEX IF NOT EXISTS idx_wse_sug ON world_suggestion_events (suggestion_id, created_at);",
             "ALTER TABLE proactive_attention ADD COLUMN IF NOT EXISTS suggest_count INTEGER NOT NULL DEFAULT 0;",
+            # V6.2.6: ASK sessions + preparations + approval requests (not TaskEngine)
+            """
+            CREATE TABLE IF NOT EXISTS ask_sessions (
+                session_id_hash VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                csrf_token VARCHAR(64) NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                revoked_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_ask_sessions_owner_exp ON ask_sessions (owner_id, expires_at);",
+            """
+            CREATE TABLE IF NOT EXISTS world_preparations (
+                preparation_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                project_id VARCHAR(64) REFERENCES projects(project_id) ON DELETE SET NULL,
+                suggestion_id VARCHAR(64) NOT NULL
+                    REFERENCES world_suggestions(suggestion_id) ON DELETE CASCADE,
+                prediction_id VARCHAR(64) NOT NULL
+                    REFERENCES world_predictions(prediction_id) ON DELETE CASCADE,
+                preparation_type VARCHAR(40) NOT NULL
+                    CHECK (preparation_type IN (
+                        'PREPARE_REVIEW_OUTLINE','PREPARE_CONFIRM_PROMPT',
+                        'PREPARE_SCHEDULE_DIFF','PREPARE_UNBLOCK_NOTE','PREPARE_REVIEW_OPTIONS')),
+                action_type VARCHAR(40) NOT NULL
+                    CHECK (action_type IN (
+                        'NONE','FUTURE_CAL_RECONCILE','FUTURE_GH_REVIEW',
+                        'FUTURE_EMAIL_DRAFT','FUTURE_TASK_NOTE')),
+                future_act_class VARCHAR(16) NOT NULL DEFAULT 'NONE'
+                    CHECK (future_act_class IN ('NONE','MUTATION')),
+                template_id VARCHAR(64) NOT NULL,
+                safe_params JSONB NOT NULL DEFAULT '{}',
+                param_hash VARCHAR(64) NOT NULL,
+                preview_key VARCHAR(64) NOT NULL DEFAULT '',
+                risk_class VARCHAR(16) NOT NULL
+                    CHECK (risk_class IN ('NONE','LOW','MEDIUM','HIGH')),
+                privacy_class VARCHAR(16) NOT NULL
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                fingerprint VARCHAR(64) NOT NULL,
+                rule_id VARCHAR(40) NOT NULL,
+                rule_version VARCHAR(16) NOT NULL DEFAULT 'v626.1',
+                status VARCHAR(16) NOT NULL DEFAULT 'READY'
+                    CHECK (status IN ('DRAFT','READY','ASKED','EXPIRED','CANCELLED','SUPERSEDED')),
+                valid_until TIMESTAMPTZ NOT NULL,
+                provenance JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                evaluated_at TIMESTAMPTZ NOT NULL,
+                UNIQUE (owner_id, fingerprint)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wprep_owner_status_valid ON world_preparations (owner_id, status, valid_until);",
+            "CREATE INDEX IF NOT EXISTS idx_wprep_suggestion ON world_preparations (suggestion_id);",
+            """
+            CREATE TABLE IF NOT EXISTS world_approval_requests (
+                approval_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                preparation_id VARCHAR(64) NOT NULL
+                    REFERENCES world_preparations(preparation_id) ON DELETE CASCADE,
+                action_type VARCHAR(40) NOT NULL,
+                param_hash VARCHAR(64) NOT NULL,
+                binding_hash VARCHAR(64) NOT NULL,
+                csrf_binding_id VARCHAR(64) NOT NULL,
+                risk_class VARCHAR(16) NOT NULL,
+                privacy_class VARCHAR(16) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING','APPROVED','REJECTED','EXPIRED','REVOKED','CANCELLED')),
+                valid_until TIMESTAMPTZ NOT NULL,
+                approval_valid_until TIMESTAMPTZ,
+                decided_at TIMESTAMPTZ,
+                decision_session_id VARCHAR(64),
+                rule_version VARCHAR(16) NOT NULL DEFAULT 'v626.1',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_war_prep_pending ON world_approval_requests (preparation_id) WHERE status = 'PENDING';",
+            "CREATE INDEX IF NOT EXISTS idx_war_owner_status ON world_approval_requests (owner_id, status);",
+            """
+            CREATE TABLE IF NOT EXISTS world_preparation_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                preparation_id VARCHAR(64) NOT NULL
+                    REFERENCES world_preparations(preparation_id) ON DELETE CASCADE,
+                from_status VARCHAR(16),
+                to_status VARCHAR(16) NOT NULL,
+                reason VARCHAR(40) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wpre_prep ON world_preparation_events (preparation_id, created_at);",
+            """
+            CREATE TABLE IF NOT EXISTS world_approval_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                approval_id VARCHAR(64) NOT NULL
+                    REFERENCES world_approval_requests(approval_id) ON DELETE CASCADE,
+                from_status VARCHAR(16),
+                to_status VARCHAR(16) NOT NULL,
+                reason VARCHAR(40) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wae_appr ON world_approval_events (approval_id, created_at);",
+            """
+            CREATE TABLE IF NOT EXISTS world_prepare_deliveries (
+                delivery_id VARCHAR(64) PRIMARY KEY,
+                preparation_id VARCHAR(64) NOT NULL
+                    REFERENCES world_preparations(preparation_id) ON DELETE CASCADE,
+                channel VARCHAR(16) NOT NULL DEFAULT 'hud'
+                    CHECK (channel IN ('hud')),
+                status VARCHAR(16) NOT NULL DEFAULT 'DELIVERED'
+                    CHECK (status IN ('DELIVERED','FAILED')),
+                attempts INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (preparation_id, channel)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_ask_deliveries (
+                delivery_id VARCHAR(64) PRIMARY KEY,
+                approval_id VARCHAR(64) NOT NULL
+                    REFERENCES world_approval_requests(approval_id) ON DELETE CASCADE,
+                channel VARCHAR(16) NOT NULL DEFAULT 'hud'
+                    CHECK (channel IN ('hud')),
+                status VARCHAR(16) NOT NULL DEFAULT 'DELIVERED'
+                    CHECK (status IN ('DELIVERED','FAILED')),
+                attempts INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (approval_id, channel)
+            );
+            """,
+            "ALTER TABLE proactive_attention ADD COLUMN IF NOT EXISTS prepare_count INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE proactive_attention ADD COLUMN IF NOT EXISTS ask_count INTEGER NOT NULL DEFAULT 0;",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

@@ -98,6 +98,55 @@ SUGGEST_CONFIDENCE_FLOOR = 0.70
 SUGGEST_RULE_VERSION = "v625.1"
 
 
+def is_prepare_enabled() -> bool:
+    """V6.2.6 PREPARE. Default false. Call sites also require suggest+prediction+proactive."""
+    return _bool_env("PROACTIVE_PREPARE_ENABLED", False)
+
+
+def is_ask_enabled() -> bool:
+    """V6.2.6 ASK. Default false. Requires PREPARE flag as well at call sites."""
+    return _bool_env("PROACTIVE_ASK_ENABLED", False)
+
+
+PREPARE_RULE_VERSION = "v626.1"
+PREPARE_CANDIDATE_CAP = _int_env("PROACTIVE_PREPARE_CANDIDATE_CAP", 50)
+PREPARE_CONFIDENCE_FLOOR = 0.70
+DAILY_PREPARE_BUDGET = _int_env("PROACTIVE_DAILY_PREPARE_BUDGET", 4)
+PREPARE_COOLDOWN_SECONDS = _int_env("PROACTIVE_PREPARE_COOLDOWN_SECONDS", 14400)
+DAILY_ASK_BUDGET = _int_env("PROACTIVE_DAILY_ASK_BUDGET", 4)
+ASK_COOLDOWN_SECONDS = _int_env("PROACTIVE_ASK_COOLDOWN_SECONDS", 14400)
+ASK_SESSION_TTL_SECONDS = 12 * 3600
+WORKER_CSRF_BINDING_ID = "worker"
+
+
+def ask_ttl_seconds() -> int:
+    n = _int_env("PROACTIVE_ASK_TTL_SECONDS", 3600)
+    if n < 1:
+        return 3600
+    if n > 86400:
+        return 86400
+    return n
+
+
+def ask_private_in_app() -> bool:
+    return _bool_env("ASK_PRIVATE_IN_APP", False)
+
+
+def ask_cookie_secure() -> bool:
+    return _bool_env("DOOM_ASK_COOKIE_SECURE", False)
+
+
+def ask_unlock_secret() -> str:
+    return (os.getenv("DOOM_ASK_UNLOCK") or "").strip()
+
+
+def ask_allowed_origins() -> frozenset:
+    raw = (os.getenv("DOOM_ASK_ALLOWED_ORIGINS") or "").strip()
+    if not raw:
+        return frozenset({"http://127.0.0.1:8000", "http://localhost:8000"})
+    return frozenset(p.strip().rstrip("/") for p in raw.split(",") if p.strip())
+
+
 PREDICTION_EMIT_FLOOR = _float_env("PROACTIVE_PREDICTION_EMIT_FLOOR", 0.70)
 C_MAX_EMAIL_SINGLE = 0.55
 C_MAX_DEFAULT = 0.95

@@ -46,6 +46,7 @@ ALLOWED_ATTR_KEYS = frozenset({
     "prediction_id", "rule_id", "evidence_n", "confidence_bucket",
     "risk_class", "abstain_reason",
     "suggestion_id", "suggestion_type",
+    "preparation_id", "approval_id", "action_type", "binding_ok",
 })
 
 

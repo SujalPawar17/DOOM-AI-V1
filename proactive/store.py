@@ -594,28 +594,35 @@ class ProactiveStore:
     def get_attention(self, owner_id: str, day_key: str) -> Dict[str, Any]:
         conn = self._conn()
         if not conn:
-            return {"inform_count": 0, "suggest_count": 0, "cooldowns": {}}
+            return {"inform_count": 0, "suggest_count": 0, "prepare_count": 0, "ask_count": 0, "cooldowns": {}}
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT inform_count, cooldowns, suggest_count FROM proactive_attention
+                    SELECT inform_count, cooldowns, suggest_count, prepare_count, ask_count
+                    FROM proactive_attention
                     WHERE owner_id = %s AND day_key = %s::date
                     """,
                     (owner_id, day_key),
                 )
                 row = cur.fetchone()
             if not row:
-                return {"inform_count": 0, "suggest_count": 0, "cooldowns": {}}
+                return {"inform_count": 0, "suggest_count": 0, "prepare_count": 0, "ask_count": 0, "cooldowns": {}}
             cd = row[1] if isinstance(row[1], dict) else (json.loads(row[1]) if row[1] else {})
-            sc = 0
-            try:
-                sc = int(row[2] or 0)
-            except (IndexError, TypeError, ValueError):
-                sc = 0
-            return {"inform_count": int(row[0] or 0), "suggest_count": sc, "cooldowns": cd}
+            def _i(v):
+                try:
+                    return int(v or 0)
+                except (TypeError, ValueError):
+                    return 0
+            return {
+                "inform_count": _i(row[0]),
+                "suggest_count": _i(row[2] if len(row) > 2 else 0),
+                "prepare_count": _i(row[3] if len(row) > 3 else 0),
+                "ask_count": _i(row[4] if len(row) > 4 else 0),
+                "cooldowns": cd,
+            }
         except Exception:
-            return {"inform_count": 0, "suggest_count": 0, "cooldowns": {}}
+            return {"inform_count": 0, "suggest_count": 0, "prepare_count": 0, "ask_count": 0, "cooldowns": {}}
         finally:
             self._release(conn)
 
@@ -1875,6 +1882,1009 @@ class ProactiveStore:
                 return bool(cur.fetchone())
         except Exception:
             return False
+        finally:
+            self._release(conn)
+
+    def insert_ask_session(self, session_id_hash: str, owner_id: str, csrf_token: str, expires_at: float) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO ask_sessions (session_id_hash, owner_id, csrf_token, expires_at)
+                    VALUES (%s,%s,%s, to_timestamp(%s))
+                    """,
+                    (session_id_hash[:64], owner_id[:64], csrf_token[:64], float(expires_at)),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def get_ask_session(self, session_id_hash: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT session_id_hash, owner_id, csrf_token,
+                           EXTRACT(EPOCH FROM expires_at), EXTRACT(EPOCH FROM revoked_at)
+                    FROM ask_sessions WHERE session_id_hash = %s
+                    """,
+                    (session_id_hash,),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            return {
+                "session_id_hash": r[0],
+                "owner_id": r[1],
+                "csrf_token": r[2],
+                "expires_at": float(r[3]) if r[3] is not None else 0.0,
+                "revoked_at": float(r[4]) if r[4] is not None else None,
+            }
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def revoke_ask_session(self, session_id_hash: str) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ask_sessions SET revoked_at = NOW()
+                    WHERE session_id_hash = %s AND revoked_at IS NULL
+                    """,
+                    (session_id_hash,),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def revoke_ask_sessions_for_owner(self, owner_id: str) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ask_sessions SET revoked_at = NOW()
+                    WHERE owner_id = %s AND revoked_at IS NULL
+                    """,
+                    (owner_id,),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def list_prepare_candidates(self, owner_id: str = OWNER_ID, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.suggestion_id, s.owner_id, s.project_id, s.prediction_id,
+                           s.suggestion_type, s.claim_code, s.template_id, s.status,
+                           s.privacy_class, s.risk_class, s.confidence, s.fingerprint,
+                           EXTRACT(EPOCH FROM s.valid_until),
+                           p.prediction_type, p.status, p.privacy_class, p.risk_class,
+                           p.confidence, p.provenance, p.claim_code,
+                           EXTRACT(EPOCH FROM p.valid_until), EXTRACT(EPOCH FROM p.horizon_end)
+                    FROM world_suggestions s
+                    JOIN world_predictions p ON s.prediction_id = p.prediction_id
+                    WHERE s.owner_id = %s
+                      AND s.status IN ('OPEN', 'DELIVERED')
+                      AND s.valid_until > NOW()
+                      AND p.status = 'ACTIVE'
+                      AND p.valid_until > NOW()
+                      AND s.privacy_class <> 'SENSITIVE'
+                    ORDER BY s.evaluated_at DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                prov = r[18] if isinstance(r[18], dict) else (json.loads(r[18]) if r[18] else {})
+                sug = {
+                    "suggestion_id": r[0], "owner_id": r[1], "project_id": r[2],
+                    "prediction_id": r[3], "suggestion_type": r[4], "claim_code": r[5],
+                    "template_id": r[6], "status": r[7], "privacy_class": r[8],
+                    "risk_class": r[9], "confidence": float(r[10] or 0),
+                    "fingerprint": r[11],
+                    "valid_until": float(r[12]) if r[12] is not None else None,
+                }
+                pred = {
+                    "prediction_id": r[3], "prediction_type": r[13], "status": r[14],
+                    "privacy_class": r[15], "risk_class": r[16],
+                    "confidence": float(r[17] or 0), "provenance": prov or {},
+                    "evidence_ids": (prov or {}).get("evidence_ids") or [],
+                    "claim_code": r[19],
+                    "valid_until": float(r[20]) if r[20] is not None else None,
+                    "horizon_end": float(r[21]) if r[21] is not None else None,
+                }
+                out.append({"suggestion": sug, "prediction": pred})
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def get_preparation_by_fingerprint(self, owner_id: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT preparation_id, owner_id, suggestion_id, prediction_id, preparation_type,
+                           action_type, future_act_class, template_id, safe_params, param_hash,
+                           status, privacy_class, risk_class, fingerprint, rule_version,
+                           EXTRACT(EPOCH FROM valid_until)
+                    FROM world_preparations
+                    WHERE owner_id = %s AND fingerprint = %s
+                    """,
+                    (owner_id, fingerprint),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            params = r[8] if isinstance(r[8], dict) else (json.loads(r[8]) if r[8] else {})
+            return {
+                "preparation_id": r[0], "owner_id": r[1], "suggestion_id": r[2],
+                "prediction_id": r[3], "preparation_type": r[4], "action_type": r[5],
+                "future_act_class": r[6], "template_id": r[7],
+                "safe_params": params if isinstance(params, dict) else {},
+                "param_hash": r[9], "status": r[10], "privacy_class": r[11],
+                "risk_class": r[12], "fingerprint": r[13], "rule_version": r[14],
+                "valid_until": float(r[15]) if r[15] is not None else None,
+            }
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def has_conflicting_pending_ask(self, owner_id: str, suggestion_id: str) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM world_approval_requests a
+                    JOIN world_preparations p ON a.preparation_id = p.preparation_id
+                    WHERE a.owner_id = %s AND p.suggestion_id = %s AND a.status = 'PENDING'
+                    LIMIT 1
+                    """,
+                    (owner_id, suggestion_id),
+                )
+                return bool(cur.fetchone())
+        except Exception:
+            return False
+        finally:
+            self._release(conn)
+
+    def upsert_world_preparation(self, row: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        pid = str(row.get("preparation_id") or uuid.uuid4())[:64]
+        try:
+            params = row.get("safe_params") if isinstance(row.get("safe_params"), dict) else {}
+            extra = set(params.keys()) - {
+                "risk_class", "horizon_hours", "prediction_type",
+                "suggestion_type", "action_type", "claim_code",
+            }
+            if extra:
+                return ""
+            prov = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+            vu = float(row.get("valid_until") or time.time() + 86400)
+            evl = float(row.get("evaluated_at") or time.time())
+            owner = str(row.get("owner_id") or OWNER_ID)[:64]
+            fp = str(row.get("fingerprint") or "")[:64]
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_preparations (
+                        preparation_id, owner_id, project_id, suggestion_id, prediction_id,
+                        preparation_type, action_type, future_act_class, template_id,
+                        safe_params, param_hash, preview_key, risk_class, privacy_class,
+                        fingerprint, rule_id, rule_version, status, valid_until,
+                        provenance, evaluated_at
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,'READY',
+                        to_timestamp(%s), %s::jsonb, to_timestamp(%s)
+                    )
+                    ON CONFLICT (owner_id, fingerprint) DO UPDATE SET
+                        evaluated_at = EXCLUDED.evaluated_at
+                    WHERE world_preparations.status IN ('READY', 'ASKED')
+                    RETURNING preparation_id, (xmax = 0) AS inserted
+                    """,
+                    (
+                        pid, owner,
+                        (str(row.get("project_id"))[:64] if row.get("project_id") else None),
+                        str(row.get("suggestion_id") or "")[:64],
+                        str(row.get("prediction_id") or "")[:64],
+                        str(row.get("preparation_type") or "")[:40],
+                        str(row.get("action_type") or "NONE")[:40],
+                        str(row.get("future_act_class") or "NONE")[:16],
+                        str(row.get("template_id") or "")[:64],
+                        json.dumps(params),
+                        str(row.get("param_hash") or "")[:64],
+                        str(row.get("preview_key") or "")[:64],
+                        str(row.get("risk_class") or "NONE")[:16],
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        fp,
+                        str(row.get("rule_id") or "")[:40],
+                        str(row.get("rule_version") or "v626.1")[:16],
+                        vu, json.dumps(prov), evl,
+                    ),
+                )
+                got = cur.fetchone()
+                out_id = ""
+                inserted = False
+                if got:
+                    out_id = got[0]
+                    inserted = bool(got[1])
+                    if inserted:
+                        cur.execute(
+                            """
+                            INSERT INTO world_preparation_events
+                            (event_id, preparation_id, from_status, to_status, reason)
+                            VALUES (%s,%s,NULL,'READY','eval')
+                            """,
+                            (str(uuid.uuid4())[:64], out_id),
+                        )
+                else:
+                    cur.execute(
+                        """
+                        SELECT preparation_id FROM world_preparations
+                        WHERE owner_id = %s AND fingerprint = %s
+                        """,
+                        (owner, fp),
+                    )
+                    r2 = cur.fetchone()
+                    out_id = r2[0] if r2 else ""
+            conn.commit()
+            return out_id
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def sync_preparation_lifecycle(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        n = 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT p.preparation_id, p.status
+                    FROM world_preparations p
+                    JOIN world_suggestions s ON p.suggestion_id = s.suggestion_id
+                    WHERE p.owner_id = %s
+                      AND p.status IN ('READY', 'ASKED')
+                      AND (s.status IN ('EXPIRED','DISMISSED','SUPERSEDED')
+                           OR p.valid_until <= NOW() OR s.valid_until <= NOW())
+                    """,
+                    (owner_id,),
+                )
+                rows = list(cur.fetchall() or [])
+                for pid, from_st in rows:
+                    cur.execute(
+                        """
+                        SELECT CASE
+                            WHEN p.valid_until <= NOW() OR s.status = 'EXPIRED' THEN 'EXPIRED'
+                            WHEN s.status IN ('DISMISSED','SUPERSEDED') THEN 'SUPERSEDED'
+                            ELSE 'EXPIRED'
+                        END
+                        FROM world_preparations p
+                        JOIN world_suggestions s ON p.suggestion_id = s.suggestion_id
+                        WHERE p.preparation_id = %s
+                        """,
+                        (pid,),
+                    )
+                    dest = cur.fetchone()
+                    to_st = dest[0] if dest else "EXPIRED"
+                    cur.execute(
+                        """
+                        UPDATE world_preparations SET status = %s
+                        WHERE preparation_id = %s AND owner_id = %s AND status IN ('READY','ASKED')
+                        """,
+                        (to_st, pid, owner_id),
+                    )
+                    if cur.rowcount:
+                        cur.execute(
+                            """
+                            INSERT INTO world_preparation_events
+                            (event_id, preparation_id, from_status, to_status, reason)
+                            VALUES (%s,%s,%s,%s,%s)
+                            """,
+                            (str(uuid.uuid4())[:64], pid, from_st, to_st, "lifecycle"),
+                        )
+                        cur.execute(
+                            """
+                            UPDATE world_approval_requests SET status = 'CANCELLED'
+                            WHERE preparation_id = %s AND owner_id = %s AND status = 'PENDING'
+                            RETURNING approval_id
+                            """,
+                            (pid, owner_id),
+                        )
+                        for ar in cur.fetchall() or []:
+                            cur.execute(
+                                """
+                                INSERT INTO world_approval_events
+                                (event_id, approval_id, from_status, to_status, reason)
+                                VALUES (%s,%s,'PENDING','CANCELLED','lifecycle')
+                                """,
+                                (str(uuid.uuid4())[:64], ar[0]),
+                            )
+                        n += 1
+            conn.commit()
+            return n
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def list_hud_preparations(self, owner_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT preparation_id, preparation_type, action_type, template_id, safe_params,
+                           privacy_class, status, fingerprint, param_hash, suggestion_id,
+                           EXTRACT(EPOCH FROM valid_until), risk_class
+                    FROM world_preparations
+                    WHERE owner_id = %s
+                      AND privacy_class = 'NORMAL'
+                      AND status IN ('READY', 'ASKED')
+                      AND valid_until > NOW()
+                    ORDER BY evaluated_at DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                params = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else {})
+                out.append({
+                    "preparation_id": r[0], "preparation_type": r[1], "action_type": r[2],
+                    "template_id": r[3], "safe_params": params if isinstance(params, dict) else {},
+                    "privacy_class": r[5], "status": r[6], "fingerprint": r[7],
+                    "param_hash": r[8], "suggestion_id": r[9],
+                    "valid_until": float(r[10]) if r[10] is not None else None,
+                    "risk_class": r[11],
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def cancel_preparation(self, preparation_id: str, owner_id: str) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT status FROM world_preparations
+                    WHERE preparation_id = %s AND owner_id = %s
+                    """,
+                    (preparation_id, owner_id),
+                )
+                before = cur.fetchone()
+                cur.execute(
+                    """
+                    UPDATE world_preparations SET status = 'CANCELLED'
+                    WHERE preparation_id = %s AND owner_id = %s AND status IN ('READY','ASKED')
+                    RETURNING preparation_id
+                    """,
+                    (preparation_id, owner_id),
+                )
+                got = cur.fetchone()
+                if got:
+                    from_st = before[0] if before else "READY"
+                    cur.execute(
+                        """
+                        INSERT INTO world_preparation_events
+                        (event_id, preparation_id, from_status, to_status, reason)
+                        VALUES (%s,%s,%s,'CANCELLED','cancel')
+                        """,
+                        (str(uuid.uuid4())[:64], preparation_id, from_st),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE world_approval_requests SET status = 'CANCELLED'
+                        WHERE preparation_id = %s AND owner_id = %s AND status = 'PENDING'
+                        RETURNING approval_id
+                        """,
+                        (preparation_id, owner_id),
+                    )
+                    for ar in cur.fetchall() or []:
+                        cur.execute(
+                            """
+                            INSERT INTO world_approval_events
+                            (event_id, approval_id, from_status, to_status, reason)
+                            VALUES (%s,%s,'PENDING','CANCELLED','cancel')
+                            """,
+                            (str(uuid.uuid4())[:64], ar[0]),
+                        )
+            conn.commit()
+            return bool(got)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def insert_approval_request(self, row: Dict[str, Any]) -> str:
+        conn = self._conn()
+        if not conn:
+            return ""
+        aid = str(uuid.uuid4())[:64]
+        try:
+            owner = str(row.get("owner_id") or OWNER_ID)[:64]
+            prep = str(row.get("preparation_id") or "")[:64]
+            vu = float(row.get("valid_until") or time.time() + 3600)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_approval_requests (
+                        approval_id, owner_id, preparation_id, action_type, param_hash,
+                        binding_hash, csrf_binding_id, risk_class, privacy_class, status,
+                        valid_until, rule_version
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING', to_timestamp(%s), %s
+                    )
+                    ON CONFLICT (preparation_id) WHERE status = 'PENDING' DO NOTHING
+                    RETURNING approval_id
+                    """,
+                    (
+                        aid, owner, prep,
+                        str(row.get("action_type") or "")[:40],
+                        str(row.get("param_hash") or "")[:64],
+                        str(row.get("binding_hash") or "")[:64],
+                        str(row.get("csrf_binding_id") or "worker")[:64],
+                        str(row.get("risk_class") or "NONE")[:16],
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        vu,
+                        str(row.get("rule_version") or "v626.1")[:16],
+                    ),
+                )
+                got = cur.fetchone()
+                if not got:
+                    cur.execute(
+                        """
+                        SELECT approval_id FROM world_approval_requests
+                        WHERE preparation_id = %s AND owner_id = %s AND status = 'PENDING'
+                        """,
+                        (prep, owner),
+                    )
+                    r2 = cur.fetchone()
+                    conn.commit()
+                    return r2[0] if r2 else ""
+                out_id = got[0]
+                cur.execute(
+                    """
+                    INSERT INTO world_approval_events
+                    (event_id, approval_id, from_status, to_status, reason)
+                    VALUES (%s,%s,NULL,'PENDING','request')
+                    """,
+                    (str(uuid.uuid4())[:64], out_id),
+                )
+                cur.execute(
+                    """
+                    UPDATE world_preparations SET status = 'ASKED'
+                    WHERE preparation_id = %s AND owner_id = %s AND status = 'READY'
+                    """,
+                    (prep, owner),
+                )
+                if cur.rowcount:
+                    cur.execute(
+                        """
+                        INSERT INTO world_preparation_events
+                        (event_id, preparation_id, from_status, to_status, reason)
+                        VALUES (%s,%s,'READY','ASKED','ask')
+                        """,
+                        (str(uuid.uuid4())[:64], prep),
+                    )
+            conn.commit()
+            return out_id
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def _approval_row_from_tuple(self, r) -> Dict[str, Any]:
+        return {
+            "approval_id": r[0], "owner_id": r[1], "preparation_id": r[2],
+            "action_type": r[3], "param_hash": r[4], "binding_hash": r[5],
+            "csrf_binding_id": r[6], "risk_class": r[7], "privacy_class": r[8],
+            "status": r[9],
+            "valid_until": float(r[10]) if r[10] is not None else None,
+            "rule_version": r[11],
+            "decision_session_id": r[12],
+        }
+
+    def get_approval(self, approval_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT approval_id, owner_id, preparation_id, action_type, param_hash,
+                           binding_hash, csrf_binding_id, risk_class, privacy_class, status,
+                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id
+                    FROM world_approval_requests
+                    WHERE approval_id = %s AND owner_id = %s
+                    """,
+                    (approval_id, owner_id),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            return self._approval_row_from_tuple(r)
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def list_hud_approvals(self, owner_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT approval_id, owner_id, preparation_id, action_type, param_hash,
+                           binding_hash, csrf_binding_id, risk_class, privacy_class, status,
+                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id
+                    FROM world_approval_requests
+                    WHERE owner_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            return [self._approval_row_from_tuple(r) for r in rows]
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def expire_pending_asks(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        n = 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT approval_id, preparation_id FROM world_approval_requests
+                    WHERE owner_id = %s AND status = 'PENDING' AND valid_until <= NOW()
+                    FOR UPDATE
+                    """,
+                    (owner_id,),
+                )
+                rows = list(cur.fetchall() or [])
+                for aid, prep in rows:
+                    cur.execute(
+                        """
+                        UPDATE world_approval_requests SET status = 'EXPIRED', decided_at = NOW()
+                        WHERE approval_id = %s AND owner_id = %s AND status = 'PENDING'
+                        """,
+                        (aid, owner_id),
+                    )
+                    if cur.rowcount:
+                        cur.execute(
+                            """
+                            INSERT INTO world_approval_events
+                            (event_id, approval_id, from_status, to_status, reason)
+                            VALUES (%s,%s,'PENDING','EXPIRED','ttl')
+                            """,
+                            (str(uuid.uuid4())[:64], aid),
+                        )
+                        cur.execute(
+                            """
+                            UPDATE world_preparations SET status = 'EXPIRED'
+                            WHERE preparation_id = %s AND owner_id = %s AND status = 'ASKED'
+                            """,
+                            (prep, owner_id),
+                        )
+                        if cur.rowcount:
+                            cur.execute(
+                                """
+                                INSERT INTO world_preparation_events
+                                (event_id, preparation_id, from_status, to_status, reason)
+                                VALUES (%s,%s,'ASKED','EXPIRED','ask_ttl')
+                                """,
+                                (str(uuid.uuid4())[:64], prep),
+                            )
+                        n += 1
+            conn.commit()
+            return n
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def decide_approval(
+        self,
+        kind: str,
+        approval_id: str,
+        owner_id: str,
+        session_id_hash: str,
+        client_binding_hash: str,
+        recompute,
+        hashes_match,
+        emit,
+    ) -> Dict[str, Any]:
+        conn = self._conn()
+        if not conn:
+            return {"ok": False, "error": "store_unavailable"}
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT approval_id, owner_id, preparation_id, action_type, param_hash,
+                           binding_hash, csrf_binding_id, risk_class, privacy_class, status,
+                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id
+                    FROM world_approval_requests
+                    WHERE approval_id = %s AND owner_id = %s
+                    FOR UPDATE
+                    """,
+                    (approval_id, owner_id),
+                )
+                r = cur.fetchone()
+                if not r:
+                    conn.commit()
+                    emit("proactive.ask.owner_mismatch", status="skipped", attributes={"reason": "not_found"})
+                    return {"ok": False, "error": "not_found", "http": 404}
+                row = self._approval_row_from_tuple(r)
+                computed = recompute(row)
+                stored = str(row.get("binding_hash") or "")
+                if not hashes_match(computed, stored):
+                    conn.commit()
+                    emit(
+                        "proactive.ask.parameter_mismatch",
+                        status="skipped",
+                        attributes={"approval_id": approval_id[:36], "binding_ok": False},
+                    )
+                    return {"ok": False, "error": "parameter_mismatch", "http": 409}
+                if not hashes_match(str(client_binding_hash or ""), computed):
+                    conn.commit()
+                    emit(
+                        "proactive.ask.parameter_mismatch",
+                        status="skipped",
+                        attributes={"approval_id": approval_id[:36], "binding_ok": False},
+                    )
+                    return {"ok": False, "error": "parameter_mismatch", "http": 409}
+                st = str(row.get("status") or "")
+                if kind == "approve":
+                    if st == "APPROVED":
+                        cur.execute(
+                            """
+                            SELECT event_id FROM world_approval_events
+                            WHERE approval_id = %s AND to_status = 'APPROVED'
+                            ORDER BY created_at ASC LIMIT 1
+                            """,
+                            (approval_id,),
+                        )
+                        ev = cur.fetchone()
+                        conn.commit()
+                        emit(
+                            "proactive.ask.approved",
+                            attributes={"approval_id": approval_id[:36], "binding_ok": True, "reason": "replay"},
+                        )
+                        return {"ok": True, "replay": True, "event_id": ev[0] if ev else "", "status": "APPROVED"}
+                    if st != "PENDING":
+                        conn.commit()
+                        return {"ok": False, "error": "conflict", "status": st, "http": 409}
+                    eid = str(uuid.uuid4())[:64]
+                    cur.execute(
+                        """
+                        UPDATE world_approval_requests
+                        SET status = 'APPROVED', decided_at = NOW(), decision_session_id = %s
+                        WHERE approval_id = %s AND owner_id = %s AND status = 'PENDING'
+                        """,
+                        (session_id_hash[:64], approval_id, owner_id),
+                    )
+                    if not cur.rowcount:
+                        conn.commit()
+                        return {"ok": False, "error": "conflict", "http": 409}
+                    cur.execute(
+                        """
+                        INSERT INTO world_approval_events
+                        (event_id, approval_id, from_status, to_status, reason)
+                        VALUES (%s,%s,'PENDING','APPROVED','approve')
+                        """,
+                        (eid, approval_id),
+                    )
+                    conn.commit()
+                    emit(
+                        "proactive.ask.approved",
+                        attributes={
+                            "approval_id": approval_id[:36],
+                            "action_type": str(row.get("action_type") or "")[:40],
+                            "binding_ok": True,
+                        },
+                    )
+                    return {"ok": True, "replay": False, "event_id": eid, "status": "APPROVED"}
+                if kind == "reject":
+                    if st != "PENDING":
+                        conn.commit()
+                        return {"ok": False, "error": "conflict", "status": st, "http": 409}
+                    eid = str(uuid.uuid4())[:64]
+                    cur.execute(
+                        """
+                        UPDATE world_approval_requests
+                        SET status = 'REJECTED', decided_at = NOW(), decision_session_id = %s
+                        WHERE approval_id = %s AND owner_id = %s AND status = 'PENDING'
+                        """,
+                        (session_id_hash[:64], approval_id, owner_id),
+                    )
+                    if not cur.rowcount:
+                        conn.commit()
+                        return {"ok": False, "error": "conflict", "http": 409}
+                    cur.execute(
+                        """
+                        INSERT INTO world_approval_events
+                        (event_id, approval_id, from_status, to_status, reason)
+                        VALUES (%s,%s,'PENDING','REJECTED','reject')
+                        """,
+                        (eid, approval_id),
+                    )
+                    conn.commit()
+                    emit(
+                        "proactive.ask.rejected",
+                        attributes={"approval_id": approval_id[:36], "binding_ok": True},
+                    )
+                    return {"ok": True, "event_id": eid, "status": "REJECTED"}
+                if kind == "revoke":
+                    if st != "APPROVED":
+                        conn.commit()
+                        return {"ok": False, "error": "conflict", "status": st, "http": 409}
+                    eid = str(uuid.uuid4())[:64]
+                    cur.execute(
+                        """
+                        UPDATE world_approval_requests
+                        SET status = 'REVOKED', decided_at = NOW(), decision_session_id = %s
+                        WHERE approval_id = %s AND owner_id = %s AND status = 'APPROVED'
+                        """,
+                        (session_id_hash[:64], approval_id, owner_id),
+                    )
+                    if not cur.rowcount:
+                        conn.commit()
+                        return {"ok": False, "error": "conflict", "http": 409}
+                    cur.execute(
+                        """
+                        INSERT INTO world_approval_events
+                        (event_id, approval_id, from_status, to_status, reason)
+                        VALUES (%s,%s,'APPROVED','REVOKED','revoke')
+                        """,
+                        (eid, approval_id),
+                    )
+                    conn.commit()
+                    emit(
+                        "proactive.ask.revoked",
+                        attributes={"approval_id": approval_id[:36], "binding_ok": True},
+                    )
+                    return {"ok": True, "event_id": eid, "status": "REVOKED"}
+                conn.commit()
+                emit("proactive.ask.policy_rejected", status="skipped", attributes={"reason": "unknown_kind"})
+                return {"ok": False, "error": "conflict", "http": 409}
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return {"ok": False, "error": "conflict", "http": 409}
+        finally:
+            self._release(conn)
+
+    def persist_prepare_delivery(self, preparation_id: str, owner_id: str) -> tuple:
+        did = str(uuid.uuid4())
+        conn = self._conn()
+        if not conn:
+            return "", False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_prepare_deliveries
+                    (delivery_id, preparation_id, channel, status, attempts)
+                    VALUES (%s,%s,'hud','DELIVERED',1)
+                    ON CONFLICT (preparation_id, channel) DO NOTHING
+                    RETURNING delivery_id
+                    """,
+                    (did, preparation_id),
+                )
+                row = cur.fetchone()
+                created = bool(row)
+                if not row:
+                    cur.execute(
+                        """
+                        SELECT delivery_id FROM world_prepare_deliveries
+                        WHERE preparation_id = %s AND channel = 'hud'
+                        """,
+                        (preparation_id,),
+                    )
+                    row = cur.fetchone()
+            conn.commit()
+            return (row[0], created) if row else ("", False)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return "", False
+        finally:
+            self._release(conn)
+
+    def persist_ask_delivery(self, approval_id: str, owner_id: str) -> tuple:
+        did = str(uuid.uuid4())
+        conn = self._conn()
+        if not conn:
+            return "", False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_ask_deliveries
+                    (delivery_id, approval_id, channel, status, attempts)
+                    VALUES (%s,%s,'hud','DELIVERED',1)
+                    ON CONFLICT (approval_id, channel) DO NOTHING
+                    RETURNING delivery_id
+                    """,
+                    (did, approval_id),
+                )
+                row = cur.fetchone()
+                created = bool(row)
+                if not row:
+                    cur.execute(
+                        """
+                        SELECT delivery_id FROM world_ask_deliveries
+                        WHERE approval_id = %s AND channel = 'hud'
+                        """,
+                        (approval_id,),
+                    )
+                    row = cur.fetchone()
+            conn.commit()
+            return (row[0], created) if row else ("", False)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return "", False
+        finally:
+            self._release(conn)
+
+    def bump_prepare_attention(self, owner_id: str, dedupe_key: str, day_key: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO proactive_attention
+                    (owner_id, day_key, inform_count, suggest_count, prepare_count, ask_count, cooldowns)
+                    VALUES (%s, %s::date, 0, 0, 1, 0, jsonb_build_object(%s, EXTRACT(EPOCH FROM NOW())))
+                    ON CONFLICT (owner_id, day_key) DO UPDATE SET
+                        prepare_count = COALESCE(proactive_attention.prepare_count, 0) + 1,
+                        cooldowns = COALESCE(proactive_attention.cooldowns, '{}'::jsonb)
+                            || jsonb_build_object(%s, EXTRACT(EPOCH FROM NOW()))
+                    RETURNING prepare_count
+                    """,
+                    (owner_id, day_key, dedupe_key, dedupe_key),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def bump_ask_attention(self, owner_id: str, dedupe_key: str, day_key: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO proactive_attention
+                    (owner_id, day_key, inform_count, suggest_count, prepare_count, ask_count, cooldowns)
+                    VALUES (%s, %s::date, 0, 0, 0, 1, jsonb_build_object(%s, EXTRACT(EPOCH FROM NOW())))
+                    ON CONFLICT (owner_id, day_key) DO UPDATE SET
+                        ask_count = COALESCE(proactive_attention.ask_count, 0) + 1,
+                        cooldowns = COALESCE(proactive_attention.cooldowns, '{}'::jsonb)
+                            || jsonb_build_object(%s, EXTRACT(EPOCH FROM NOW()))
+                    RETURNING ask_count
+                    """,
+                    (owner_id, day_key, dedupe_key, dedupe_key),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
         finally:
             self._release(conn)
 

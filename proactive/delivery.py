@@ -159,6 +159,112 @@ def deliver_suggest(suggestion: Dict[str, Any]) -> bool:
     return True
 
 
+def _ws_send(card: Dict[str, Any]) -> None:
+    try:
+        from dashboard.server import dashboard_loop, connected_clients
+        import asyncio
+        import json
+        if dashboard_loop:
+            for client in list(connected_clients):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        client.send_text(json.dumps(card)),
+                        dashboard_loop,
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def deliver_prepare(preparation: Dict[str, Any]) -> bool:
+    if TTS_PROACTIVE_ALLOWED:
+        return False
+    if str(preparation.get("privacy_class") or "") != "NORMAL":
+        return False
+    pid = str(preparation.get("preparation_id") or "")
+    owner = str(preparation.get("owner_id") or OWNER_ID)
+    if not pid:
+        return False
+    did, created = proactive_store.persist_prepare_delivery(pid, owner)
+    if not did:
+        return False
+    if not created:
+        return True
+    try:
+        from proactive.attention import record_prepare
+        record_prepare(str(preparation.get("fingerprint") or pid), owner)
+    except Exception:
+        pass
+    from proactive.prepare_templates import render_prepare
+    card = {
+        "type": "proactive_preparation",
+        "preparation_id": pid,
+        "suggestion_id": preparation.get("suggestion_id"),
+        "action_type": preparation.get("action_type"),
+        "template_id": preparation.get("template_id"),
+        "message": render_prepare(str(preparation.get("template_id") or "")),
+        "disclaimer": "PREPARED — NOT CARRIED OUT. Approval does not run any action.",
+        "privacy_class": "NORMAL",
+        "tts": False,
+    }
+    _ws_send(card)
+    return True
+
+
+def deliver_ask(approval: Dict[str, Any], preparation: Dict[str, Any] | None = None) -> bool:
+    if TTS_PROACTIVE_ALLOWED:
+        return False
+    if str(approval.get("privacy_class") or "") != "NORMAL":
+        return False
+    aid = str(approval.get("approval_id") or "")
+    owner = str(approval.get("owner_id") or OWNER_ID)
+    if not aid:
+        return False
+    did, created = proactive_store.persist_ask_delivery(aid, owner)
+    if not did:
+        return False
+    if not created:
+        return True
+    try:
+        from proactive.attention import record_ask
+        record_ask(str((preparation or {}).get("fingerprint") or aid), owner)
+    except Exception:
+        pass
+    prep = preparation or {}
+    card = {
+        "type": "proactive_ask",
+        "approval_id": aid,
+        "preparation_id": approval.get("preparation_id"),
+        "suggestion_id": prep.get("suggestion_id"),
+        "action_type": approval.get("action_type"),
+        "risk_class": approval.get("risk_class"),
+        "privacy_class": "NORMAL",
+        "valid_until": approval.get("valid_until"),
+        "binding_hash": approval.get("binding_hash"),
+        "message": "Prepared for later review. Approval does not run any action.",
+        "tts": False,
+    }
+    _ws_send(card)
+    return True
+
+
+def deliver_authorization(approval: Dict[str, Any]) -> bool:
+    if TTS_PROACTIVE_ALLOWED:
+        return False
+    if str(approval.get("privacy_class") or "") != "NORMAL":
+        return False
+    card = {
+        "type": "proactive_authorization",
+        "approval_id": approval.get("approval_id"),
+        "preparation_id": approval.get("preparation_id"),
+        "message": "Authorization recorded. Approval does not run any action. Nothing was sent or changed.",
+        "tts": False,
+    }
+    _ws_send(card)
+    return True
+
+
 def hud_cards() -> List[Dict[str, Any]]:
     with _lock:
         return list(_hud)
