@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB)](https://www.python.org/)
 [![PostgreSQL](https://img.shields.io/badge/postgresql-authoritative_store-4169E1)](https://www.postgresql.org/)
-[![Release](https://img.shields.io/badge/release-v6.2.2-2ea44f)](https://github.com/SujalPawar17/DOOM-AI-V1/releases/tag/v6.2.2)
+[![Release](https://img.shields.io/badge/release-v6.2.3-2ea44f)](https://github.com/SujalPawar17/DOOM-AI-V1/releases/tag/v6.2.3)
 [![Branch](https://img.shields.io/badge/branch-DOOM--V5.2-24292e)](https://github.com/SujalPawar17/DOOM-AI-V1)
 
 > A persistent autonomous intelligence platform designed to understand, reason, plan, execute, verify, remember, and progressively operate across a user's digital environment.
@@ -21,14 +21,14 @@ Inspired in spirit by the idea of a personal operating intelligence—not positi
 
 | | |
 |---|---|
-| **Current release** | **v6.2.2** (`5b670def55d7f6680c09829f0455c8e75ca512a7`) |
+| **Current release** | **v6.2.3** (`391f88f3d54fde3f54e41f75cd6bee7062bfc56d`) — **RELEASED** |
 | **Branch** | `DOOM-V5.2` |
 | **Architecture** | Personal AI Operating System |
 | **Core** | Cognition + memory + world model + autonomous task engine |
-| **Released proactive line** | V6.1 INFORM foundation; V6.2.1 emitters; V6.2.2 vault + Calendar/GitHub READ |
-| **Current development** | **V6.2.3** — Gmail READ + commitment intelligence (working tree; **not released**) |
+| **Released proactive line** | V6.1 INFORM; V6.2.1 emitters; V6.2.2 Calendar/GitHub READ + vault; **V6.2.3 Email READ + commitment intelligence** |
+| **Next (not started)** | V6.2.4 — evidence + prediction |
 
-Status labels used below: **RELEASED**, **IN DEVELOPMENT**, **PLANNED**.
+Status labels used below: **RELEASED**, **PLANNED**.
 
 ---
 
@@ -108,7 +108,7 @@ DOOM is an autonomous intelligence operating layer that maintains persistent sta
                       +---------------------------+
 ```
 
-PostgreSQL is the authoritative store for memory records, task checkpoints, proactive outbox rows, connector metadata, and (in development) commitments. Vector indexes are derived and generation-synchronized. WorldSnapshot is a TTL cache, not a second database of record.
+PostgreSQL is the authoritative store for memory records, task checkpoints, proactive outbox rows, connector metadata, and commitments. Vector indexes are derived and generation-synchronized. WorldSnapshot is a TTL cache, not a second database of record.
 
 ---
 
@@ -119,7 +119,7 @@ PostgreSQL is the authoritative store for memory records, task checkpoints, proa
 | V3 | Autonomous task orchestration, resume, partial success | RELEASED |
 | V4 | Cognitive execution loop | RELEASED |
 | V5 | Persistent memory, retrieval, lifecycle, projects, experience, governance, routing, observability | RELEASED |
-| V6 | Proactive intelligence and external world observation | RELEASED through v6.2.2; V6.2.3 IN DEVELOPMENT |
+| V6 | Proactive intelligence and external world observation | RELEASED through v6.2.3 |
 | V7 | Computer / OS agent as a unified ACT surface | PLANNED |
 
 V4 cognition (implemented) is a bounded loop:
@@ -152,7 +152,7 @@ Also implemented: semantic embeddings with hybrid ranking, freshness, evidence a
 
 `WorldSnapshot` is **derived, cacheable, TTL-bound, and non-authoritative**. It must not become a second canonical memory store.
 
-V6.2.3 (in development) adds PRIVATE commitment rows and unread counts into the snapshot **without** subjects or email bodies.
+V6.2.3 (RELEASED) adds PRIVATE commitment rows and unread counts into the snapshot **without** subjects or email bodies.
 
 ---
 
@@ -202,7 +202,7 @@ Intended pipeline (only some stages are live):
 | Typed ingest, fence, leased outbox, INFORM delivery | RELEASED (V6.1) |
 | Internal emitters (task / lifecycle) | RELEASED (V6.2.1) |
 | Calendar / GitHub READ, vault, `external_facts` | RELEASED (V6.2.2) |
-| Gmail READ + commitment extraction | **IN DEVELOPMENT (V6.2.3)** |
+| Gmail READ + commitment extraction | **RELEASED (V6.2.3)** |
 | Prediction, SUGGEST, PREPARE, ASK, bounded LLM drafts | PLANNED |
 | ACT / SEND / MERGE / Gmail write | PLANNED (not V6.2) |
 
@@ -218,7 +218,7 @@ READ-only connectors share one HTTP boundary (`SafeHttp`), one vault, and the ex
 |---|---|---|---|---|
 | Google Calendar | READ `events.list` | Schedule context | Controlled / fenced | RELEASED (v6.2.2) |
 | GitHub | READ notifications / issues | Development signals | Controlled / fenced | RELEASED (v6.2.2) |
-| Gmail | READ metadata + bounded snippet | Commitment extraction | **PRIVATE** | IN DEVELOPMENT (V6.2.3) |
+| Gmail | READ metadata + bounded snippet | Commitment extraction | **PRIVATE** | RELEASED (v6.2.3) |
 
 PostgreSQL stores `secret_ref` and fenced facts—not access tokens or refresh tokens. No V6.2 connector WRITE, send, label, merge, or calendar mutation.
 
@@ -261,7 +261,7 @@ DOOM/
 └── test_doom.py            # Plus versioned test_v*.py suites at repository root
 ```
 
-V6.2.3 working-tree additions (not in tag `v6.2.2`): `proactive/connectors/email_gmail.py`, `proactive/commitments.py`, `test_v623_email_commitments.py`.
+V6.2.3 (tag `v6.2.3`) includes `proactive/connectors/email_gmail.py`, `proactive/commitments.py`, and `test_v623_email_commitments.py`.
 
 ---
 
@@ -317,8 +317,8 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 | Proactive INFORM (flag-gated) | RELEASED (V6.1) |
 | Calendar READ | RELEASED (v6.2.2) |
 | GitHub READ | RELEASED (v6.2.2) |
-| Gmail READ | IN DEVELOPMENT (V6.2.3) |
-| Commitment intelligence | IN DEVELOPMENT (V6.2.3) |
+| Gmail READ | RELEASED (V6.2.3) |
+| Commitment intelligence | RELEASED (V6.2.3) |
 | Prediction | PLANNED (V6.2.4) |
 | SUGGEST | PLANNED (V6.2.5) |
 | PREPARE | PLANNED (V6.2.6) |
@@ -343,18 +343,18 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 | V6.1.0 | Proactive INFORM foundation |
 | V6.2.1 | Task/lifecycle signal emitters |
 | V6.2.2 | External READ connectors + DPAPI vault |
+| V6.2.3 | Email READ + commitment intelligence |
 
-### Current (not tagged)
+### Planned (not started)
 
 | Version | Scope | Status |
 |---|---|---|
-| V6.2.3 | Email READ + commitment intelligence | IN DEVELOPMENT |
+| V6.2.4 | Evidence + prediction | PLANNED |
 
-### Planned
+### Later planned
 
 | Version | Scope |
 |---|---|
-| V6.2.4 | Evidence + prediction |
 | V6.2.5 | SUGGEST |
 | V6.2.6 | PREPARE |
 | V6.2.7 | ASK |
@@ -375,8 +375,8 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 **Verification (released path)**  
 “Run the check, verify the resulting state, and do not treat the model’s summary as proof.”
 
-**World model (V6.2.3 in development)**  
-“What open commitments are approaching?” — depends on email/calendar facts and flags; not a released Gmail product.
+**World model (V6.2.3 RELEASED, flag-gated)**  
+“What open commitments are approaching?” — depends on Gmail/calendar READ facts and flags. Not email send, not ACT.
 
 **Proactive INFORM (released, flag-gated)**  
 Observational HUD cards for high-significance INTERNAL signals. Not email send, not ACT.
@@ -430,7 +430,7 @@ Never commit `.env`. Connector tokens belong in the DPAPI vault (`secret_ref` in
 python test_doom.py
 ```
 
-Versioned suites (PostgreSQL required for most): `test_v61_proactive_foundation.py`, `test_v62_emitters.py`, `test_v62_connectors.py`, `test_v532_transaction_engine.py`, and others at the repository root. V6.2.3 tests exist in the working tree as `test_v623_email_commitments.py` and are not part of tag `v6.2.2`.
+Versioned suites (PostgreSQL required for most): `test_v61_proactive_foundation.py`, `test_v62_emitters.py`, `test_v62_connectors.py`, `test_v623_email_commitments.py`, `test_v532_transaction_engine.py`, and others at the repository root.
 
 ### Launch
 
@@ -461,4 +461,4 @@ Built as an independent AI systems engineering project.
 
 ---
 
-*Tag `v6.2.2` is the last released proactive connector line. Gmail and commitments are development-line work until an explicit V6.2.3 release.*
+*Tag `v6.2.3` is the current official release (Email READ + commitment intelligence). V6.2.4 evidence/prediction is not started.*
