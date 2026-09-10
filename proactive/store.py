@@ -2919,7 +2919,263 @@ class ProactiveStore:
         finally:
             self._release(conn)
 
+    def _draft_row(self, r) -> Dict[str, Any]:
+        outp = r[4]
+        if isinstance(outp, str):
+            try:
+                outp = json.loads(outp)
+            except Exception:
+                outp = {}
+        if not isinstance(outp, dict):
+            outp = {}
+        return {
+            "draft_id": r[0],
+            "owner_id": r[1],
+            "preparation_id": r[2],
+            "draft_type": r[3],
+            "structured_output": outp,
+            "provider": r[5],
+            "model": r[6],
+            "prompt_version": r[7],
+            "rule_version": r[8],
+            "param_hash_at_generation": r[9],
+            "validation_status": r[10],
+            "reject_reason": r[11],
+            "privacy_class": r[12],
+            "fingerprint": r[13],
+            "title": (outp or {}).get("title") or "",
+            "summary": (outp or {}).get("summary") or "",
+            "body": (outp or {}).get("body") or "",
+        }
+
+    def list_draft_candidates(self, owner_id: str = OWNER_ID, limit: int = 5) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT p.preparation_id, p.owner_id, p.preparation_type, p.action_type,
+                           p.template_id, p.safe_params, p.param_hash, p.status,
+                           p.privacy_class, p.risk_class, p.rule_version, p.provenance,
+                           pr.provenance
+                    FROM world_preparations p
+                    LEFT JOIN world_predictions pr ON p.prediction_id = pr.prediction_id
+                    WHERE p.owner_id = %s
+                      AND p.status IN ('READY', 'ASKED')
+                      AND p.valid_until > NOW()
+                      AND p.privacy_class <> 'SENSITIVE'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM world_preparation_drafts d
+                        WHERE d.preparation_id = p.preparation_id
+                          AND d.validation_status = 'ACCEPTED'
+                          AND d.param_hash_at_generation = p.param_hash
+                      )
+                    ORDER BY p.evaluated_at DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, int(limit)),
+                )
+                rows = cur.fetchall()
+            out = []
+            for r in rows:
+                params = r[5] if isinstance(r[5], dict) else (json.loads(r[5]) if r[5] else {})
+                prov = r[11] if isinstance(r[11], dict) else (json.loads(r[11]) if r[11] else {})
+                pprov = r[12] if isinstance(r[12], dict) else (json.loads(r[12]) if r[12] else {})
+                eids = []
+                if isinstance(prov, dict):
+                    eids = list(prov.get("evidence_ids") or [])
+                if not eids and isinstance(pprov, dict):
+                    eids = list(pprov.get("evidence_ids") or [])
+                out.append({
+                    "preparation_id": r[0],
+                    "owner_id": r[1],
+                    "preparation_type": r[2],
+                    "action_type": r[3],
+                    "template_id": r[4],
+                    "safe_params": params or {},
+                    "param_hash": r[6],
+                    "status": r[7],
+                    "privacy_class": r[8],
+                    "risk_class": r[9],
+                    "rule_version": r[10],
+                    "provenance": prov or {},
+                    "evidence_ids": eids,
+                })
+            return out
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def supersede_stale_drafts(self, owner_id: str = OWNER_ID) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_preparation_drafts d
+                    SET validation_status = 'SUPERSEDED', updated_at = NOW()
+                    FROM world_preparations p
+                    WHERE d.preparation_id = p.preparation_id
+                      AND d.owner_id = %s
+                      AND d.validation_status = 'ACCEPTED'
+                      AND d.param_hash_at_generation <> p.param_hash
+                    """,
+                    (owner_id,),
+                )
+                n = cur.rowcount
+            conn.commit()
+            return n
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def insert_world_draft(self, row: Dict[str, Any]) -> str:
+        if str(row.get("privacy_class") or "") == "SENSITIVE":
+            return ""
+        conn = self._conn()
+        if not conn:
+            return ""
+        did = str(row.get("draft_id") or uuid.uuid4())[:64]
+        owner = str(row.get("owner_id") or OWNER_ID)[:64]
+        pid = str(row.get("preparation_id") or "")[:64]
+        status = str(row.get("validation_status") or "REJECTED")[:16]
+        payload = row.get("structured_output") if isinstance(row.get("structured_output"), dict) else {}
+        if status != "ACCEPTED":
+            payload = {}
+        try:
+            with conn.cursor() as cur:
+                if status == "ACCEPTED":
+                    cur.execute(
+                        """
+                        UPDATE world_preparation_drafts
+                        SET validation_status = 'SUPERSEDED', updated_at = NOW()
+                        WHERE preparation_id = %s AND owner_id = %s
+                          AND validation_status = 'ACCEPTED'
+                        """,
+                        (pid, owner),
+                    )
+                cur.execute(
+                    """
+                    INSERT INTO world_preparation_drafts (
+                        draft_id, owner_id, preparation_id, draft_type, structured_output,
+                        provider, model, model_version, prompt_version, rule_version,
+                        param_hash_at_generation, validation_status, reject_reason,
+                        privacy_class, fingerprint, correlation_id
+                    ) VALUES (
+                        %s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                    )
+                    ON CONFLICT (owner_id, fingerprint) DO UPDATE SET
+                        updated_at = world_preparation_drafts.updated_at
+                    RETURNING draft_id
+                    """,
+                    (
+                        did, owner, pid,
+                        str(row.get("draft_type") or "")[:64],
+                        json.dumps(payload),
+                        str(row.get("provider") or "")[:32],
+                        str(row.get("model") or "")[:80],
+                        str(row.get("model_version") or "")[:40],
+                        str(row.get("prompt_version") or "v628.1")[:16],
+                        str(row.get("rule_version") or "v626.1")[:16],
+                        str(row.get("param_hash_at_generation") or "")[:64],
+                        status,
+                        str(row.get("reject_reason") or "")[:40],
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        str(row.get("fingerprint") or "")[:64],
+                        str(row.get("correlation_id") or "")[:64],
+                    ),
+                )
+                got = cur.fetchone()
+            conn.commit()
+            return str(got[0]) if got else ""
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def get_current_draft(self, preparation_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT d.draft_id, d.owner_id, d.preparation_id, d.draft_type,
+                           d.structured_output, d.provider, d.model, d.prompt_version,
+                           d.rule_version, d.param_hash_at_generation, d.validation_status,
+                           d.reject_reason, d.privacy_class, d.fingerprint
+                    FROM world_preparation_drafts d
+                    JOIN world_preparations p ON p.preparation_id = d.preparation_id
+                    WHERE d.preparation_id = %s AND d.owner_id = %s
+                      AND d.validation_status = 'ACCEPTED'
+                      AND d.param_hash_at_generation = p.param_hash
+                    LIMIT 1
+                    """,
+                    (str(preparation_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            return self._draft_row(r) if r else None
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def persist_draft_delivery(self, draft_id: str, owner_id: str) -> tuple:
+        did = str(uuid.uuid4())
+        conn = self._conn()
+        if not conn:
+            return "", False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_draft_deliveries
+                    (delivery_id, draft_id, channel, status, attempts)
+                    VALUES (%s,%s,'hud','DELIVERED',1)
+                    ON CONFLICT (draft_id, channel) DO NOTHING
+                    RETURNING delivery_id
+                    """,
+                    (did, str(draft_id)[:64]),
+                )
+                row = cur.fetchone()
+                created = bool(row)
+                if not row:
+                    cur.execute(
+                        """
+                        SELECT delivery_id FROM world_draft_deliveries
+                        WHERE draft_id = %s AND channel = 'hud'
+                        """,
+                        (str(draft_id)[:64],),
+                    )
+                    row = cur.fetchone()
+            conn.commit()
+            return (row[0], created) if row else ("", False)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return "", False
+        finally:
+            self._release(conn)
+
 
 proactive_store = ProactiveStore()
+
 
 

@@ -86,6 +86,7 @@ class ModelRouter:
             "fast_conversation": ["fast_inference"],
             "general": ["tool_calling"],
             "offline": ["offline"],
+            "bounded_draft": ["reasoning"],
         }
 
         # Provider capabilities (from provider metadata)
@@ -118,6 +119,7 @@ class ModelRouter:
             "fast_conversation": ["groq", "nim", "ollama", "bedrock", "openai", "gemini"],
             "general": ["nim", "groq", "ollama", "openai", "gemini"],
             "offline": ["ollama"],
+            "bounded_draft": ["ollama", "groq", "nim", "openai", "gemini"],
         }
 
         # Initialize provider capabilities from metadata
@@ -212,7 +214,8 @@ class ModelRouter:
         system_prompt: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         task_type: str = "general",
-        provider_override: Optional[str] = None
+        provider_override: Optional[str] = None,
+        allowed_providers: Optional[List[str]] = None,
     ) -> LLMResponse:
         """
         Executes generation with capability-preserving failover and circuit breaker protection.
@@ -235,6 +238,9 @@ class ModelRouter:
 
         # Filter cascade to only capable providers
         capable_cascade = [name for name in cascade if self._has_capability(name, required_caps)]
+        if allowed_providers is not None:
+            allow = set(allowed_providers)
+            capable_cascade = [name for name in capable_cascade if name in allow]
 
         hop = 0
         last_error_type = None

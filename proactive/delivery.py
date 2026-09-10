@@ -249,6 +249,41 @@ def deliver_ask(approval: Dict[str, Any], preparation: Dict[str, Any] | None = N
     return True
 
 
+def deliver_draft(draft: Dict[str, Any]) -> bool:
+    """NORMAL HUD/WS only. Distinct type proactive_draft. TTS off."""
+    if TTS_PROACTIVE_ALLOWED:
+        return False
+    if str(draft.get("privacy_class") or "") != "NORMAL":
+        return False
+    if str(draft.get("validation_status") or "") != "ACCEPTED":
+        return False
+    did = str(draft.get("draft_id") or "")
+    owner = str(draft.get("owner_id") or OWNER_ID)
+    if not did:
+        return False
+    row_id, created = proactive_store.persist_draft_delivery(did, owner)
+    if not row_id:
+        return False
+    if not created:
+        return True
+    out = draft.get("structured_output") if isinstance(draft.get("structured_output"), dict) else {}
+    card = {
+        "type": "proactive_draft",
+        "draft_id": did,
+        "preparation_id": draft.get("preparation_id"),
+        "title": str(out.get("title") or draft.get("title") or "")[:120],
+        "summary": str(out.get("summary") or draft.get("summary") or "")[:400],
+        "disclaimer": (
+            "This text is a draft. Approval authorizes the bounded preparation "
+            "parameters, not execution."
+        ),
+        "privacy_class": "NORMAL",
+        "tts": False,
+    }
+    _ws_send(card)
+    return True
+
+
 def deliver_authorization(approval: Dict[str, Any]) -> bool:
     if TTS_PROACTIVE_ALLOWED:
         return False

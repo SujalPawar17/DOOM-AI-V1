@@ -47,6 +47,7 @@ ALLOWED_ATTR_KEYS = frozenset({
     "risk_class", "abstain_reason",
     "suggestion_id", "suggestion_type",
     "preparation_id", "approval_id", "action_type", "binding_ok",
+    "draft_id", "validation_status", "reject_reason", "deployment_mode",
 })
 
 

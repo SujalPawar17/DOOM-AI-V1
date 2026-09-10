@@ -724,6 +724,55 @@ class PostgresManager:
             """,
             "ALTER TABLE proactive_attention ADD COLUMN IF NOT EXISTS prepare_count INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE proactive_attention ADD COLUMN IF NOT EXISTS ask_count INTEGER NOT NULL DEFAULT 0;",
+            """
+            CREATE TABLE IF NOT EXISTS world_preparation_drafts (
+                draft_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                preparation_id VARCHAR(64) NOT NULL
+                    REFERENCES world_preparations(preparation_id) ON DELETE CASCADE,
+                draft_type VARCHAR(64) NOT NULL
+                    CHECK (draft_type IN (
+                        'prepare_review_outline','prepare_confirm_prompt',
+                        'prepare_schedule_diff','prepare_unblock_note','prepare_review_options')),
+                structured_output JSONB NOT NULL DEFAULT '{}',
+                provider VARCHAR(32) NOT NULL DEFAULT '',
+                model VARCHAR(80) NOT NULL DEFAULT '',
+                model_version VARCHAR(40) NOT NULL DEFAULT '',
+                prompt_version VARCHAR(16) NOT NULL DEFAULT 'v628.1',
+                rule_version VARCHAR(16) NOT NULL DEFAULT 'v626.1',
+                param_hash_at_generation VARCHAR(64) NOT NULL,
+                validation_status VARCHAR(16) NOT NULL
+                    CHECK (validation_status IN ('ACCEPTED','REJECTED','SUPERSEDED','EXPIRED')),
+                reject_reason VARCHAR(40) NOT NULL DEFAULT '',
+                privacy_class VARCHAR(16) NOT NULL
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                fingerprint VARCHAR(64) NOT NULL,
+                correlation_id VARCHAR(64) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (owner_id, fingerprint)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wpd_owner_status ON world_preparation_drafts (owner_id, validation_status);",
+            "CREATE INDEX IF NOT EXISTS idx_wpd_prep_status ON world_preparation_drafts (preparation_id, validation_status);",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_wpd_prep_accepted
+            ON world_preparation_drafts (preparation_id) WHERE validation_status = 'ACCEPTED';
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_draft_deliveries (
+                delivery_id VARCHAR(64) PRIMARY KEY,
+                draft_id VARCHAR(64) NOT NULL
+                    REFERENCES world_preparation_drafts(draft_id) ON DELETE CASCADE,
+                channel VARCHAR(16) NOT NULL DEFAULT 'hud'
+                    CHECK (channel IN ('hud')),
+                status VARCHAR(16) NOT NULL DEFAULT 'DELIVERED'
+                    CHECK (status IN ('DELIVERED','FAILED')),
+                attempts INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (draft_id, channel)
+            );
+            """,
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

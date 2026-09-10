@@ -296,5 +296,39 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         self.assertEqual(groq.generate_calls, 1)
 
 
+    def test_O_bounded_draft_allows_reasoning_without_tool_calling(self):
+        ollama = FakeLLM("ollama", cost_tier="LOCAL", text="local-draft")
+        groq = FakeLLM("groq", text="hosted-draft")
+        _wire(self.router, ollama=ollama, groq=groq)
+        resp = self.router.generate("draft", task_type="bounded_draft", allowed_providers=["ollama"])
+        self.assertEqual(resp.text, "local-draft")
+        self.assertEqual(ollama.generate_calls, 1)
+        self.assertEqual(groq.generate_calls, 0)
+
+    def test_P_bounded_draft_excludes_web_search_only(self):
+        gemini = FakeLLM("gemini", text="gemini-web")
+        ollama = FakeLLM("ollama", cost_tier="LOCAL", text="ok-draft")
+        _wire(self.router, gemini=gemini, ollama=ollama)
+        self.router.provider_capabilities["gemini"] = ["web_search"]
+        resp = self.router.generate("draft", task_type="bounded_draft", allowed_providers=["gemini", "ollama"])
+        self.assertEqual(resp.text, "ok-draft")
+        self.assertEqual(gemini.generate_calls, 0)
+        self.assertEqual(ollama.generate_calls, 1)
+
+    def test_Q_allowed_providers_none_preserves_general_cascade(self):
+        nim = FakeLLM("nim", text="nim-ok")
+        groq = FakeLLM("groq", text="groq-ok")
+        _wire(self.router, nim=nim, groq=groq)
+        resp = self.router.generate("hi", task_type="general")
+        self.assertEqual(resp.text, "nim-ok")
+        self.assertEqual(nim.generate_calls, 1)
+        self.assertEqual(groq.generate_calls, 0)
+
+    def test_R_bounded_draft_requires_reasoning_not_tool_calling(self):
+        self.assertEqual(self.router.capability_requirements["bounded_draft"], ["reasoning"])
+        self.assertNotIn("tool_calling", self.router.capability_requirements["bounded_draft"])
+        self.assertNotIn("web_search", self.router.capability_requirements["bounded_draft"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

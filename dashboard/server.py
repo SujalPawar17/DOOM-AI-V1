@@ -618,6 +618,43 @@ async def cancel_preparation_api(request: Request, preparation_id: str):
     return {"ok": True}
 
 
+@app.get("/api/proactive/preparations/{preparation_id}/draft")
+async def get_preparation_draft(request: Request, preparation_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.config import is_llm_draft_enabled
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    prep_on, _ask_on = _prepare_flags()
+    if not prep_on or not is_llm_draft_enabled():
+        return {"ok": False, "current": False, "enabled": False}
+    owner = str(sess.get("owner_id") or "")
+    row = proactive_store.get_current_draft(str(preparation_id)[:64], owner)
+    if not row:
+        return {"ok": False, "current": False, "enabled": True}
+    out = row.get("structured_output") if isinstance(row.get("structured_output"), dict) else {}
+    return {
+        "ok": True,
+        "current": True,
+        "enabled": True,
+        "type": "proactive_draft",
+        "draft_id": row.get("draft_id"),
+        "preparation_id": row.get("preparation_id"),
+        "draft_type": row.get("draft_type"),
+        "title": out.get("title") or "",
+        "summary": out.get("summary") or "",
+        "body": out.get("body") or "",
+        "warnings": out.get("warnings") or [],
+        "uncertainties": out.get("uncertainties") or [],
+        "disclaimer": (
+            "This text is a draft. Approval authorizes the bounded preparation "
+            "parameters, not execution."
+        ),
+        "tts": False,
+    }
+
+
 @app.get("/api/proactive/approvals")
 async def list_approvals(request: Request, limit: int = 20):
     from dashboard.ask_session import require_ask_session

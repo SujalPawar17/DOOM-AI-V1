@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB)](https://www.python.org/)
 [![PostgreSQL](https://img.shields.io/badge/postgresql-authoritative_store-4169E1)](https://www.postgresql.org/)
-[![Release](https://img.shields.io/badge/release-v6.2.6-2ea44f)](https://github.com/SujalPawar17/DOOM-AI-V1/releases/tag/v6.2.6)
+[![Release](https://img.shields.io/badge/release-v6.2.8-2ea44f)](https://github.com/SujalPawar17/DOOM-AI-V1/releases/tag/v6.2.8)
 [![Branch](https://img.shields.io/badge/branch-DOOM--V5.2-24292e)](https://github.com/SujalPawar17/DOOM-AI-V1)
 
 > A persistent autonomous intelligence platform designed to understand, reason, plan, execute, verify, remember, and progressively operate across a user's digital environment.
@@ -21,12 +21,12 @@ Inspired in spirit by the idea of a personal operating intelligence—not positi
 
 | | |
 |---|---|
-| **Current release** | **v6.2.6** — **RELEASED** (SHA in the annotated tag) |
+| **Current release** | **v6.2.8** — **RELEASED** (SHA in the annotated tag) |
 | **Branch** | `DOOM-V5.2` |
 | **Architecture** | Personal AI Operating System |
 | **Core** | Cognition + memory + world model + autonomous task engine |
-| **Released proactive line** | V6.1 INFORM; V6.2.1 emitters; V6.2.2 Calendar/GitHub READ + vault; V6.2.3 Email READ + commitments; V6.2.4 evidence + deterministic prediction; V6.2.5 SUGGEST; **V6.2.6 PREPARE + ASK (authorization only)** |
-| **Next (not started)** | V6.2.8 — bounded LLM drafts |
+| **Released proactive line** | V6.1 INFORM; V6.2.1 emitters; V6.2.2 Calendar/GitHub READ + vault; V6.2.3 Email READ + commitments; V6.2.4 evidence + deterministic prediction; V6.2.5 SUGGEST; V6.2.6 PREPARE + ASK (authorization only); **V6.2.8 bounded LLM drafts (non-authoritative)** |
+| **Next (not started)** | V6.3 ACT |
 
 Status labels used below: **RELEASED**, **PLANNED**.
 
@@ -119,7 +119,7 @@ PostgreSQL is the authoritative store for memory records, task checkpoints, proa
 | V3 | Autonomous task orchestration, resume, partial success | RELEASED |
 | V4 | Cognitive execution loop | RELEASED |
 | V5 | Persistent memory, retrieval, lifecycle, projects, experience, governance, routing, observability | RELEASED |
-| V6 | Proactive intelligence and external world observation | RELEASED through v6.2.6 |
+| V6 | Proactive intelligence and external world observation | RELEASED through v6.2.8 |
 | V7 | Computer / OS agent as a unified ACT surface | PLANNED |
 
 V4 cognition (implemented) is a bounded loop:
@@ -152,7 +152,7 @@ Also implemented: semantic embeddings with hybrid ranking, freshness, evidence a
 
 `WorldSnapshot` is **derived, cacheable, TTL-bound, and non-authoritative**. It must not become a second canonical memory store.
 
-V6.2.3 (RELEASED) adds PRIVATE commitment rows and unread counts into the snapshot **without** subjects or email bodies. V6.2.4 (RELEASED, flag-gated) adds `world_evidence` citations and five deterministic `world_predictions` types on the snapshot. Predictions do **not** INFORM and are **not** HUD cards. V6.2.5 (RELEASED, flag-gated) adds deterministic `world_suggestions` and NORMAL HUD/WS cards (`proactive_suggestion`). Suggestions are **not** stored on `WorldSnapshot` and do **not** INFORM via `proactive_insights`. V6.2.6 (RELEASED, flag-gated) adds `world_preparations` and `world_approval_requests`. Preparations and approvals are **not** stored on `WorldSnapshot`. **APPROVED does not execute.**
+V6.2.3 (RELEASED) adds PRIVATE commitment rows and unread counts into the snapshot **without** subjects or email bodies. V6.2.4 (RELEASED, flag-gated) adds `world_evidence` citations and five deterministic `world_predictions` types on the snapshot. Predictions do **not** INFORM and are **not** HUD cards. V6.2.5 (RELEASED, flag-gated) adds deterministic `world_suggestions` and NORMAL HUD/WS cards (`proactive_suggestion`). Suggestions are **not** stored on `WorldSnapshot` and do **not** INFORM via `proactive_insights`. V6.2.6 (RELEASED, flag-gated) adds `world_preparations` and `world_approval_requests`. Preparations and approvals are **not** stored on `WorldSnapshot`. **APPROVED does not execute.** V6.2.8 (RELEASED, flag-gated) adds optional validated LLM drafts (`world_preparation_drafts`). Drafts are presentation only and are **not** stored on `WorldSnapshot`.
 
 ---
 
@@ -181,7 +181,7 @@ DOOM is not designed for unrestricted autonomous action. Authority is intended t
 
 `OBSERVE → ANALYZE → INFORM → SUGGEST → PREPARE → ASK → ACT`
 
-**Current V6.2 work remains below ACT.** V6.1 delivers INFORM-only HUD obligations. V6.2.4 predictions are derived world-model rows only. V6.2.5 SUGGEST is advisory HUD/WS only (no tools, no LLM, no ACT). V6.2.6 PREPARE is deterministic human-reviewable preview. V6.2.6 ASK is authenticated authorization state only (`doom_ask_sid` session, CSRF, ownership, param/binding hash). **APPROVED does not execute.** ACT remains **PLANNED**. The existing TaskEngine route `POST /api/tasks/{id}/approve` is unrelated and must not be used as the ASK execution path.
+**Current V6.2 work remains below ACT.** V6.1 delivers INFORM-only HUD obligations. V6.2.4 predictions are derived world-model rows only. V6.2.5 SUGGEST is advisory HUD/WS only (no tools, no LLM, no ACT). V6.2.6 PREPARE is deterministic human-reviewable preview. V6.2.6 ASK is authenticated authorization state only (`doom_ask_sid` session, CSRF, ownership, param/binding hash). V6.2.8 drafts are optional, validated, non-authoritative presentation (`tools=None`; privacy before generate). **APPROVED does not execute.** ACT remains **PLANNED**. The existing TaskEngine route `POST /api/tasks/{id}/approve` is unrelated and must not be used as the ASK execution path.
 
 Also implemented: risk-aware governance gates, privacy classes (`NORMAL` / `PRIVATE` / `SENSITIVE`), DATA_ONLY payload fencing, DPAPI connector vault (`secret_ref` in PostgreSQL, not raw tokens), allowlisted HTTP (GET plus a single OAuth token POST URL), tool invocation as an explicit registry, ABSTAIN/fail-closed on injection and credential-shaped content, and telemetry redaction.
 
@@ -207,10 +207,10 @@ Intended pipeline (only some stages are live):
 | SUGGEST (advisory, dedicated tables, NORMAL HUD/WS) | **RELEASED (V6.2.5)** — flag-gated; requires prediction flags; default off |
 | PREPARE (deterministic preview, dedicated tables) | **RELEASED (V6.2.6)** — flag-gated; requires suggest/prediction flags; default off |
 | ASK (authenticated authorization; no execution) | **RELEASED (V6.2.6)** — flag-gated; requires prepare flags; default off |
-| Bounded LLM drafts | PLANNED (V6.2.8) |
-| ACT / SEND / MERGE / Gmail write | PLANNED (not V6.2) |
+| Bounded LLM drafts | **RELEASED (V6.2.8)** — flag-gated; presentation only; default off |
+| ACT / SEND / MERGE / Gmail write | PLANNED (V6.3) |
 
-Flags default **off** (`PROACTIVE_ENABLED`, connector flags, `PROACTIVE_PREDICTION_ENABLED`, `PROACTIVE_SUGGEST_ENABLED`, `PROACTIVE_PREPARE_ENABLED`, `PROACTIVE_ASK_ENABLED`). Global proactive off implies **zero** connector HTTP. Email-derived facts are PRIVATE and do not auto-INFORM. Worker code does not call `process_request` and does not write `memory_records`. SUGGEST does not use `claim_batch`. ASK does not call TaskEngine.
+Flags default **off** (`PROACTIVE_ENABLED`, connector flags, `PROACTIVE_PREDICTION_ENABLED`, `PROACTIVE_SUGGEST_ENABLED`, `PROACTIVE_PREPARE_ENABLED`, `PROACTIVE_ASK_ENABLED`, `PROACTIVE_LLM_DRAFT_ENABLED`). Global proactive off implies **zero** connector HTTP. Email-derived facts are PRIVATE and do not auto-INFORM. Worker code does not call `process_request` and does not write `memory_records`. SUGGEST does not use `claim_batch`. ASK does not call TaskEngine. Drafts do not execute.
 
 ---
 
@@ -265,7 +265,7 @@ DOOM/
 └── test_doom.py            # Plus versioned test_v*.py suites at repository root
 ```
 
-V6.2.3 (tag `v6.2.3`) includes `proactive/connectors/email_gmail.py`, `proactive/commitments.py`, and `test_v623_email_commitments.py`. V6.2.4 (tag `v6.2.4`) includes `proactive/evidence.py`, `proactive/predict.py`, `proactive/temporal.py`, and `test_v624_evidence_prediction.py`. V6.2.5 (tag `v6.2.5`) includes `proactive/suggest.py`, `proactive/suggest_templates.py`, `world_suggestions` schema, and `test_v625_suggest.py`. V6.2.6 (tag `v6.2.6`) includes `proactive/prepare.py`, `proactive/prepare_templates.py`, `proactive/ask.py`, `proactive/ask_decisions.py`, `dashboard/ask_session.py`, preparation/approval schema, and `test_v626_prepare_ask.py`.
+V6.2.3 (tag `v6.2.3`) includes `proactive/connectors/email_gmail.py`, `proactive/commitments.py`, and `test_v623_email_commitments.py`. V6.2.4 (tag `v6.2.4`) includes `proactive/evidence.py`, `proactive/predict.py`, `proactive/temporal.py`, and `test_v624_evidence_prediction.py`. V6.2.5 (tag `v6.2.5`) includes `proactive/suggest.py`, `proactive/suggest_templates.py`, `world_suggestions` schema, and `test_v625_suggest.py`. V6.2.6 (tag `v6.2.6`) includes `proactive/prepare.py`, `proactive/prepare_templates.py`, `proactive/ask.py`, `proactive/ask_decisions.py`, `dashboard/ask_session.py`, preparation/approval schema, and `test_v626_prepare_ask.py`. V6.2.8 (tag `v6.2.8`) includes `proactive/draft.py`, `draft_contract.py`, `draft_prompts.py`, `draft_validate.py`, `draft_policy.py`, `world_preparation_drafts` schema, and `test_v628_llm_draft.py`.
 
 ---
 
@@ -327,7 +327,7 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 | SUGGEST | RELEASED (V6.2.5) |
 | PREPARE (preview only) | RELEASED (V6.2.6) |
 | ASK (authorization only; does not execute) | RELEASED (V6.2.6) |
-| Bounded LLM drafts | PLANNED (V6.2.8) |
+| Bounded LLM drafts (non-authoritative) | RELEASED (V6.2.8) |
 | ACT (external side effects) | PLANNED (V6.3) |
 | Computer / OS Agent | PLANNED (V7) |
 
@@ -351,12 +351,13 @@ The goal is a persistent intelligence system that can operate **inside** a user�
 | V6.2.4 | Evidence + deterministic prediction |
 | V6.2.5 | SUGGEST (advisory HUD/WS; dedicated `world_suggestions`) |
 | V6.2.6 | PREPARE + ASK (authorization only; **APPROVED does not execute**) |
+| V6.2.8 | Bounded LLM drafts (presentation only; **not execution**) |
 
 ### Planned (not started)
 
 | Version | Scope | Status |
 |---|---|---|
-| V6.2.8 | Bounded LLM assistance | PLANNED |
+| V6.3 | ACT (authorized external side effects) | PLANNED |
 
 ### Later planned
 
@@ -390,7 +391,10 @@ Advisory NORMAL HUD/WS cards from ACTIVE predictions. PRIVATE persist-only. SENS
 **Proactive PREPARE / ASK (V6.2.6 RELEASED, flag-gated)**  
 Deterministic preparation preview and authenticated approval records. HUD/WS cards `proactive_preparation` / `proactive_ask` / `proactive_authorization`. TTS off. **Approval authorizes the exact proposed parameters; it does not execute the action.** Requires prepare/ask flags in addition to suggest/prediction/proactive flags.
 
-**PLANNED — do not treat as available:** bounded LLM drafts, autonomous email send, merge, ASK→ACT execution, V7 OS agent.
+**Proactive LLM draft (V6.2.8 RELEASED, flag-gated)**  
+Optional validated JSON drafts after PREPARE. Card type `proactive_draft`. TTS off. PRIVATE persist-only. SENSITIVE never generated. `tools=None`. Does not change ASK binding. Requires `PROACTIVE_LLM_DRAFT_ENABLED` (and class flags) in addition to prepare flags. Defaults off.
+
+**PLANNED — do not treat as available:** autonomous email send, merge, ASK→ACT execution, V7 OS agent.
 
 ---
 
@@ -470,4 +474,4 @@ Built as an independent AI systems engineering project.
 
 ---
 
-*Tag `v6.2.6` is the current official release (PREPARE + ASK, authorization only). Tags `v6.2.5` and `v6.2.4` remain immutable.*
+*Tag `v6.2.8` is the current official release (bounded LLM drafts, non-authoritative). Tags `v6.2.6`, `v6.2.5`, and `v6.2.4` remain immutable.*

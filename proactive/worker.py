@@ -26,6 +26,7 @@ from proactive.poller import poll_connectors, poll_internal_sources
 from proactive.predict import evaluate_world_predictions
 from proactive.prepare import evaluate_world_preparations
 from proactive.ask import expire_pending_asks
+from proactive.draft import evaluate_world_drafts
 from proactive.suggest import evaluate_world_suggestions
 from proactive.schemas import Insight
 from proactive.significance import evaluate_significance
@@ -198,6 +199,10 @@ def process_once(worker_id: str = "v61-worker") -> int:
             evaluate_world_preparations()
         except Exception:
             emit_proactive("proactive.outcome", status="error", attributes={"reason": "prepare_eval"})
+        try:
+            evaluate_world_drafts()
+        except Exception:
+            emit_proactive("proactive.outcome", status="error", attributes={"reason": "draft_eval"})
         try:
             expire_pending_asks()
         except Exception:

@@ -108,6 +108,19 @@ def is_ask_enabled() -> bool:
     return _bool_env("PROACTIVE_ASK_ENABLED", False)
 
 
+def is_llm_draft_enabled() -> bool:
+    """V6.2.8 bounded LLM draft. Default false. Call sites also require prepare flags."""
+    return _bool_env("PROACTIVE_LLM_DRAFT_ENABLED", False)
+
+
+def is_llm_draft_normal_enabled() -> bool:
+    return _bool_env("PROACTIVE_LLM_DRAFT_NORMAL_ENABLED", False)
+
+
+def is_llm_draft_private_enabled() -> bool:
+    return _bool_env("PROACTIVE_LLM_DRAFT_PRIVATE_ENABLED", False)
+
+
 PREPARE_RULE_VERSION = "v626.1"
 PREPARE_CANDIDATE_CAP = _int_env("PROACTIVE_PREPARE_CANDIDATE_CAP", 50)
 PREPARE_CONFIDENCE_FLOOR = 0.70
@@ -117,6 +130,12 @@ DAILY_ASK_BUDGET = _int_env("PROACTIVE_DAILY_ASK_BUDGET", 4)
 ASK_COOLDOWN_SECONDS = _int_env("PROACTIVE_ASK_COOLDOWN_SECONDS", 14400)
 ASK_SESSION_TTL_SECONDS = 12 * 3600
 WORKER_CSRF_BINDING_ID = "worker"
+
+
+DRAFT_PROMPT_VERSION = "v628.1"
+LLM_DRAFT_CANDIDATE_CAP = _int_env("PROACTIVE_LLM_DRAFT_CANDIDATE_CAP", 5)
+LLM_DRAFT_TIMEOUT_SEC = _float_env("PROACTIVE_LLM_DRAFT_TIMEOUT_SEC", 8.0)
+LLM_DRAFT_MAX_FAILOVER_HOPS = 2
 
 
 def ask_ttl_seconds() -> int:
