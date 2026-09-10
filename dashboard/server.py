@@ -31,6 +31,7 @@ from tools import ALL_TOOLS
 from tools.workstation_modes import CodeModeTool, DailyBriefingTool, StandupReportTool, LockdownTool, ScreenVisionTool
 from core.sound_detector import sound_detector
 from core.listen import listen_for_command
+from core.commands import submit_user_input
 from core.cognition import cognitive_engine
 
 app = FastAPI(title="DOOM V3 — Personal AI Operating System", version="3.0.0")
@@ -184,19 +185,14 @@ def on_dashboard_clap():
                 "command": cmd,
                 "timestamp": time.strftime("%H:%M:%S")
             })
-            # 4. Execute through DOOM Core
-            response = doom_core.process_request(cmd)
+            # 4. Same text pipeline as typed input (policy/risk/approval/Cost Guard)
+            response = submit_user_input(cmd, source="voice")
             broadcast_hud_event({
                 "type": "command_executed",
                 "goal": cmd,
                 "response": response,
                 "timestamp": time.strftime("%H:%M:%S")
             })
-            # 5. Speak the response out loud (Single audio channel)
-            try:
-                speak(response)
-            except Exception as se:
-                print(f"[DASHBOARD] Voice response error: {se}")
         else:
             print("[DASHBOARD] Standing by.")
             broadcast_hud_event({
@@ -1102,6 +1098,19 @@ async def generate_speech(text: str = Query(..., description="Text to synthesize
         with open(cached_file, "rb") as f:
             return Response(content=f.read(), media_type="audio/mpeg")
 
+    from core.cost_guard import CostDecisionAction, ResourceRequest, ResourceType, cost_guard
+    tts_decision = cost_guard.authorize(ResourceRequest(
+        resource_type=ResourceType.TTS,
+        provider="edge_tts",
+        capability="tts",
+        endpoint="speech.platform.bing.com",
+    ))
+    if tts_decision.action != CostDecisionAction.ALLOW:
+        return JSONResponse(
+            {"status": "tts_blocked", "message": tts_decision.reason.value},
+            status_code=503,
+        )
+
     try:
         import edge_tts
         communicate = edge_tts.Communicate(clean_text, voice="en-GB-RyanNeural", rate="+10%", pitch="+0Hz")
@@ -1222,9 +1231,8 @@ async def dev_scaffold_project(req: ScaffoldRequest):
 
 @app.post("/api/dev/generate_types")
 async def dev_generate_types(req: TypeGenRequest):
-    """Generates TypeScript interfaces or Python Pydantic models from JSON payload using Groq."""
-    from models.groq_provider import GroqProvider
-    groq = GroqProvider()
+    """Generates TypeScript interfaces or Python Pydantic models via Cost-Guard-wrapped ModelRouter."""
+    from core.model_router import NoCapableProviderError, model_router
 
     json_sample = json.dumps(req.json_data, indent=2)[:2000] if not isinstance(req.json_data, str) else req.json_data[:2000]
 
@@ -1237,8 +1245,11 @@ Rules:
 - If pydantic: output clean Python Pydantic BaseModel classes with Field definitions and type annotations.
 - Provide ONLY the code inside ```{req.target_lang.lower()}``` block. No chatty text."""
 
-    result = groq.generate(prompt)
-    out = result.text if hasattr(result, "text") else str(result)
+    try:
+        result = model_router.generate(prompt=prompt, task_type="coding")
+        out = result.text if hasattr(result, "text") else str(result)
+    except NoCapableProviderError:
+        out = ""
     return {"code": out, "lang": req.target_lang}
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1332,8 +1343,8 @@ async def agent_chat_endpoint(req: AgentChatRequest):
                     provider_override = selected_model_name
                     steps.append({"type": "tool", "title": "Invoked Model", "desc": f"ModelRouter override={provider_override}"})
                 else:
-                    provider_override = "groq"
-                    steps.append({"type": "tool", "title": "Invoked Model", "desc": "ModelRouter override=groq"})
+                    provider_override = None
+                    steps.append({"type": "tool", "title": "Invoked Model", "desc": "ModelRouter auto (unknown id)"})
 
                 router_result = model_router.generate(
                     prompt=full_prompt,
@@ -1586,13 +1597,13 @@ async def ide_chat(req: IDEChatRequest):
             "gemini": "gemini",
             "auto": None
         }
-        provider = model_map.get(req.model, "groq")
+        provider = model_map.get(req.model, None)
         response_obj = model_router.generate(
             prompt=full_prompt,
             system_prompt=system_prompt,
             provider_override=provider
         )
-        response_text = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+        response_text = response_obj.text if hasattr(response_obj, "text") else str(response_obj)
     except Exception as e:
         response_text = f"Model error ({req.model}): {str(e)}"
     
@@ -1691,17 +1702,15 @@ async def serve_ide():
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DOOM Cyber IDE</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;background:#050b14;color:#e0f2fe;font-family:'Inter',sans-serif;overflow:hidden}
+html,body{height:100%;background:#050b14;color:#e0f2fe;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden}
 .ide-layout{display:flex;flex-direction:column;height:100vh}
 .ide-toolbar{display:flex;align-items:center;gap:0.75rem;padding:0.5rem 1rem;background:#0a1628;border-bottom:1px solid rgba(0,240,255,0.12);flex-shrink:0}
-.ide-brand{font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:#00f0ff;letter-spacing:2px;opacity:0.85}
-.ide-file-name{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:#94a3b8;background:rgba(0,240,255,0.06);border:1px solid rgba(0,240,255,0.15);border-radius:4px;padding:0.25rem 0.6rem;min-width:200px}
+.ide-brand{font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:0.72rem;color:#00f0ff;letter-spacing:2px;opacity:0.85}
+.ide-file-name{font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:0.78rem;color:#94a3b8;background:rgba(0,240,255,0.06);border:1px solid rgba(0,240,255,0.15);border-radius:4px;padding:0.25rem 0.6rem;min-width:200px}
 .ide-toolbar-actions{display:flex;gap:0.5rem;margin-left:auto}
-.ide-btn{font-family:'JetBrains Mono',monospace;font-size:0.72rem;letter-spacing:0.5px;padding:0.3rem 0.75rem;border-radius:4px;border:1px solid rgba(0,240,255,0.2);background:rgba(0,240,255,0.05);color:#00f0ff;cursor:pointer;transition:all 0.2s}
+.ide-btn{font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:0.72rem;letter-spacing:0.5px;padding:0.3rem 0.75rem;border-radius:4px;border:1px solid rgba(0,240,255,0.2);background:rgba(0,240,255,0.05);color:#00f0ff;cursor:pointer;transition:all 0.2s}
 .ide-btn:hover{background:rgba(0,240,255,0.12);border-color:rgba(0,240,255,0.4)}
 .ide-btn.run-btn{border-color:rgba(0,255,157,0.3);background:rgba(0,255,157,0.07);color:#00ff9d}
 .ide-btn.run-btn:hover{background:rgba(0,255,157,0.15);border-color:rgba(0,255,157,0.5)}
@@ -1709,20 +1718,20 @@ html,body{height:100%;background:#050b14;color:#e0f2fe;font-family:'Inter',sans-
 .ide-main{display:flex;flex:1;overflow:hidden}
 .ide-sidebar{width:180px;background:#080f20;border-right:1px solid rgba(0,240,255,0.08);padding:0.75rem;flex-shrink:0;overflow-y:auto}
 .sidebar-section-title{font-size:0.62rem;letter-spacing:1.5px;color:#64748b;text-transform:uppercase;margin-bottom:0.5rem;padding-bottom:0.25rem;border-bottom:1px solid rgba(255,255,255,0.04)}
-.sidebar-file{font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:#94a3b8;padding:0.3rem 0.5rem;border-radius:4px;cursor:pointer;transition:all 0.15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar-file{font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:0.72rem;color:#94a3b8;padding:0.3rem 0.5rem;border-radius:4px;cursor:pointer;transition:all 0.15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sidebar-file:hover{background:rgba(0,240,255,0.07);color:#e0f2fe}
 .sidebar-file.active{background:rgba(0,240,255,0.1);color:#00f0ff}
 .ide-editor-panel{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .ide-editor-wrap{flex:1;position:relative;overflow:auto}
-#editor{width:100%;height:100%;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.65;background:#060d1c;color:#e0f2fe;border:none;outline:none;resize:none;padding:1rem 1rem 1rem 3.5rem;tab-size:4;caret-color:#00f0ff}
-.line-numbers{position:absolute;left:0;top:0;width:3rem;height:100%;background:#060d1c;border-right:1px solid rgba(255,255,255,0.05);text-align:right;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.65;color:#3a4a5c;padding:1rem 0.5rem 1rem 0;pointer-events:none;user-select:none;overflow:hidden}
+#editor{width:100%;height:100%;font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:13.5px;line-height:1.65;background:#060d1c;color:#e0f2fe;border:none;outline:none;resize:none;padding:1rem 1rem 1rem 3.5rem;tab-size:4;caret-color:#00f0ff}
+.line-numbers{position:absolute;left:0;top:0;width:3rem;height:100%;background:#060d1c;border-right:1px solid rgba(255,255,255,0.05);text-align:right;font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:13.5px;line-height:1.65;color:#3a4a5c;padding:1rem 0.5rem 1rem 0;pointer-events:none;user-select:none;overflow:hidden}
 .ide-output-panel{height:160px;border-top:1px solid rgba(0,240,255,0.1);background:#04090f;display:flex;flex-direction:column;flex-shrink:0}
 .output-header{display:flex;align-items:center;gap:0.5rem;padding:0.4rem 1rem;border-bottom:1px solid rgba(0,240,255,0.08)}
 .output-header-label{font-size:0.68rem;letter-spacing:1.5px;color:#64748b;text-transform:uppercase}
-.output-status{font-size:0.68rem;font-family:'JetBrains Mono',monospace;color:#00ff9d;margin-left:auto}
-#output-console{flex:1;font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:#94a3b8;padding:0.75rem 1rem;overflow-y:auto;line-height:1.6}
+.output-status{font-size:0.68rem;font-family:ui-monospace,Consolas,'Courier New',monospace;color:#00ff9d;margin-left:auto}
+#output-console{flex:1;font-family:ui-monospace,Consolas,'Courier New',monospace;font-size:0.8rem;color:#94a3b8;padding:0.75rem 1rem;overflow-y:auto;line-height:1.6}
 .output-line-ok{color:#00ff9d}.output-line-err{color:#ff3366}.output-line-info{color:#00f0ff}
-.status-bar{display:flex;align-items:center;gap:1rem;padding:0.2rem 1rem;background:#030810;border-top:1px solid rgba(0,240,255,0.06);font-size:0.65rem;font-family:'JetBrains Mono',monospace;color:#3a4a5c;flex-shrink:0}
+.status-bar{display:flex;align-items:center;gap:1rem;padding:0.2rem 1rem;background:#030810;border-top:1px solid rgba(0,240,255,0.06);font-size:0.65rem;font-family:ui-monospace,Consolas,'Courier New',monospace;color:#3a4a5c;flex-shrink:0}
 .status-item{display:flex;align-items:center;gap:0.3rem}.status-dot{width:6px;height:6px;border-radius:50%;background:#00ff9d}
 </style>
 </head>

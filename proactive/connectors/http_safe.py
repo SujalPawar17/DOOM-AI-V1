@@ -111,6 +111,26 @@ class SafeHttp:
     ) -> Tuple[int, Dict[str, str], bytes]:
         m = str(method or "").upper()
         _validate_url(m, url)
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        from core.cost_guard.hosts import hostname_from_url
+        host = hostname_from_url(url)
+        provider = "google_oauth" if host == TOKEN_POST_HOST else (
+            "gmail" if "gmail" in host or "/gmail/" in url else (
+                "google_calendar" if "calendar" in host else (
+                    "github" if host == "api.github.com" else "arbitrary"
+                )
+            )
+        )
+        rtype = ResourceType.CONNECTOR
+        decision = cost_guard.authorize(ResourceRequest(
+            resource_type=rtype,
+            provider=provider,
+            capability="connector",
+            host=host,
+            endpoint=f"{urlparse(url).scheme}://{host}{urlparse(url).path}"[:200],
+        ))
+        if not decision.is_allow:
+            raise SafeHttpError(f"cost_policy_blocked:{decision.reason.value}")
         hdrs = dict(headers or {})
         if m == "POST":
             ct = (hdrs.get("Content-Type") or hdrs.get("content-type") or "").lower()

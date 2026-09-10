@@ -164,6 +164,15 @@ Remember: You are DOOM, {preferences['name']}'s personal AI assistant."""
         """Ask Ollama with conversation context"""
         if not self.ollama_available:
             return None
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.LLM,
+            provider="ollama",
+            capability="reasoning",
+            endpoint=self.ollama_url,
+            host="localhost",
+        )).is_allow:
+            return None
         
         try:
             # Get conversation context

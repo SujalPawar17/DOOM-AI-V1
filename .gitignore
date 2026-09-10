@@ -67,3 +67,6 @@ sujal.jpg
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local STT model cache (never commit weights)
+stt-models/

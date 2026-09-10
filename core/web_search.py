@@ -11,6 +11,15 @@ class DOOMWebSearch:
         
     def search_duckduckgo(self, query, max_results=3):
         """Search DuckDuckGo for information"""
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.SEARCH,
+            provider="duckduckgo",
+            capability="search",
+            host="api.duckduckgo.com",
+            endpoint="https://api.duckduckgo.com/",
+        )).is_allow:
+            return []
         try:
             # Use DuckDuckGo instant answer API
             url = f"https://api.duckduckgo.com/?q={quote(query)}&format=json&no_html=1&skip_disambig=1"
@@ -93,6 +102,15 @@ class DOOMWebSearch:
     
     def get_location_from_ip(self):
         """Get location from IP address"""
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.SEARCH,
+            provider="ip_api",
+            capability="geo",
+            host="ip-api.com",
+            endpoint="http://ip-api.com/json",
+        )).is_allow:
+            return "Unknown location"
         try:
             response = requests.get("http://ip-api.com/json", timeout=5)
             data = response.json()

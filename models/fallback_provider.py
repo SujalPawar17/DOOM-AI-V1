@@ -33,11 +33,12 @@ class FallbackProvider(BaseLLMProvider):
     def is_enabled(self) -> bool:
         return True
 
-    def generate(self,
+    def _generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,
-                 temperature: float = 0.7) -> LLMResponse:
+                 temperature: float = 0.7,
+                 **kwargs) -> LLMResponse:
         p_lower = prompt.lower().strip()
         tool_calls = []
 

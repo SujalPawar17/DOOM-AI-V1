@@ -68,12 +68,13 @@ class FakeLLM(BaseLLMProvider):
         self.health_checks += 1
         return self.is_available()
 
-    def generate(
+    def _generate(
         self,
         prompt: str,
         system_prompt: str = "",
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
+        **kwargs: Any,
     ) -> LLMResponse:
         self.generate_calls += 1
         if self._error:
@@ -116,7 +117,7 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         self.assertFalse(NIMProvider.streaming)
         nim = NIMProvider()
         self.assertFalse(nim.streaming)
-        src = inspect.getsource(NIMProvider.generate)
+        src = inspect.getsource(NIMProvider._generate)
         self.assertNotIn('"stream": True', src)
         self.assertNotIn("'stream': True", src)
         self.assertNotIn("stream=True", src)
@@ -131,46 +132,52 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         self.assertNotIn("tool_calling", gem.capabilities)
 
     def test_A_general_request_ollama_nim_groq_available(self):
-        """A: general + all three up → capable free-tier (NIM or Groq), not paid."""
+        """A: HARD $0 — Groq/NIM UNKNOWN blocked; Ollama lacks tool_calling so fallback degrades."""
         ollama = FakeLLM("ollama", cost_tier="LOCAL", text="from-ollama")
         nim = FakeLLM("nim", cost_tier="FREE_TIER", text="from-nim")
         groq = FakeLLM("groq", cost_tier="FREE_TIER", text="from-groq")
-        _wire(self.router, ollama=ollama, nim=nim, groq=groq)
-        chosen = self.router.route("general")
-        self.assertIn(chosen.name, ("nim", "groq"))
+        openai = FakeLLM("openai", cost_tier="PAID", text="from-openai")
+        _wire(self.router, ollama=ollama, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("hello", task_type="general")
-        self.assertTrue(resp.text)
-        self.assertEqual(ollama.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
+        self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
 
     def test_B_tool_calling_skips_ollama(self):
-        """B: coding requires tool_calling; Ollama is not selected."""
+        """B: coding requires tool_calling; Ollama skipped; Groq/NIM blocked; no paid hop."""
         ollama = FakeLLM("ollama", cost_tier="LOCAL", text="local-code")
         nim = FakeLLM("nim", text="nim-code", tool_calls=[{"id": "1", "name": "coding_write_script", "arguments": {}}])
         groq = FakeLLM("groq", text="groq-code")
-        _wire(self.router, ollama=ollama, nim=nim, groq=groq)
+        openai = FakeLLM("openai", cost_tier="PAID", text="paid-code")
+        _wire(self.router, ollama=ollama, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("write a python file", task_type="coding")
-        self.assertEqual(ollama.generate_calls, 0)
-        self.assertGreater(nim.generate_calls + groq.generate_calls, 0)
+        self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
         self.assertTrue(resp.text or resp.tool_calls)
 
     def test_C_nim_unavailable_falls_back_to_groq(self):
-        """C: NIM down → Groq."""
+        """C: NIM down does not select Groq (UNKNOWN) or paid."""
         nim = FakeLLM("nim", available=False, text="nim")
         groq = FakeLLM("groq", text="groq-ok")
-        _wire(self.router, nim=nim, groq=groq)
+        openai = FakeLLM("openai", cost_tier="PAID", text="paid")
+        _wire(self.router, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "groq-ok")
         self.assertEqual(nim.generate_calls, 0)
-        self.assertEqual(groq.generate_calls, 1)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_D_groq_unavailable_falls_back_to_nim(self):
-        """D: Groq down → NIM still eligible."""
+        """D: Groq down does not select NIM (UNKNOWN)."""
         nim = FakeLLM("nim", text="nim-ok")
         groq = FakeLLM("groq", available=False, text="groq")
         _wire(self.router, nim=nim, groq=groq)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "nim-ok")
+        self.assertEqual(nim.generate_calls, 0)
         self.assertEqual(groq.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_E_bedrock_disabled_never_selected(self):
         """E: production Bedrock is disabled and must not win routing."""
@@ -184,6 +191,7 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         self.assertNotEqual(chosen.name, "bedrock")
         resp = self.router.generate("hi", task_type="general")
         self.assertEqual(resp.model_name.startswith("bedrock"), False)
+        self.assertEqual(nim.generate_calls, 0)
 
     def test_F_vision_only_vision_capable_providers(self):
         """F: vision routing never invokes non-vision providers."""
@@ -201,12 +209,12 @@ class TestProviderRoutingScenarios(unittest.TestCase):
             openai=openai,
         )
         resp = self.router.generate("describe this image", task_type="vision")
-        # Gemini no longer declares tool_calling; vision tasks require it, so OpenAI wins.
-        self.assertEqual(resp.text, "openai-vision")
+        # HARD $0: Gemini/OpenAI/Bedrock blocked. Vision must not invoke paid providers.
         self.assertEqual(nim.generate_calls, 0)
         self.assertEqual(groq.generate_calls, 0)
-        self.assertEqual(ollama.generate_calls, 0)
         self.assertEqual(gemini.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_G_missing_openai_gemini_credentials_not_routable(self):
         """G: unconfigured paid providers are skipped."""
@@ -215,9 +223,9 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         groq = FakeLLM("groq", text="groq-ok")
         _wire(self.router, openai=openai, gemini=gemini, groq=groq)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "groq-ok")
         self.assertEqual(openai.generate_calls, 0)
         self.assertEqual(gemini.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
 
     def test_H_incompatible_override_rejected(self):
         """H: Ollama override on vision is not invoked."""
@@ -230,45 +238,54 @@ class TestProviderRoutingScenarios(unittest.TestCase):
             provider_override="ollama",
         )
         self.assertEqual(ollama.generate_calls, 0)
-        self.assertEqual(resp.text, "openai-ok")
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_I_compatible_override_accepted(self):
-        """I: Groq override for general is used first."""
+        """I: Groq override is Cost-Guard blocked (UNKNOWN)."""
         nim = FakeLLM("nim", text="nim-ok")
         groq = FakeLLM("groq", text="groq-override")
-        _wire(self.router, nim=nim, groq=groq)
+        openai = FakeLLM("openai", cost_tier="PAID", text="paid")
+        _wire(self.router, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("hi", task_type="general", provider_override="groq")
-        self.assertEqual(resp.text, "groq-override")
-        self.assertEqual(groq.generate_calls, 1)
+        self.assertEqual(groq.generate_calls, 0)
         self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_J_empty_response_falls_back(self):
-        """J: empty NIM completion → Groq."""
+        """J: empty NIM must not fall through to Groq under HARD $0."""
         nim = FakeLLM("nim", text="")
         groq = FakeLLM("groq", text="groq-filled")
-        _wire(self.router, nim=nim, groq=groq)
+        openai = FakeLLM("openai", cost_tier="PAID", text="paid")
+        _wire(self.router, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "groq-filled")
-        self.assertEqual(nim.generate_calls, 1)
-        self.assertEqual(groq.generate_calls, 1)
+        self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_K_rate_limit_falls_back(self):
-        """K: NIM 429 → Groq."""
+        """K: NIM 429 cannot fall through to Groq or paid."""
         nim = FakeLLM("nim", error=ProviderRateLimitError("rate limit", "nim"))
         groq = FakeLLM("groq", text="groq-after-429")
-        _wire(self.router, nim=nim, groq=groq)
+        openai = FakeLLM("openai", cost_tier="PAID", text="paid")
+        _wire(self.router, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "groq-after-429")
-        self.assertEqual(nim.generate_calls, 1)
+        self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_L_timeout_falls_back(self):
-        """L: NIM timeout → Groq."""
+        """L: NIM timeout cannot select Groq."""
         nim = FakeLLM("nim", error=ProviderTimeoutError("timeout", "nim", timeout=30.0))
         groq = FakeLLM("groq", text="groq-after-timeout")
         _wire(self.router, nim=nim, groq=groq)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "groq-after-timeout")
-        self.assertEqual(nim.generate_calls, 1)
+        self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_M_model_not_found_falls_back_without_retry_loop(self):
         """M: model-not-found is non-retryable on that provider; next provider used once."""
@@ -277,10 +294,13 @@ class TestProviderRoutingScenarios(unittest.TestCase):
             error=ProviderModelNotFoundError("missing", "nim", "bad-model"),
         )
         groq = FakeLLM("groq", text="groq-after-404")
-        _wire(self.router, nim=nim, groq=groq)
+        openai = FakeLLM("openai", cost_tier="PAID", text="paid")
+        _wire(self.router, nim=nim, groq=groq, openai=openai)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "groq-after-404")
-        self.assertEqual(nim.generate_calls, 1)
+        self.assertEqual(nim.generate_calls, 0)
+        self.assertEqual(groq.generate_calls, 0)
+        self.assertEqual(openai.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_N_disabled_provider_zero_health_probe_zero_invocation(self):
         """N: disabled Bedrock is not invoked; routing uses another provider."""
@@ -293,7 +313,7 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         self.router.route("general")
         self.router.generate("hi", task_type="general")
         self.assertEqual(real_bedrock.generate.call_count, 0)
-        self.assertEqual(groq.generate_calls, 1)
+        self.assertEqual(groq.generate_calls, 0)
 
 
     def test_O_bounded_draft_allows_reasoning_without_tool_calling(self):
@@ -320,9 +340,9 @@ class TestProviderRoutingScenarios(unittest.TestCase):
         groq = FakeLLM("groq", text="groq-ok")
         _wire(self.router, nim=nim, groq=groq)
         resp = self.router.generate("hi", task_type="general")
-        self.assertEqual(resp.text, "nim-ok")
-        self.assertEqual(nim.generate_calls, 1)
+        self.assertEqual(nim.generate_calls, 0)
         self.assertEqual(groq.generate_calls, 0)
+        self.assertTrue(resp.text or resp.tool_calls)
 
     def test_R_bounded_draft_requires_reasoning_not_tool_calling(self):
         self.assertEqual(self.router.capability_requirements["bounded_draft"], ["reasoning"])

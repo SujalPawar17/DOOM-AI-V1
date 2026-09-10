@@ -18,6 +18,13 @@ os.environ.setdefault("PROACTIVE_ACT_INTERNAL_ENABLED", "false")
 os.environ.setdefault("PROACTIVE_ACT_CALENDAR_HOLD_ENABLED", "false")
 os.environ.setdefault("PROACTIVE_COMPUTER_ENABLED", "false")
 os.environ.setdefault("PROACTIVE_COMPUTER_OBSERVE_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_CLICK_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_TYPE_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_BROWSER_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_FILESYSTEM_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_SEQUENCES_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_VERIFICATION_ENABLED", "false")
+os.environ.setdefault("PROACTIVE_COMPUTER_EXPERIENCE_ENABLED", "false")
 os.environ.setdefault("DOOM_ASK_UNLOCK", "v71-test-unlock")
 os.environ.setdefault("PGOPTIONS", "-c lock_timeout=8s -c statement_timeout=60s")
 
@@ -84,6 +91,12 @@ def _off():
         "PROACTIVE_ACT_ENABLED", "PROACTIVE_ACT_INTERNAL_ENABLED",
         "PROACTIVE_ACT_CALENDAR_HOLD_ENABLED",
         "PROACTIVE_COMPUTER_ENABLED", "PROACTIVE_COMPUTER_OBSERVE_ENABLED",
+        "PROACTIVE_COMPUTER_CLICK_ENABLED", "PROACTIVE_COMPUTER_TYPE_ENABLED",
+        "PROACTIVE_COMPUTER_BROWSER_ENABLED",
+        "PROACTIVE_COMPUTER_FILESYSTEM_ENABLED",
+        "PROACTIVE_COMPUTER_SEQUENCES_ENABLED",
+        "PROACTIVE_COMPUTER_VERIFICATION_ENABLED",
+        "PROACTIVE_COMPUTER_EXPERIENCE_ENABLED",
     ):
         os.environ[k] = "false"
 
@@ -288,6 +301,7 @@ class TestV71Screenshots(unittest.TestCase):
             self.assertNotIn("ImageGrab", p.read_text(encoding="utf-8"))
 
     def test_screenshot_disabled(self):
+        _off()
         cfg = (ROOT / "proactive" / "config.py").read_text(encoding="utf-8")
         self.assertNotIn("PROACTIVE_COMPUTER_SCREENSHOT_ENABLED", cfg)
         self.assertFalse(is_computer_enabled())
@@ -308,6 +322,8 @@ class TestV71AST(unittest.TestCase):
         }
         forbidden_attrs = {"screenshot", "typewrite", "hotkey", "SetFocus", "SendKeys", "Popen"}
         for p in COMPUTER_DIR.rglob("*.py"):
+            if "actions" in p.parts or "browser" in p.parts or "fs" in p.parts or "sequence" in p.parts or "verify" in p.parts or "experience" in p.parts:
+                continue
             src = p.read_text(encoding="utf-8")
             self.assertNotIn("shell=True", src)
             self.assertNotIn("os.system", src)

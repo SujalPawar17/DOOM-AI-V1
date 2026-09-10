@@ -119,13 +119,31 @@ class BaseLLMProvider(ABC):
         """Check if API key or local daemon is ready"""
         pass
 
-    @abstractmethod
     def generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,
-                 temperature: float = 0.7) -> LLMResponse:
-        """Generate response or function tool calls"""
+                 temperature: float = 0.7,
+                 **kwargs) -> LLMResponse:
+        """Cost-Guard-wrapped generation. Subclasses implement _generate()."""
+        from core.cost_guard.invoke import guarded_llm_generate
+        return guarded_llm_generate(
+            self,
+            prompt,
+            system_prompt=system_prompt,
+            tools=tools,
+            temperature=temperature,
+            **kwargs,
+        )
+
+    @abstractmethod
+    def _generate(self,
+                  prompt: str,
+                  system_prompt: str = "",
+                  tools: Optional[List[Dict[str, Any]]] = None,
+                  temperature: float = 0.7,
+                  **kwargs) -> LLMResponse:
+        """Unguarded provider implementation. Do not call from application code."""
         pass
 
     def get_metadata(self) -> Dict[str, Any]:

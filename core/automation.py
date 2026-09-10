@@ -162,6 +162,16 @@ class DOOMAutomation:
             if operation == "ping":
                 if not target:
                     target = "8.8.8.8"  # Google DNS
+                from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+                ping_host = "dns.google" if target == "8.8.8.8" else target
+                allowed = cost_guard.authorize(ResourceRequest(
+                    resource_type=ResourceType.HTTP,
+                    provider="arbitrary",
+                    capability="ping",
+                    host=str(ping_host),
+                )).is_allow
+                if not allowed:
+                    return "Ping unavailable (Cost Guard blocked unapproved external check)."
                 
                 if self.system == "Windows":
                     result = subprocess.run(['ping', '-n', '4', target], capture_output=True, text=True)
@@ -172,6 +182,14 @@ class DOOMAutomation:
             
             elif operation == "speed_test":
                 try:
+                    from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+                    allowed = cost_guard.authorize(ResourceRequest(
+                        resource_type=ResourceType.OTHER,
+                        provider="speedtest",
+                        capability="network_diagnostic",
+                    )).is_allow
+                    if not allowed:
+                        return "Speed test unavailable (Cost Guard blocked unapproved external diagnostic)."
                     import speedtest
                     st = speedtest.Speedtest()
                     st.get_best_server()
@@ -185,9 +203,19 @@ class DOOMAutomation:
             
             elif operation == "check_connection":
                 try:
+                    from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+                    allowed = cost_guard.authorize(ResourceRequest(
+                        resource_type=ResourceType.HTTP,
+                        provider="arbitrary",
+                        capability="connectivity_check",
+                        host="www.google.com",
+                        endpoint="http://www.google.com",
+                    )).is_allow
+                    if not allowed:
+                        return "Internet connection: Unavailable (Cost Guard blocked unapproved external check)."
                     response = requests.get("http://www.google.com", timeout=5)
                     return f"Internet connection: Active (Status: {response.status_code})"
-                except:
+                except Exception:
                     return "Internet connection: Inactive"
             
             else:

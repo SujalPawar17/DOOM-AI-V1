@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 CATEGORIES = frozenset({
     "request", "cognitive", "task", "step", "tool", "provider",
     "memory", "vector", "verify", "retry", "security", "ws",
-    "proactive",
+    "proactive", "cost",
 })
 
 STATUSES = frozenset({"ok", "error", "timeout", "skipped", "fallback"})
@@ -52,6 +52,7 @@ ALLOWED_ATTR_KEYS = frozenset({
     "idempotency_hit", "lease_id",
     "session_id", "observation_id", "observation_hash", "node_count",
     "screenshot_present",
+    "resource_type", "classification", "cost_decision", "cost_reason",
 })
 
 

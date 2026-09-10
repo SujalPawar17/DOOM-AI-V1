@@ -15,7 +15,13 @@ ELEVENLABS_VOICE_ID=your_elevenlabs_voice_id_here
 EDGE_TTS_VOICE=en-GB-RyanNeural
 
 # 🌍 Multilingual Support
-# STT Language (Google Speech Recognition): en-US, hi-IN, mr-IN, ta-IN, te-IN, kn-IN, ml-IN, gu-IN, bn-IN, pa-IN, ur-IN, etc.
+# STT: local Whisper only (HARD $0). Google Web Speech is blocked.
+# Optional runtime: pip install faster-whisper
+# Provision weights locally first. DOOM will not download models.
+# DOOM_STT_MODEL=tiny
+# DOOM_STT_MODEL_DIR=
+# Optional capture device index (e.g. 5 = Realtek Microphone Array on this machine)
+# DOOM_STT_MIC_INDEX=
 STT_LANGUAGE=en-US
 # TTS Language (Edge-TTS): en, hi, mr, ta, te, kn, ml, gu, bn, pa, ur, etc.
 TTS_LANGUAGE=en
@@ -60,6 +66,11 @@ DB_PORT=5432
 DB_NAME=Doom
 DB_SSLMODE=disable
 
+# Cost Guard (HARD $0 default). API keys are credentials, not permission.
+# OpenAI / Gemini / Bedrock / ElevenLabs are PAID and blocked.
+# Groq / NIM / Edge-TTS / Google STT / cloud search are UNKNOWN and blocked
+# until independently attested. Do not set a paid-override flag in this release.
+
 # V6.1 / V6.2 proactive intelligence (all default off — do not enable in production until ready)
 # PROACTIVE_ENABLED=false
 # PROACTIVE_CALENDAR_ENABLED=false
@@ -78,6 +89,25 @@ DB_SSLMODE=disable
 # PROACTIVE_ACT_CALENDAR_HOLD_ENABLED=false
 # PROACTIVE_COMPUTER_ENABLED=false
 # PROACTIVE_COMPUTER_OBSERVE_ENABLED=false
+# PROACTIVE_COMPUTER_CLICK_ENABLED=false
+# PROACTIVE_COMPUTER_TYPE_ENABLED=false
+# PROACTIVE_COMPUTER_BROWSER_ENABLED=false
+# PROACTIVE_COMPUTER_BROWSER_TTL_SEC=300
+# PROACTIVE_COMPUTER_BROWSER_MAX_NODES=40
+# PROACTIVE_COMPUTER_FILESYSTEM_ENABLED=false
+# PROACTIVE_COMPUTER_SEQUENCES_ENABLED=false
+# PROACTIVE_COMPUTER_SEQUENCE_MAX_STEPS=8
+# PROACTIVE_COMPUTER_SEQUENCE_TIMEOUT_MS=30000
+# PROACTIVE_COMPUTER_SEQUENCE_MAX_RETRIES=0
+# PROACTIVE_COMPUTER_VERIFICATION_ENABLED=false
+# PROACTIVE_COMPUTER_EXPERIENCE_ENABLED=false
+# PROACTIVE_COMPUTER_VERIFY_TIMEOUT_MS=2000
+# PROACTIVE_COMPUTER_VERIFY_MAX_ATTEMPTS=3
+# PROACTIVE_COMPUTER_FS_ALLOWED_ROOTS=
+# PROACTIVE_COMPUTER_FS_DENIED_ROOTS=
+# PROACTIVE_COMPUTER_FS_MAX_READ_BYTES=65536
+# PROACTIVE_COMPUTER_FS_MAX_WRITE_BYTES=65536
+# PROACTIVE_COMPUTER_FS_MAX_LIST=50
 # PROACTIVE_COMPUTER_TIMEOUT_MS=800
 # PROACTIVE_COMPUTER_MAX_DEPTH=6
 # PROACTIVE_COMPUTER_MAX_NODES=80

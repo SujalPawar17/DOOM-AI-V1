@@ -26,6 +26,14 @@ class DOOMBrainEnhanced:
         """Query Groq LLaMA 3.3 70B (Ultra-fast Cloud Brain)"""
         if not self.groq_key:
             return None
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.LLM,
+            provider="groq",
+            capability="reasoning",
+            host="api.groq.com",
+        )).is_allow:
+            return None
         try:
             from groq import Groq
             client = Groq(api_key=self.groq_key)
@@ -45,6 +53,14 @@ class DOOMBrainEnhanced:
     def ask_openai(self, prompt: str) -> str:
         """Query OpenAI GPT-4o"""
         if not self.openai_key:
+            return None
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.LLM,
+            provider="openai",
+            capability="reasoning",
+            host="api.openai.com",
+        )).is_allow:
             return None
         try:
             headers = {"Authorization": f"Bearer {self.openai_key}", "Content-Type": "application/json"}
@@ -66,6 +82,15 @@ class DOOMBrainEnhanced:
     def ask_ollama(self, prompt: str, model="llama3") -> str:
         """Ask local Ollama if active"""
         if not self.ollama_available:
+            return None
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.LLM,
+            provider="ollama",
+            capability="reasoning",
+            endpoint="http://localhost:11434",
+            host="localhost",
+        )).is_allow:
             return None
         try:
             response = requests.post("http://localhost:11434/api/generate", 

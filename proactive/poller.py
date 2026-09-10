@@ -206,6 +206,18 @@ def poll_connectors() -> None:
             last_ok = float(sync.get("last_success_at") or 0)
             if last_ok and (now - last_ok) < interval:
                 continue
+            from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+            cmap = {
+                "gmail": "gmail",
+                "calendar_google": "google_calendar",
+                "github": "github",
+            }
+            if not cost_guard.authorize(ResourceRequest(
+                resource_type=ResourceType.CONNECTOR,
+                provider=cmap.get(ctype, "arbitrary"),
+                capability="connector_poll",
+            )).is_allow:
+                continue
             try:
                 records, cursor = reader.fetch_updates(account, sync.get("cursor") or "")
                 for rec in records or []:

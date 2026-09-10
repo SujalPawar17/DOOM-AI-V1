@@ -51,11 +51,9 @@ class ProjectScaffolderTool(BaseTool):
         created_files = []
         custom_main_code = None
 
-        # If user supplied a description, use Groq to generate customized domain code
         if description and description.strip():
             try:
-                from models.groq_provider import GroqProvider
-                groq = GroqProvider()
+                from core.model_router import model_router
                 prompt = (
                     f"Generate a single production-ready starter file for project '{project_name}' using stack '{template}'.\n"
                     f"User Requirements: {description}\n"
@@ -63,14 +61,15 @@ class ProjectScaffolderTool(BaseTool):
                     f"- Write complete, runnable code with realistic domain models, schemas, and REST endpoints.\n"
                     f"- Provide ONLY code inside standard markdown code block. No explanations."
                 )
-                custom_code = groq.generate(prompt)
+                result = model_router.generate(prompt=prompt, task_type="coding")
+                custom_code = result.text if hasattr(result, "text") else str(result)
                 if "```" in custom_code:
                     lines = custom_code.split("```")[1].split("\n")
                     if lines[0].strip() in ["python", "py", "typescript", "tsx", "javascript", "js"]:
                         lines = lines[1:]
                     custom_main_code = "\n".join(lines).strip()
             except Exception as e:
-                print(f"[DOOM SCAFFOLDER] Groq customization warning: {e}")
+                print(f"[DOOM SCAFFOLDER] customization warning: {e}")
 
         if template == "fastapi_postgres":
             main_content = custom_main_code or (
@@ -166,6 +165,27 @@ class APITesterTool(BaseTool):
         start_t = time.time()
         method = method.upper().strip()
         headers = headers or {"User-Agent": "DOOM-V2-API-Tester/2.0"}
+
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        from core.cost_guard.hosts import hostname_from_url
+        host = hostname_from_url(url)
+        http_decision = cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.HTTP,
+            provider="arbitrary",
+            capability="http",
+            endpoint=url.split("?")[0][:200] if url else "",
+            host=host,
+        ))
+        if not http_decision.is_allow:
+            duration = (time.time() - start_t) * 1000
+            return ToolResult(
+                success=False,
+                output=f"HTTP blocked by Cost Guard ({http_decision.reason.value})",
+                action="test_api",
+                duration_ms=duration,
+                exit_code=1,
+                target=url,
+            )
 
         try:
             if method == "POST":

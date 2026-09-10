@@ -45,6 +45,10 @@ class NIMProvider(BaseLLMProvider):
         if not self.api_key:
             return False
 
+        from core.cost_guard import health_check_authorized
+        if not health_check_authorized(self):
+            return False
+
         now = time.time()
         if self._verified is not None and (now - self._verified_at) < 3600:
             return self._verified
@@ -71,11 +75,12 @@ class NIMProvider(BaseLLMProvider):
     def is_healthy(self) -> bool:
         return self.is_available()
 
-    def generate(self,
+    def _generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,
-                 temperature: float = 0.7) -> LLMResponse:
+                 temperature: float = 0.7,
+                 **kwargs) -> LLMResponse:
         if not self.api_key:
             raise ProviderAuthError("NVIDIA API key not configured", self.name)
 

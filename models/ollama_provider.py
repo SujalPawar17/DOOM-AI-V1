@@ -32,6 +32,9 @@ class OllamaProvider(BaseLLMProvider):
     def is_available(self) -> bool:
         if not self._enabled:
             return False
+        from core.cost_guard import health_check_authorized
+        if not health_check_authorized(self):
+            return False
         try:
             res = requests.get(f"{self.base_url}/api/tags", timeout=1)
             return res.status_code == 200
@@ -41,11 +44,12 @@ class OllamaProvider(BaseLLMProvider):
     def is_healthy(self) -> bool:
         return self.is_available()
 
-    def generate(self,
+    def _generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,
-                 temperature: float = 0.7) -> LLMResponse:
+                 temperature: float = 0.7,
+                 **kwargs) -> LLMResponse:
         url = f"{self.base_url}/api/generate"
         full_prompt = f"{system_prompt}\n\nUser: {prompt}\nDOOM:" if system_prompt else prompt
         

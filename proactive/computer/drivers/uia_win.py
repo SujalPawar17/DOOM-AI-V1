@@ -171,6 +171,35 @@ def _com_fill_children(
     return None
 
 
+_UIA_CLIENT = None
+
+
+def create_uia_client() -> Any:
+    """Return IUIAutomation or None. Local COM only. No network."""
+    global _UIA_CLIENT
+    if _UIA_CLIENT is not None:
+        return _UIA_CLIENT
+    try:
+        import comtypes
+        import comtypes.client
+    except Exception:
+        return None
+    try:
+        comtypes.CoInitialize()
+    except Exception:
+        pass
+    try:
+        comtypes.client.GetModule("UIAutomationCore.dll")
+        from comtypes.gen.UIAutomationClient import IUIAutomation
+        _UIA_CLIENT = comtypes.client.CreateObject(
+            "{ff48dba4-60ef-4201-aa87-54103eef594e}",
+            interface=IUIAutomation,
+        )
+        return _UIA_CLIENT
+    except Exception:
+        return None
+
+
 def _read_com(hwnd: int, timeout_ms: int, max_depth: int, max_nodes: int) -> UiaMeta:
     t0 = time.monotonic()
     try:

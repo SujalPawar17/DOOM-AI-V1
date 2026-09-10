@@ -144,6 +144,21 @@ class StreamYouTubeTool(BaseTool):
         import webbrowser
         from database.postgres_db import postgres_manager
 
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        yt = cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.SEARCH,
+            provider="youtube",
+            capability="search",
+            host="www.youtube.com",
+        ))
+        if not yt.is_allow:
+            return ToolResult(
+                success=False,
+                output=f"YouTube blocked by Cost Guard ({yt.reason.value})",
+                action="stream_youtube",
+                target=clean_query,
+            )
+
         # Log music fact to PostgreSQL
         if postgres_manager.is_connected():
             postgres_manager.save_semantic_fact(

@@ -39,11 +39,12 @@ class OpenAIProvider(BaseLLMProvider):
     def is_healthy(self) -> bool:
         return self.is_available()
 
-    def generate(self,
+    def _generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,
-                 temperature: float = 0.7) -> LLMResponse:
+                 temperature: float = 0.7,
+                 **kwargs) -> LLMResponse:
         if not self.is_configured():
             raise ProviderAuthError("OpenAI API key not configured", self.name)
 

@@ -55,11 +55,12 @@ class GroqProvider(BaseLLMProvider):
         from groq import Groq
         return Groq(api_key=self.api_key)
 
-    def generate(self,
+    def _generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,
-                 temperature: float = 0.7) -> LLMResponse:
+                 temperature: float = 0.7,
+                 **kwargs) -> LLMResponse:
         if not self.is_configured():
             raise ProviderAuthError("Groq API key not configured", self.name)
 

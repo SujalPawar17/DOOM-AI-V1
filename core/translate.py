@@ -3,7 +3,19 @@ from urllib.parse import quote
 from core.cinematic_voice import speak, stop_speaking
 
 def translate(text: str, dest_language: str = 'hi') -> str:
-    """Free, robust translation using Google Translate endpoint via requests"""
+    """Translation via Google Translate endpoint — Cost Guard gated."""
+    from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+    decision = cost_guard.authorize(ResourceRequest(
+        resource_type=ResourceType.TRANSLATION,
+        provider="google_translate",
+        capability="translation",
+        host="translate.googleapis.com",
+        endpoint="https://translate.googleapis.com/translate_a/single",
+    ))
+    if not decision.is_allow:
+        stop_speaking()
+        speak("Translation is unavailable under the current cost policy, Sujal.")
+        return text
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={dest_language}&dt=t&q={quote(text)}"
         response = requests.get(url, timeout=5)

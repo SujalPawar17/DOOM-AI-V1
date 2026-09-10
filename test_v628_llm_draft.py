@@ -289,6 +289,9 @@ class TestV628Policy(unittest.TestCase):
         ollama.is_enabled.return_value = True
         ollama.is_available.return_value = True
         ollama.deployment_mode = "LOCAL"
+        ollama.name = "ollama"
+        ollama.base_url = "http://localhost:11434"
+        ollama.model = "llama3"
         with patch("core.model_router.model_router") as mr:
             mr.providers = {"groq": groq, "ollama": ollama, "fallback": MagicMock()}
             names = allowed_providers_for("PRIVATE")
@@ -319,7 +322,9 @@ class TestV628Policy(unittest.TestCase):
                 "openai": ollama, "gemini": ollama, "fallback": ollama,
             }
             names = allowed_providers_for("NORMAL")
-        self.assertIn("groq", names)
+        self.assertNotIn("groq", names)
+        self.assertNotIn("openai", names)
+        self.assertNotIn("gemini", names)
 
 
 class TestV628StoreWorkerApi(unittest.TestCase):

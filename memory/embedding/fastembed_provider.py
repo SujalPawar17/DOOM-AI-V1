@@ -61,6 +61,30 @@ class FastEmbedProvider(EmbeddingProvider):
         if not lazy_load:
             self._ensure_model_loaded()
 
+    def _local_weights_present(self) -> bool:
+        slug = "models--" + str(self._model_name).replace("/", "--")
+        roots = [
+            os.environ.get("FASTEMBED_CACHE_PATH") or "",
+            os.environ.get("HF_HOME") or "",
+            os.path.join(os.path.expanduser("~"), ".cache", "fastembed"),
+            os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub"),
+            os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
+        ]
+        for root in roots:
+            if not root:
+                continue
+            direct = os.path.join(root, slug)
+            if os.path.isdir(direct):
+                return True
+            if os.path.isdir(root):
+                try:
+                    names = os.listdir(root)
+                except OSError:
+                    continue
+                if slug in names:
+                    return True
+        return False
+
     @property
     def provider_name(self) -> str:
         return self._provider_name
@@ -92,10 +116,34 @@ class FastEmbedProvider(EmbeddingProvider):
                 if self._model is None:
                     t_start = time.perf_counter()
                     try:
+                        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+                        if not self._local_weights_present():
+                            dl = cost_guard.authorize(ResourceRequest(
+                                resource_type=ResourceType.EMBEDDING_DOWNLOAD,
+                                provider="huggingface",
+                                capability="embedding",
+                                model=self._model_name,
+                                host="huggingface.co",
+                            ))
+                            if not dl.is_allow:
+                                raise ProviderUnavailableError(
+                                    "FastEmbed weights are not present locally; download blocked by Cost Guard."
+                                )
+                        else:
+                            inf = cost_guard.authorize(ResourceRequest(
+                                resource_type=ResourceType.EMBEDDING,
+                                provider="fastembed",
+                                capability="embedding",
+                                model=self._model_name,
+                            ))
+                            if not inf.is_allow:
+                                raise ProviderUnavailableError("FastEmbed inference blocked by Cost Guard.")
+                            os.environ.setdefault("HF_HUB_OFFLINE", "1")
                         from fastembed import TextEmbedding
-                        # Initialize local ONNX model
                         self._model = TextEmbedding(model_name=self._model_name)
                         self._init_time_ms = (time.perf_counter() - t_start) * 1000.0
+                    except ProviderUnavailableError:
+                        raise
                     except Exception as e:
                         raise ProviderUnavailableError(
                             f"Failed to initialize FastEmbed model '{self._model_name}': {e}"

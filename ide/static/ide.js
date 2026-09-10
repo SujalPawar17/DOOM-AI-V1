@@ -49,7 +49,7 @@ function initMonaco() {
             language: 'python',
             theme: 'doom-cyber-dark',
             automaticLayout: true,
-            fontFamily: "'JetBrains Mono', Consolas, 'Courier New', monospace",
+            fontFamily: "ui-monospace, Consolas, 'Courier New', monospace",
             fontSize: 13,
             lineHeight: 20,
             minimap: { enabled: true },

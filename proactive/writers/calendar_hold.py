@@ -47,6 +47,16 @@ def write_calendar_hold(action: Dict[str, Any], timeout: float = 8.0) -> Tuple[s
     token = refresh_google_access_token(secret_ref) if secret_ref else ""
     if not token:
         raise RuntimeError("credential")
+    from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+    hold_decision = cost_guard.authorize(ResourceRequest(
+        resource_type=ResourceType.CONNECTOR_WRITE,
+        provider="google_calendar",
+        capability="calendar_hold",
+        host="www.googleapis.com",
+        endpoint="https://www.googleapis.com/calendar/v3/calendars",
+    ))
+    if not hold_decision.is_allow:
+        raise RuntimeError("cost_policy_blocked")
     blob = get_secret(secret_ref) or {}
     vault_cal = str(blob.get("calendar_id") or "primary")
     if vault_cal != cal and not (cal == "primary"):

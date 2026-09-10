@@ -30,6 +30,18 @@ def _dead_provider():
     return m
 
 
+def _wire_local(router, fake):
+    from models.fallback_provider import FallbackProvider
+    for k in list(router.providers):
+        router.providers[k] = _dead_provider()
+    fake.name = "ollama"
+    fake.base_url = "http://127.0.0.1:11434"
+    fake.capabilities = router.provider_capabilities["ollama"]
+    router.providers["ollama"] = fake
+    router.providers["fallback"] = FallbackProvider()
+    return fake
+
+
 def _ev(**kw):
     return OperationalEvent(
         doom_request_id="req_test",
@@ -99,15 +111,12 @@ class TestV5374Observability(unittest.TestCase):
         fake = MagicMock()
         fake.is_enabled.return_value = True
         fake.is_available.return_value = True
-        fake.cost_tier = "FREE_TIER"
+        fake.cost_tier = "LOCAL"
         fake.model = "fake-model"
         fake.generate.return_value = LLMResponse(text="ok", tool_calls=[], model_name="fake")
-        fake.capabilities = router.provider_capabilities["groq"]
         bind_request()
-        for k in list(router.providers):
-            router.providers[k] = _dead_provider()
-        router.providers["groq"] = fake
-        router.generate("hi", task_type="general")
+        _wire_local(router, fake)
+        router.generate("hi", task_type="bounded_draft")
         pcs = [e.provider_call_id for e in telemetry_bus.snapshot() if e.category == "provider"]
         self.assertTrue(any(pcs))
 
@@ -129,23 +138,18 @@ class TestV5374Observability(unittest.TestCase):
         bad = MagicMock()
         bad.is_enabled.return_value = True
         bad.is_available.return_value = True
-        bad.cost_tier = "FREE_TIER"
+        bad.cost_tier = "LOCAL"
         bad.model = "x"
-        bad.generate.side_effect = ProviderTimeoutError("t", "nim", 1)
+        bad.generate.side_effect = ProviderTimeoutError("t", "ollama", 1)
         good = MagicMock()
         good.is_enabled.return_value = True
         good.is_available.return_value = True
-        good.cost_tier = "FREE_TIER"
+        good.cost_tier = "LOCAL"
         good.model = "y"
         good.generate.return_value = LLMResponse(text="ok", tool_calls=[], model_name="g")
         bind_request()
-        for k in list(router.providers):
-            router.providers[k] = _dead_provider()
-        router.providers["nim"] = bad
-        router.providers["groq"] = good
-        bad.capabilities = router.provider_capabilities["nim"]
-        good.capabilities = router.provider_capabilities["groq"]
-        router.generate("hi")
+        _wire_local(router, bad)
+        router.generate("hi", task_type="bounded_draft")
         names = [e.name for e in telemetry_bus.snapshot()]
         self.assertIn("provider.generate.failed", names)
         self.assertIn("fallback.started", names)
@@ -198,24 +202,22 @@ class TestV5374Observability(unittest.TestCase):
     def test_18_provider_name_and_cost_tier(self):
         self.test_08_provider_call_id_on_generate()
         pe = [e for e in telemetry_bus.snapshot() if e.category == "provider"][0]
-        self.assertEqual(pe.attributes.get("cost_tier"), "FREE_TIER")
-        self.assertEqual(pe.attributes.get("provider"), "groq")
+        self.assertEqual(pe.attributes.get("cost_tier"), "LOCAL")
+        self.assertEqual(pe.attributes.get("provider"), "ollama")
 
     def test_19_provider_error_class_not_message(self):
         router = ModelRouter()
         bad = MagicMock()
         bad.is_enabled.return_value = True
         bad.is_available.return_value = True
-        bad.cost_tier = "FREE_TIER"
+        bad.cost_tier = "LOCAL"
         bad.model = "x"
-        bad.generate.side_effect = ProviderRateLimitError("secret gsk_LIVEFAKE", "nim")
+        bad.generate.side_effect = ProviderRateLimitError("secret gsk_LIVEFAKE", "ollama")
         bind_request()
-        for k in list(router.providers):
-            router.providers[k] = _dead_provider()
-        router.providers["nim"] = bad
-        bad.capabilities = router.provider_capabilities["nim"]
+        _wire_local(router, bad)
+        router.providers["fallback"] = _dead_provider()
         with self.assertRaises(Exception):
-            router.generate("hi")
+            router.generate("hi", task_type="bounded_draft")
         blob = "".join(e.to_json() for e in telemetry_bus.snapshot())
         self.assertNotIn("gsk_LIVEFAKE", blob)
         self.assertTrue(any(e.error_type == "RATE_LIMIT" for e in telemetry_bus.snapshot()))
@@ -237,7 +239,8 @@ class TestV5374Observability(unittest.TestCase):
     def test_23_final_provider_attribute(self):
         self.test_11_fallback_after_provider_fail()
         done = [e for e in telemetry_bus.snapshot() if e.name == "provider.generate.completed"]
-        self.assertEqual(done[-1].attributes.get("final_provider"), "groq")
+        self.assertTrue(done)
+        self.assertIn(done[-1].attributes.get("final_provider"), ("ollama", "fallback"))
 
     def test_24_circuit_skipped_event(self):
         from core.reliability.circuit_breaker import provider_circuit_breaker
@@ -246,21 +249,17 @@ class TestV5374Observability(unittest.TestCase):
         fake = MagicMock()
         fake.is_enabled.return_value = True
         fake.is_available.return_value = True
-        fake.cost_tier = "FREE_TIER"
+        fake.cost_tier = "LOCAL"
         fake.model = "x"
         fake.generate.return_value = LLMResponse(text="ok", tool_calls=[], model_name="x")
         bind_request()
-        for k in list(router.providers):
-            router.providers[k] = _dead_provider()
-        router.providers["nim"] = fake
-        fake.capabilities = router.provider_capabilities["nim"]
-        provider_circuit_breaker._providers["nim"] = {
+        _wire_local(router, fake)
+        provider_circuit_breaker._providers["ollama"] = {
             "consecutive_failures": 9,
             "last_failure_time": time.time(),
             "state": __import__("core.reliability.circuit_breaker", fromlist=["CircuitState"]).CircuitState.OPEN,
         }
-        with self.assertRaises(Exception):
-            router.generate("hi")
+        router.generate("hi", task_type="bounded_draft")
         self.assertTrue(any(e.attributes.get("circuit_skipped") for e in telemetry_bus.snapshot()))
         provider_circuit_breaker.reset()
 
@@ -269,23 +268,12 @@ class TestV5374Observability(unittest.TestCase):
         empty = MagicMock()
         empty.is_enabled.return_value = True
         empty.is_available.return_value = True
-        empty.cost_tier = "FREE_TIER"
+        empty.cost_tier = "LOCAL"
         empty.model = "e"
         empty.generate.return_value = LLMResponse(text="", tool_calls=[], model_name="e")
-        filled = MagicMock()
-        filled.is_enabled.return_value = True
-        filled.is_available.return_value = True
-        filled.cost_tier = "FREE_TIER"
-        filled.model = "f"
-        filled.generate.return_value = LLMResponse(text="ok", tool_calls=[], model_name="f")
         bind_request()
-        for k in list(router.providers):
-            router.providers[k] = _dead_provider()
-        router.providers["nim"] = empty
-        router.providers["groq"] = filled
-        empty.capabilities = router.provider_capabilities["nim"]
-        filled.capabilities = router.provider_capabilities["groq"]
-        router.generate("hi")
+        _wire_local(router, empty)
+        router.generate("hi", task_type="bounded_draft")
         self.assertTrue(any(e.name == "provider.generate.empty" for e in telemetry_bus.snapshot()))
 
     # ----- Tool (3) -----

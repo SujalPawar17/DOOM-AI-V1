@@ -177,20 +177,31 @@ class ModelRouter:
         # Then sort by cost tier within same priority (stable sort)
         return self._sort_by_cost_tier(prioritized)
 
+    def _cost_allows(self, provider: BaseLLMProvider, capability: str = "") -> bool:
+        from core.cost_guard.invoke import authorize_llm_provider
+        decision = authorize_llm_provider(provider, capability=capability)
+        return bool(decision.allows_invoke)
+
     def route(self, task_type: str = "general") -> BaseLLMProvider:
-        """Finds the optimal online provider based on task capabilities."""
+        """Finds the optimal online provider based on task capabilities and Cost Guard."""
         from core.reliability.circuit_breaker import provider_circuit_breaker
         key = (task_type or "general").lower()
         routable = self._get_routable_providers(key)
         for name in routable:
             p = self.providers.get(name)
-            if p and p.is_available() and provider_circuit_breaker.can_attempt(name):
-                return p
-        # Fallback probe if all breakers open
+            if not p or not p.is_available() or not provider_circuit_breaker.can_attempt(name):
+                continue
+            if not self._cost_allows(p, capability=key):
+                continue
+            return p
+        # Open-circuit locals must not promote a PAID/UNKNOWN provider.
         for name in routable:
             p = self.providers.get(name)
-            if p and p.is_available():
-                return p
+            if not p or not p.is_available():
+                continue
+            if not self._cost_allows(p, capability=key):
+                continue
+            return p
         return self.providers["fallback"]
 
     def select_provider(self, prompt: str) -> BaseLLMProvider:
@@ -247,6 +258,25 @@ class ModelRouter:
         for name in capable_cascade:
             p = self.providers.get(name)
             if not p or not p.is_available():
+                continue
+            from core.cost_guard.invoke import authorize_llm_provider
+            from core.cost_guard.types import CostGuardBlockedError
+            cost_decision = authorize_llm_provider(p, capability=key)
+            if not cost_decision.allows_invoke:
+                emit(
+                    "fallback.circuit_skipped",
+                    "retry",
+                    status="skipped",
+                    component="model_router",
+                    operation="cost_guard",
+                    attributes={
+                        "provider": name,
+                        "circuit_skipped": False,
+                        "capability": key,
+                        "cost_reason": cost_decision.reason.value,
+                        "cost_decision": cost_decision.action.value,
+                    },
+                )
                 continue
             if not provider_circuit_breaker.can_attempt(name):
                 emit(
@@ -319,6 +349,9 @@ class ModelRouter:
                     attributes={"failed_provider": name, "attempt_number": hop, "reason": "empty_response"},
                 )
             except Exception as e:
+                from core.cost_guard.types import CostGuardBlockedError
+                if isinstance(e, CostGuardBlockedError):
+                    continue
                 provider_circuit_breaker.record_failure(name)
                 lat = (_time.perf_counter() - t0) * 1000.0
                 last_error_type = classify_error(e)
@@ -343,8 +376,47 @@ class ModelRouter:
                 )
                 continue
 
-        available_providers = [name for name in self.capability_priorities.get(key, [])
-                               if self.providers.get(name) and self.providers[name].is_available()]
+        # LOCAL_FREE deterministic degrade — never a paid hop.
+        if allowed_providers is None or "fallback" in set(allowed_providers):
+            fb = self.providers.get("fallback")
+            if fb and fb.is_available() and self._cost_allows(fb, capability=key):
+                try:
+                    response = fb.generate(prompt=prompt, system_prompt=system_prompt, tools=tools)
+                    if response and (response.text or response.tool_calls):
+                        emit(
+                            "provider.generate.completed",
+                            "provider",
+                            status="fallback",
+                            component="model_router",
+                            operation="generate",
+                            attributes={
+                                "provider": "fallback",
+                                "model": "fallback/rule_engine",
+                                "cost_tier": "LOCAL",
+                                "capability": key,
+                                "attempt": hop + 1,
+                                "fallback": True,
+                                "final_provider": "fallback",
+                            },
+                        )
+                        emit(
+                            "fallback.completed",
+                            "retry",
+                            status="ok",
+                            component="model_router",
+                            operation="fallback",
+                            attributes={"final_provider": "fallback", "attempt_number": hop + 1, "failed_provider": ""},
+                        )
+                        return response
+                except Exception:
+                    pass
+
+        available_providers = [
+            name for name in self.capability_priorities.get(key, [])
+            if self.providers.get(name)
+            and self.providers[name].is_available()
+            and self._cost_allows(self.providers[name], capability=key)
+        ]
         if available_providers:
             raise NoCapableProviderError(task_type, available_providers)
 

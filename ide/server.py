@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from core.model_router import model_router
+from core.model_router import NoCapableProviderError, model_router
 from core.orchestrator import doom_core
 
 app = FastAPI(title="DOOM Cyber IDE — Autonomous AI Development Environment", version="2.0.0")
@@ -341,24 +341,26 @@ async def ai_ide_chat(req: AIChatRequest):
         full_prompt += "\n".join(context_parts) + "\n\n"
     full_prompt += f"User Request: {req.prompt}"
 
-# Use Model Router
-    provider = model_router.providers.get(req.model)
-    if not provider:
-        # Auto pick best available
-        provider = model_router.route("general")
-    
+    override = req.model if req.model in model_router.providers else None
     from observability.telemetry import request_scope
     with request_scope():
         try:
-            raw = provider.generate(full_prompt)
+            raw = model_router.generate(
+                prompt=full_prompt,
+                task_type="general",
+                provider_override=override,
+            )
             response_text = raw.text if hasattr(raw, "text") else str(raw)
-        except Exception as e:
-            fallback = model_router.providers.get("fallback")
-            if fallback:
-                raw = fallback.generate(full_prompt)
+        except (NoCapableProviderError, Exception) as e:
+            try:
+                raw = model_router.generate(
+                    prompt=full_prompt,
+                    task_type="general",
+                    allowed_providers=["fallback"],
+                )
                 tail = raw.text if hasattr(raw, "text") else str(raw)
                 response_text = f"Primary model notice: {type(e).__name__}\n\n" + tail
-            else:
+            except Exception:
                 response_text = f"Primary model notice: {type(e).__name__}"
 
     # Extract code blocks from markdown

@@ -148,6 +148,9 @@ class BedrockProvider(BaseLLMProvider):
 
     def _verify_bedrock(self) -> bool:
         """Explicit verification with actual inference probe. Called on-demand when enabled."""
+        from core.cost_guard import health_check_authorized
+        if not health_check_authorized(self):
+            return False
         if not self.is_available():
             return False
 
@@ -337,7 +340,7 @@ class BedrockProvider(BaseLLMProvider):
             model_name=f"bedrock/{model_id}"
         )
 
-    def generate(self,
+    def _generate(self,
                  prompt: str,
                  system_prompt: str = "",
                  tools: Optional[List[Dict[str, Any]]] = None,

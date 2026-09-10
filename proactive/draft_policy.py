@@ -33,7 +33,10 @@ def allowed_providers_for(privacy_class: str) -> List[str]:
         names = []
         p = model_router.providers.get("ollama")
         if p and p.is_enabled() and p.is_available() and _mode(p) == "LOCAL":
-            names.append("ollama")
+            from core.cost_guard.invoke import llm_request_for_provider
+            from core.cost_guard.guard import cost_guard
+            if cost_guard.authorize(llm_request_for_provider(p, capability="bounded_draft", privacy_class=pc)).is_allow:
+                names.append("ollama")
         return names[:LLM_DRAFT_MAX_FAILOVER_HOPS]
     if pc != "NORMAL":
         return []
@@ -45,6 +48,10 @@ def allowed_providers_for(privacy_class: str) -> List[str]:
         if not p or not p.is_enabled() or not p.is_available():
             continue
         if name == "fallback":
+            continue
+        from core.cost_guard.invoke import llm_request_for_provider
+        from core.cost_guard.guard import cost_guard
+        if not cost_guard.authorize(llm_request_for_provider(p, capability="bounded_draft", privacy_class=pc)).is_allow:
             continue
         out.append(name)
         if len(out) >= LLM_DRAFT_MAX_FAILOVER_HOPS:

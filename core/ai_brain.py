@@ -100,6 +100,15 @@ class DOOMBrain:
             
         if not self.openai_client:
             return "I'm sorry, but I need my AI brain to be properly configured. Please set your OPENAI_API_KEY in the .env file."
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.LLM,
+            provider="openai",
+            capability="reasoning",
+            model="gpt-3.5-turbo",
+            host="api.openai.com",
+        )).is_allow:
+            return "OpenAI is blocked by DOOM Cost Guard under the default $0 policy."
             
         try:
             messages = [
@@ -136,6 +145,13 @@ class DOOMBrain:
             
         if not self.wolfram_client:
             return "I need Wolfram Alpha to be properly configured. Please set your WOLFRAM_API_KEY in the .env file."
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.OTHER,
+            provider="wolfram",
+            capability="math",
+        )).is_allow:
+            return "Wolfram Alpha is blocked by DOOM Cost Guard under the default $0 policy."
             
         try:
             res = self.wolfram_client.query(query)
@@ -150,6 +166,13 @@ class DOOMBrain:
             
         if not self.news_api:
             return "I need News API to be properly configured. Please set your NEWS_API_KEY in the .env file."
+        from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+        if not cost_guard.authorize(ResourceRequest(
+            resource_type=ResourceType.OTHER,
+            provider="newsapi",
+            capability="news",
+        )).is_allow:
+            return "News API is blocked by DOOM Cost Guard under the default $0 policy."
             
         try:
             headlines = self.news_api.get_top_headlines(q=topic, language='en', page_size=count)
@@ -174,10 +197,16 @@ class DOOMBrain:
             download_speed = upload_speed = "N/A"
             if SPEEDTEST_AVAILABLE:
                 try:
-                    st = speedtest.Speedtest()
-                    download_speed = st.download() / 1_000_000  # Convert to Mbps
-                    upload_speed = st.upload() / 1_000_000
-                except:
+                    from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+                    if cost_guard.authorize(ResourceRequest(
+                        resource_type=ResourceType.OTHER,
+                        provider="speedtest",
+                        capability="network",
+                    )).is_allow:
+                        st = speedtest.Speedtest()
+                        download_speed = st.download() / 1_000_000
+                        upload_speed = st.upload() / 1_000_000
+                except Exception:
                     pass
             
             return {
@@ -203,6 +232,13 @@ class DOOMBrain:
     def wikipedia_search(self, query: str) -> str:
         """Wikipedia knowledge search"""
         try:
+            from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+            if not cost_guard.authorize(ResourceRequest(
+                resource_type=ResourceType.OTHER,
+                provider="wikipedia",
+                capability="search",
+            )).is_allow:
+                return "Wikipedia is blocked by DOOM Cost Guard under the default $0 policy."
             import wikipedia
             summary = wikipedia.summary(query, sentences=3)
             return f"Wikipedia: {summary}"

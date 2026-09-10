@@ -33,9 +33,9 @@
     --red-dim:     rgba(239, 68, 68, 0.15);
 
     /* Typography */
-    --font-display: 'Orbitron', sans-serif;
-    --font-ui:      'Inter', -apple-system, sans-serif;
-    --font-mono:    'JetBrains Mono', monospace;
+    --font-display: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-ui:      system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono:    ui-monospace, 'Cascadia Code', Consolas, 'Courier New', monospace;
 
     /* Text */
     --text-primary:   #e2eaf5;

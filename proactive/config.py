@@ -144,12 +144,59 @@ def is_computer_observe_enabled() -> bool:
     return _bool_env("PROACTIVE_COMPUTER_OBSERVE_ENABLED", False)
 
 
+def is_computer_click_enabled() -> bool:
+    """V7.2 UIA click. Default false. Requires computer master flag at the kernel."""
+    return _bool_env("PROACTIVE_COMPUTER_CLICK_ENABLED", False)
+
+
+def is_computer_type_enabled() -> bool:
+    """V7.2 UIA type. Default false. Requires computer master flag at the kernel."""
+    return _bool_env("PROACTIVE_COMPUTER_TYPE_ENABLED", False)
+
+
+def is_computer_browser_enabled() -> bool:
+    """V7.3 bounded browser. Default false. Requires computer master flag at the kernel."""
+    return _bool_env("PROACTIVE_COMPUTER_BROWSER_ENABLED", False)
+
+
+def is_computer_filesystem_enabled() -> bool:
+    """V7.4 bounded filesystem. Default false. Requires computer master flag."""
+    return _bool_env("PROACTIVE_COMPUTER_FILESYSTEM_ENABLED", False)
+
+
+def is_computer_sequences_enabled() -> bool:
+    """V7.5 bounded sequences. Default false. Requires computer master flag."""
+    return _bool_env("PROACTIVE_COMPUTER_SEQUENCES_ENABLED", False)
+
+
+def is_computer_verification_enabled() -> bool:
+    """V7.6 structured verification. Default false. Requires computer master flag."""
+    return _bool_env("PROACTIVE_COMPUTER_VERIFICATION_ENABLED", False)
+
+
+def is_computer_experience_enabled() -> bool:
+    """V7.7 hashed experience recording. Default false. Requires computer master flag."""
+    return _bool_env("PROACTIVE_COMPUTER_EXPERIENCE_ENABLED", False)
+
+
 COMPUTER_TIMEOUT_MS = _int_env("PROACTIVE_COMPUTER_TIMEOUT_MS", 800)
 COMPUTER_MAX_DEPTH = _int_env("PROACTIVE_COMPUTER_MAX_DEPTH", 6)
 COMPUTER_MAX_NODES = _int_env("PROACTIVE_COMPUTER_MAX_NODES", 80)
 COMPUTER_MAX_TITLE = _int_env("PROACTIVE_COMPUTER_MAX_TITLE", 80)
 COMPUTER_SESSION_TTL_SEC = _int_env("PROACTIVE_COMPUTER_SESSION_TTL_SEC", 3600)
 COMPUTER_RETENTION = _int_env("PROACTIVE_COMPUTER_RETENTION", 20)
+COMPUTER_BROWSER_TTL_SEC = _int_env("PROACTIVE_COMPUTER_BROWSER_TTL_SEC", 300)
+COMPUTER_BROWSER_MAX_NODES = _int_env("PROACTIVE_COMPUTER_BROWSER_MAX_NODES", 40)
+COMPUTER_FS_ALLOWED_ROOTS = os.environ.get("PROACTIVE_COMPUTER_FS_ALLOWED_ROOTS", "") or ""
+COMPUTER_FS_DENIED_ROOTS = os.environ.get("PROACTIVE_COMPUTER_FS_DENIED_ROOTS", "") or ""
+COMPUTER_FS_MAX_READ_BYTES = _int_env("PROACTIVE_COMPUTER_FS_MAX_READ_BYTES", 65536)
+COMPUTER_FS_MAX_WRITE_BYTES = _int_env("PROACTIVE_COMPUTER_FS_MAX_WRITE_BYTES", 65536)
+COMPUTER_FS_MAX_LIST = _int_env("PROACTIVE_COMPUTER_FS_MAX_LIST", 50)
+COMPUTER_SEQUENCE_MAX_STEPS = _int_env("PROACTIVE_COMPUTER_SEQUENCE_MAX_STEPS", 8)
+COMPUTER_SEQUENCE_TIMEOUT_MS = _int_env("PROACTIVE_COMPUTER_SEQUENCE_TIMEOUT_MS", 30000)
+COMPUTER_SEQUENCE_MAX_RETRIES = _int_env("PROACTIVE_COMPUTER_SEQUENCE_MAX_RETRIES", 0)
+COMPUTER_VERIFY_TIMEOUT_MS = _int_env("PROACTIVE_COMPUTER_VERIFY_TIMEOUT_MS", 2000)
+COMPUTER_VERIFY_MAX_ATTEMPTS = _int_env("PROACTIVE_COMPUTER_VERIFY_MAX_ATTEMPTS", 3)
 
 
 PREPARE_RULE_VERSION = "v626.1"

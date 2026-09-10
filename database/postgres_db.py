@@ -90,6 +90,23 @@ class PostgresManager:
         if not PSYCOPG2_AVAILABLE:
             return
 
+        from core.cost_guard.hosts import is_loopback_host
+        if not is_loopback_host(str(self.host or "")):
+            from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+            db_decision = cost_guard.authorize(ResourceRequest(
+                resource_type=ResourceType.DATABASE,
+                provider="postgres",
+                capability="database",
+                host=str(self.host or ""),
+                endpoint=f"{self.host}:{self.port}",
+            ))
+            if not db_decision.is_allow:
+                print(
+                    f"[POSTGRES] Remote host '{self.host}' blocked by Cost Guard "
+                    f"({db_decision.reason.value}). Local PostgreSQL only under HARD $0."
+                )
+                return
+
         try:
             self._ensure_database_exists()
 

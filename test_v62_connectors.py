@@ -23,6 +23,7 @@ from proactive.connectors.base import FencedRecord
 from proactive.connectors.calendar_google import GoogleCalendarConnector
 from proactive.connectors.github import GitHubConnector, _owner_repo_from_remote
 from proactive.connectors.http_safe import SafeHttp, SafeHttpError, TOKEN_POST_URL
+from core.cost_guard import CostClass, CostDecision, CostDecisionAction, CostReason, cost_guard
 from proactive.connectors.registry import get_enabled_readers
 from proactive.poller import persist_fenced_record, poll_connectors
 from proactive.store import proactive_store
@@ -56,6 +57,17 @@ class SeqTransport:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+def _cost_allow(req):
+    """Isolate connector fencing tests from HARD $0 Cost Guard (see test_cost_guard.py)."""
+    return CostDecision(
+        action=CostDecisionAction.ALLOW,
+        cost_class=CostClass.LOCAL_FREE,
+        reason=CostReason.LOCAL_RESOURCE_ALLOWED,
+        request=req,
+        recorded=True,
+    )
 
 
 class TestV622Connectors(unittest.TestCase):
@@ -106,14 +118,15 @@ class TestV622Connectors(unittest.TestCase):
             (200, {}, b'{"access_token":"x","expires_in":3600}'),
         ])
         http = SafeHttp(transport=tr)
-        st, _h, body = http.get("https://api.github.com/notifications")
-        self.assertEqual(st, 200)
-        self.assertIn(b"ok", body)
-        st, _h, _b = http.post_token(
-            TOKEN_POST_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data=b"grant_type=refresh_token",
-        )
+        with patch.object(cost_guard, "authorize", side_effect=_cost_allow):
+            st, _h, body = http.get("https://api.github.com/notifications")
+            self.assertEqual(st, 200)
+            self.assertIn(b"ok", body)
+            st, _h, _b = http.post_token(
+                TOKEN_POST_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data=b"grant_type=refresh_token",
+            )
         self.assertEqual(st, 200)
         self.assertEqual(tr.calls[0][0], "GET")
         self.assertEqual(tr.calls[1][0], "POST")
@@ -176,7 +189,8 @@ class TestV622Connectors(unittest.TestCase):
         }
         tr = SeqTransport([(200, {}, json.dumps(fixture).encode("utf-8"))])
         conn = GoogleCalendarConnector(http=SafeHttp(transport=tr))
-        recs, _cur = conn.fetch_updates({"secret_ref": "calref", "privacy_class_default": "NORMAL"}, "")
+        with patch.object(cost_guard, "authorize", side_effect=_cost_allow):
+            recs, _cur = conn.fetch_updates({"secret_ref": "calref", "privacy_class_default": "NORMAL"}, "")
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0].signal_type, "CALENDAR_EVENT")
         self.assertEqual(recs[0].fact_kind, "CAL_EVENT")
@@ -211,7 +225,8 @@ class TestV622Connectors(unittest.TestCase):
             (200, {"etag": '"abc"'}, json.dumps(notes).encode("utf-8")),
         ])
         conn = GitHubConnector(http=SafeHttp(transport=tr))
-        recs, _cur = conn.fetch_updates({"secret_ref": "ghref"}, "")
+        with patch.object(cost_guard, "authorize", side_effect=_cost_allow):
+            recs, _cur = conn.fetch_updates({"secret_ref": "ghref"}, "")
         self.assertTrue(recs)
         blob = json.dumps([r.payload for r in recs]).lower()
         self.assertNotIn("password=", blob)
@@ -317,10 +332,11 @@ class TestV622Connectors(unittest.TestCase):
                 calls["n"] += 1
                 raise SafeHttpError("http 429", status=429)
         calls = {"n": 0}
-        with patch.object(proactive_store, "list_active_accounts", return_value=[account]):
-            with patch("proactive.connectors.registry.get_enabled_readers", return_value={"calendar_google": Boom()}):
-                poll_connectors()
-                poll_connectors()
+        with patch.object(cost_guard, "authorize", side_effect=_cost_allow):
+            with patch.object(proactive_store, "list_active_accounts", return_value=[account]):
+                with patch("proactive.connectors.registry.get_enabled_readers", return_value={"calendar_google": Boom()}):
+                    poll_connectors()
+                    poll_connectors()
         sync = proactive_store.get_sync_state(aid)
         self.assertGreater(float(sync.get("backoff_until") or 0), time.time())
         self.assertEqual(calls["n"], 1)
@@ -365,9 +381,10 @@ class TestV622Connectors(unittest.TestCase):
                 calls["n"] += 1
                 return [rec], "2026-09-09T12:00:00Z"
 
-        with patch.object(proactive_store, "list_active_accounts", return_value=[account]):
-            with patch("proactive.connectors.registry.get_enabled_readers", return_value={"calendar_google": Ok()}):
-                poll_connectors()
+        with patch.object(cost_guard, "authorize", side_effect=_cost_allow):
+            with patch.object(proactive_store, "list_active_accounts", return_value=[account]):
+                with patch("proactive.connectors.registry.get_enabled_readers", return_value={"calendar_google": Ok()}):
+                    poll_connectors()
         self.assertEqual(calls["n"], 1)
         facts = _q("SELECT 1 FROM external_facts WHERE source_record_id = %s", (src,))
         self.assertTrue(facts)
