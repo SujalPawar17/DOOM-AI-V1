@@ -134,6 +134,24 @@ def is_act_calendar_hold_enabled() -> bool:
     return _bool_env("PROACTIVE_ACT_CALENDAR_HOLD_ENABLED", False)
 
 
+def is_computer_enabled() -> bool:
+    """V7.1 computer observation master flag. Default false."""
+    return _bool_env("PROACTIVE_COMPUTER_ENABLED", False)
+
+
+def is_computer_observe_enabled() -> bool:
+    """V7.1 observe capability. Both computer flags must be true to capture."""
+    return _bool_env("PROACTIVE_COMPUTER_OBSERVE_ENABLED", False)
+
+
+COMPUTER_TIMEOUT_MS = _int_env("PROACTIVE_COMPUTER_TIMEOUT_MS", 800)
+COMPUTER_MAX_DEPTH = _int_env("PROACTIVE_COMPUTER_MAX_DEPTH", 6)
+COMPUTER_MAX_NODES = _int_env("PROACTIVE_COMPUTER_MAX_NODES", 80)
+COMPUTER_MAX_TITLE = _int_env("PROACTIVE_COMPUTER_MAX_TITLE", 80)
+COMPUTER_SESSION_TTL_SEC = _int_env("PROACTIVE_COMPUTER_SESSION_TTL_SEC", 3600)
+COMPUTER_RETENTION = _int_env("PROACTIVE_COMPUTER_RETENTION", 20)
+
+
 PREPARE_RULE_VERSION = "v626.1"
 PREPARE_CANDIDATE_CAP = _int_env("PROACTIVE_PREPARE_CANDIDATE_CAP", 50)
 PREPARE_CONFIDENCE_FLOOR = 0.70

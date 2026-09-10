@@ -720,6 +720,89 @@ async def cancel_proactive_action(request: Request, action_id: str):
     return result
 
 
+def _computer_flags():
+    from proactive.config import is_computer_enabled, is_computer_observe_enabled
+    return is_computer_enabled() and is_computer_observe_enabled()
+
+
+@app.post("/api/proactive/computer/sessions")
+async def computer_session_create(request: Request):
+    from dashboard.ask_session import require_ask_session
+    from proactive.computer.session import start_session
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    if not _computer_flags():
+        return JSONResponse({"ok": False, "enabled": False}, status_code=403)
+    owner = str(sess.get("owner_id") or "")
+    result = start_session(owner)
+    http = int(result.pop("http", 200) or 200)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=http if http in (401, 403, 404, 409, 503) else 409)
+    return result
+
+
+@app.get("/api/proactive/computer/sessions")
+async def computer_session_list(request: Request):
+    from dashboard.ask_session import require_ask_session
+    from proactive.computer.session import list_sessions
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    owner = str(sess.get("owner_id") or "")
+    if not _computer_flags():
+        return {"ok": True, "sessions": [], "enabled": False}
+    return {"ok": True, "sessions": list_sessions(owner), "enabled": True}
+
+
+@app.get("/api/proactive/computer/sessions/{session_id}")
+async def computer_session_get(request: Request, session_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.computer.session import get_session
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    owner = str(sess.get("owner_id") or "")
+    row = get_session(str(session_id)[:64], owner)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return {"ok": True, "session": row}
+
+
+@app.get("/api/proactive/computer/sessions/{session_id}/observation")
+async def computer_session_observation(request: Request, session_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    owner = str(sess.get("owner_id") or "")
+    row = proactive_store.get_latest_computer_observation(str(session_id)[:64], owner)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return {
+        "ok": True,
+        "observation": row,
+        "data_only": True,
+        "screenshot_present": False,
+    }
+
+
+@app.post("/api/proactive/computer/sessions/{session_id}/stop")
+async def computer_session_stop(request: Request, session_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.computer.stop import stop_session
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    owner = str(sess.get("owner_id") or "")
+    result = stop_session(str(session_id)[:64], owner)
+    http = int(result.pop("http", 200) or 200)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=http if http in (401, 403, 404, 409) else 404)
+    return result
+
+
 @app.get("/api/proactive/approvals")
 async def list_approvals(request: Request, limit: int = 20):
     from dashboard.ask_session import require_ask_session

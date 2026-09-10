@@ -29,6 +29,7 @@ ASK_PREFIXES = (
     "/api/proactive/preparations",
     "/api/proactive/approvals",
     "/api/proactive/actions",
+    "/api/proactive/computer",
 )
 
 _unlock_hits: Dict[str, deque] = defaultdict(deque)

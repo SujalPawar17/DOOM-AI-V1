@@ -878,6 +878,61 @@ class PostgresManager:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS computer_sessions (
+                session_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                status VARCHAR(24) NOT NULL DEFAULT 'CREATED'
+                    CHECK (status IN (
+                        'CREATED','OBSERVING','PAUSED','STOPPED','CANCELLED','EXPIRED')),
+                privacy_class VARCHAR(16) NOT NULL DEFAULT 'PRIVATE'
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                emergency_stop BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_csess_owner ON computer_sessions (owner_id, created_at DESC);",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_csess_one_observing
+            ON computer_sessions (owner_id) WHERE status = 'OBSERVING';
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS computer_observations (
+                observation_id VARCHAR(64) PRIMARY KEY,
+                session_id VARCHAR(64) NOT NULL
+                    REFERENCES computer_sessions(session_id) ON DELETE CASCADE,
+                owner_id VARCHAR(64) NOT NULL,
+                observation_hash VARCHAR(64) NOT NULL,
+                capability_id VARCHAR(40) NOT NULL,
+                authoritative_json JSONB NOT NULL,
+                title_advisory VARCHAR(80) NOT NULL DEFAULT '',
+                outcome_code VARCHAR(40) NOT NULL,
+                node_count INTEGER,
+                latency_ms REAL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_cobs_owner_sess_created
+            ON computer_observations (owner_id, session_id, created_at DESC);
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS computer_observation_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                session_id VARCHAR(64) NOT NULL
+                    REFERENCES computer_sessions(session_id) ON DELETE CASCADE,
+                owner_id VARCHAR(64) NOT NULL,
+                kind VARCHAR(16) NOT NULL
+                    CHECK (kind IN ('created','stopped','dropped')),
+                from_status VARCHAR(24),
+                to_status VARCHAR(24),
+                reason VARCHAR(40) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_cev_session ON computer_observation_events (session_id, created_at DESC);",
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$

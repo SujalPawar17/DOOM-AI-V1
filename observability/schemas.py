@@ -50,6 +50,8 @@ ALLOWED_ATTR_KEYS = frozenset({
     "draft_id", "validation_status", "reject_reason", "deployment_mode",
     "action_id", "capability_id", "attempt_n", "outcome_code",
     "idempotency_hit", "lease_id",
+    "session_id", "observation_id", "observation_hash", "node_count",
+    "screenshot_present",
 })
 
 

@@ -28,6 +28,7 @@ from proactive.prepare import evaluate_world_preparations
 from proactive.ask import expire_pending_asks
 from proactive.draft import evaluate_world_drafts
 from proactive.act import evaluate_world_actions
+from proactive.computer.observe import evaluate_computer_observation
 from proactive.suggest import evaluate_world_suggestions
 from proactive.schemas import Insight
 from proactive.significance import evaluate_significance
@@ -212,6 +213,10 @@ def process_once(worker_id: str = "v61-worker") -> int:
             evaluate_world_actions()
         except Exception:
             emit_proactive("proactive.outcome", status="error", attributes={"reason": "act_eval"})
+        try:
+            evaluate_computer_observation()
+        except Exception:
+            emit_proactive("proactive.outcome", status="error", attributes={"reason": "computer_obs_eval"})
         batch = proactive_store.claim_batch(worker_id)
         for item in batch:
             try:

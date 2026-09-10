@@ -3792,9 +3792,401 @@ class ProactiveStore:
         finally:
             self._release(conn)
 
+    def _computer_session_row(self, r) -> Dict[str, Any]:
+        return {
+            "session_id": r[0],
+            "owner_id": r[1],
+            "status": r[2],
+            "privacy_class": r[3],
+            "emergency_stop": bool(r[4]),
+            "created_at": r[5],
+            "updated_at": r[6],
+            "expires_at": r[7],
+        }
+
+    def expire_computer_sessions(self, owner_id: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE computer_sessions
+                    SET status = 'EXPIRED', updated_at = NOW()
+                    WHERE owner_id = %s AND status = 'OBSERVING' AND expires_at <= NOW()
+                    """,
+                    (str(owner_id)[:64],),
+                )
+                n = cur.rowcount
+            conn.commit()
+            return int(n or 0)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def insert_computer_session(
+        self,
+        session_id: str,
+        owner_id: str,
+        privacy_class: str,
+        ttl_sec: int,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        sid = str(session_id)[:64]
+        owner = str(owner_id)[:64]
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE computer_sessions
+                    SET status = 'EXPIRED', updated_at = NOW()
+                    WHERE owner_id = %s AND status = 'OBSERVING' AND expires_at <= NOW()
+                    """,
+                    (owner,),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO computer_sessions (
+                        session_id, owner_id, status, privacy_class, emergency_stop, expires_at
+                    ) VALUES (%s, %s, 'OBSERVING', %s, FALSE, NOW() + (%s || ' seconds')::interval)
+                    RETURNING session_id, owner_id, status, privacy_class, emergency_stop,
+                              EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
+                              EXTRACT(EPOCH FROM expires_at)
+                    """,
+                    (sid, owner, str(privacy_class)[:16], str(int(ttl_sec))),
+                )
+                r = cur.fetchone()
+            conn.commit()
+            return self._computer_session_row(r) if r else None
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None
+        finally:
+            self._release(conn)
+
+    def get_observing_computer_session(self, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT session_id, owner_id, status, privacy_class, emergency_stop,
+                           EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
+                           EXTRACT(EPOCH FROM expires_at)
+                    FROM computer_sessions
+                    WHERE owner_id = %s AND status = 'OBSERVING'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (str(owner_id)[:64],),
+                )
+                r = cur.fetchone()
+            return self._computer_session_row(r) if r else None
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def get_computer_session(self, session_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT session_id, owner_id, status, privacy_class, emergency_stop,
+                           EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
+                           EXTRACT(EPOCH FROM expires_at)
+                    FROM computer_sessions
+                    WHERE session_id = %s AND owner_id = %s
+                    LIMIT 1
+                    """,
+                    (str(session_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            return self._computer_session_row(r) if r else None
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def list_computer_sessions(self, owner_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return []
+        cap = min(max(int(limit or 20), 1), 50)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT session_id, owner_id, status, privacy_class, emergency_stop,
+                           EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
+                           EXTRACT(EPOCH FROM expires_at)
+                    FROM computer_sessions
+                    WHERE owner_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (str(owner_id)[:64], cap),
+                )
+                rows = cur.fetchall() or []
+            return [self._computer_session_row(r) for r in rows]
+        except Exception:
+            return []
+        finally:
+            self._release(conn)
+
+    def stop_computer_session(self, session_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        sid = str(session_id)[:64]
+        owner = str(owner_id)[:64]
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE computer_sessions
+                    SET status = 'STOPPED', emergency_stop = TRUE, updated_at = NOW()
+                    WHERE session_id = %s AND owner_id = %s
+                      AND status IN ('CREATED','OBSERVING','PAUSED')
+                    RETURNING session_id, owner_id, status, privacy_class, emergency_stop,
+                              EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
+                              EXTRACT(EPOCH FROM expires_at)
+                    """,
+                    (sid, owner),
+                )
+                r = cur.fetchone()
+                if r:
+                    cur.execute(
+                        """
+                        INSERT INTO computer_observation_events (
+                            event_id, session_id, owner_id, kind, from_status, to_status, reason
+                        ) VALUES (%s, %s, %s, 'stopped', 'OBSERVING', 'STOPPED', 'stop')
+                        """,
+                        (str(uuid.uuid4())[:64], sid, owner),
+                    )
+            conn.commit()
+            return self._computer_session_row(r) if r else None
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None
+        finally:
+            self._release(conn)
+
+    def insert_computer_observation(self, row: Dict[str, Any]) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO computer_observations (
+                        observation_id, session_id, owner_id, observation_hash, capability_id,
+                        authoritative_json, title_advisory, outcome_code, node_count, latency_ms
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        str(row.get("observation_id") or "")[:64],
+                        str(row.get("session_id") or "")[:64],
+                        str(row.get("owner_id") or "")[:64],
+                        str(row.get("observation_hash") or "")[:64],
+                        str(row.get("capability_id") or "")[:40],
+                        json.dumps(row.get("authoritative_json") or {}),
+                        str(row.get("title_advisory") or "")[:80],
+                        str(row.get("outcome_code") or "")[:40],
+                        int(row.get("node_count") or 0),
+                        float(row.get("latency_ms") or 0),
+                    ),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def prune_computer_observations(self, session_id: str, keep: int) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        nkeep = max(int(keep or 20), 1)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM computer_observations
+                    WHERE session_id = %s AND observation_id NOT IN (
+                        SELECT observation_id FROM computer_observations
+                        WHERE session_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    )
+                    """,
+                    (str(session_id)[:64], str(session_id)[:64], nkeep),
+                )
+                n = cur.rowcount
+            conn.commit()
+            return int(n or 0)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
+    def get_latest_computer_observation(
+        self, session_id: str, owner_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT observation_id, session_id, owner_id, observation_hash, capability_id,
+                           authoritative_json, title_advisory, outcome_code, node_count, latency_ms,
+                           EXTRACT(EPOCH FROM created_at)
+                    FROM computer_observations
+                    WHERE session_id = %s AND owner_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (str(session_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            auth = r[5]
+            if isinstance(auth, str):
+                try:
+                    auth = json.loads(auth)
+                except Exception:
+                    auth = {}
+            return {
+                "observation_id": r[0],
+                "session_id": r[1],
+                "owner_id": r[2],
+                "observation_hash": r[3],
+                "capability_id": r[4],
+                "authoritative_json": auth if isinstance(auth, dict) else {},
+                "title_advisory": r[6] or "",
+                "outcome_code": r[7],
+                "node_count": r[8],
+                "latency_ms": r[9],
+                "created_at": r[10],
+                "data_only": True,
+                "screenshot_present": False,
+            }
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def insert_computer_observation_event(
+        self,
+        session_id: str,
+        owner_id: str,
+        kind: str,
+        reason: str = "",
+        from_status: Optional[str] = None,
+        to_status: Optional[str] = None,
+    ) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        k = str(kind or "")[:16]
+        if k not in ("created", "stopped", "dropped"):
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO computer_observation_events (
+                        event_id, session_id, owner_id, kind, from_status, to_status, reason
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        str(uuid.uuid4())[:64],
+                        str(session_id)[:64],
+                        str(owner_id)[:64],
+                        k,
+                        (str(from_status)[:24] if from_status else None),
+                        (str(to_status)[:24] if to_status else None),
+                        str(reason or "")[:40],
+                    ),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def count_memory_records(self, owner_id: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return -1
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM memory_records",
+                )
+                r = cur.fetchone()
+            return int(r[0] or 0) if r else 0
+        except Exception:
+            return -1
+        finally:
+            self._release(conn)
+
+    def count_world_actions(self, owner_id: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return -1
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM world_actions WHERE owner_id = %s",
+                    (str(owner_id)[:64],),
+                )
+                r = cur.fetchone()
+            return int(r[0] or 0) if r else 0
+        except Exception:
+            return -1
+        finally:
+            self._release(conn)
+
 
 proactive_store = ProactiveStore()
-
-
-
 
