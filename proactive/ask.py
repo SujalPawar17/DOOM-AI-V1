@@ -80,7 +80,26 @@ def ensure_pending_ask(preparation: Dict[str, Any], owner_id: str = OWNER_ID) ->
     now = time.time()
     vu = ask_deadline(preparation, now)
     csrf_binding_id = WORKER_CSRF_BINDING_ID
-    bhash = _worker_binding_hash(preparation, owner_id, vu)
+    act_row = {}
+    try:
+        from proactive.act import ensure_action_for_preparation
+        from proactive.config import ACT_POLICY_VERSION
+        act_row = ensure_action_for_preparation(preparation, owner_id) or {}
+    except Exception:
+        act_row = {}
+    action_hash = str(act_row.get("action_hash") or "")
+    if action_hash:
+        raw = (
+            f"{owner_id}|{preparation.get('preparation_id')}|{preparation.get('action_type')}|"
+            f"{preparation.get('param_hash')}|{action_hash}|"
+            f"{preparation.get('risk_class')}|{preparation.get('privacy_class')}|{int(vu)}|"
+            f"{ACT_POLICY_VERSION}|{csrf_binding_id}"
+        )
+        bhash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        rule_ver = ACT_POLICY_VERSION
+    else:
+        bhash = _worker_binding_hash(preparation, owner_id, vu)
+        rule_ver = preparation.get("rule_version") or PREPARE_RULE_VERSION
     aid = proactive_store.insert_approval_request(
         {
             "owner_id": owner_id,
@@ -92,11 +111,14 @@ def ensure_pending_ask(preparation: Dict[str, Any], owner_id: str = OWNER_ID) ->
             "risk_class": preparation.get("risk_class"),
             "privacy_class": preparation.get("privacy_class"),
             "valid_until": vu,
-            "rule_version": preparation.get("rule_version") or PREPARE_RULE_VERSION,
+            "rule_version": rule_ver,
+            "action_hash": action_hash,
         }
     )
     if not aid:
         return ""
+    if action_hash and act_row.get("action_id"):
+        proactive_store.bind_action_approval(str(act_row.get("action_id")), aid, owner_id)
     emit_proactive(
         "proactive.ask.requested",
         attributes={

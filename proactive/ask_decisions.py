@@ -27,12 +27,46 @@ def canonical_binding_string(
     )
 
 
+def canonical_binding_string_v63(
+    owner_id: str,
+    preparation_id: str,
+    action_type: str,
+    param_hash: str,
+    action_hash: str,
+    risk_class: str,
+    privacy_class: str,
+    valid_until_epoch: int,
+    rule_version: str,
+    csrf_binding_id: str,
+) -> str:
+    return (
+        f"{owner_id}|{preparation_id}|{action_type}|{param_hash}|{action_hash}|"
+        f"{risk_class}|{privacy_class}|{int(valid_until_epoch)}|{rule_version}|{csrf_binding_id}"
+    )
+
+
 def binding_hash_for(**kwargs) -> str:
     raw = canonical_binding_string(
         kwargs["owner_id"],
         kwargs["preparation_id"],
         kwargs["action_type"],
         kwargs["param_hash"],
+        kwargs["risk_class"],
+        kwargs["privacy_class"],
+        int(kwargs["valid_until_epoch"]),
+        kwargs["rule_version"],
+        kwargs["csrf_binding_id"],
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def binding_hash_for_act(**kwargs) -> str:
+    raw = canonical_binding_string_v63(
+        kwargs["owner_id"],
+        kwargs["preparation_id"],
+        kwargs["action_type"],
+        kwargs["param_hash"],
+        kwargs["action_hash"],
         kwargs["risk_class"],
         kwargs["privacy_class"],
         int(kwargs["valid_until_epoch"]),
@@ -51,6 +85,20 @@ def hashes_match(a: str, b: str) -> bool:
 
 
 def _recompute(row: Dict[str, Any]) -> str:
+    ver = str(row.get("rule_version") or "v626.1")
+    if ver == "v63.1":
+        return binding_hash_for_act(
+            owner_id=str(row.get("owner_id") or ""),
+            preparation_id=str(row.get("preparation_id") or ""),
+            action_type=str(row.get("action_type") or ""),
+            param_hash=str(row.get("param_hash") or ""),
+            action_hash=str(row.get("action_hash") or ""),
+            risk_class=str(row.get("risk_class") or ""),
+            privacy_class=str(row.get("privacy_class") or ""),
+            valid_until_epoch=int(float(row.get("valid_until") or 0)),
+            rule_version=ver,
+            csrf_binding_id=str(row.get("csrf_binding_id") or ""),
+        )
     return binding_hash_for(
         owner_id=str(row.get("owner_id") or ""),
         preparation_id=str(row.get("preparation_id") or ""),

@@ -655,6 +655,71 @@ async def get_preparation_draft(request: Request, preparation_id: str):
     }
 
 
+@app.get("/api/proactive/actions/{action_id}")
+async def get_proactive_action(request: Request, action_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.config import is_act_enabled
+    from proactive.store import proactive_store
+    sess, err = require_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    if not is_act_enabled():
+        return {"ok": False, "enabled": False}
+    owner = str(sess.get("owner_id") or "")
+    row = proactive_store.get_action(str(action_id)[:64], owner)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return {
+        "ok": True,
+        "action_id": row.get("action_id"),
+        "status": row.get("status"),
+        "capability_id": row.get("capability_id"),
+        "action_hash": row.get("action_hash"),
+        "risk_class": row.get("risk_class"),
+        "privacy_class": row.get("privacy_class"),
+        "exec_params": row.get("exec_params") or {},
+        "disclaimer": "GET is read-only. APPROVED does not execute. RUN is a separate POST.",
+    }
+
+
+@app.post("/api/proactive/actions/{action_id}/run")
+async def run_proactive_action(request: Request, action_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.act_engine import request_run
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    owner = str(sess.get("owner_id") or "")
+    result = request_run(
+        str(action_id)[:64],
+        owner,
+        str((body or {}).get("action_hash") or ""),
+    )
+    http = int(result.pop("http", 200) or 200)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=http if http in (401, 403, 404, 409) else 409)
+    return result
+
+
+@app.post("/api/proactive/actions/{action_id}/cancel")
+async def cancel_proactive_action(request: Request, action_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.act_engine import cancel_action
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    owner = str(sess.get("owner_id") or "")
+    result = cancel_action(str(action_id)[:64], owner)
+    http = int(result.get("http", 200) or 200)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=http if http in (401, 403, 404, 409) else 409)
+    return result
+
+
 @app.get("/api/proactive/approvals")
 async def list_approvals(request: Request, limit: int = 20):
     from dashboard.ask_session import require_ask_session

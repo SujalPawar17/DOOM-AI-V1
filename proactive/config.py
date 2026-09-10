@@ -121,6 +121,19 @@ def is_llm_draft_private_enabled() -> bool:
     return _bool_env("PROACTIVE_LLM_DRAFT_PRIVATE_ENABLED", False)
 
 
+def is_act_enabled() -> bool:
+    """V6.3 ACT master flag. Default false. Does not auto-run APPROVED rows."""
+    return _bool_env("PROACTIVE_ACT_ENABLED", False)
+
+
+def is_act_internal_enabled() -> bool:
+    return _bool_env("PROACTIVE_ACT_INTERNAL_ENABLED", False)
+
+
+def is_act_calendar_hold_enabled() -> bool:
+    return _bool_env("PROACTIVE_ACT_CALENDAR_HOLD_ENABLED", False)
+
+
 PREPARE_RULE_VERSION = "v626.1"
 PREPARE_CANDIDATE_CAP = _int_env("PROACTIVE_PREPARE_CANDIDATE_CAP", 50)
 PREPARE_CONFIDENCE_FLOOR = 0.70
@@ -136,6 +149,14 @@ DRAFT_PROMPT_VERSION = "v628.1"
 LLM_DRAFT_CANDIDATE_CAP = _int_env("PROACTIVE_LLM_DRAFT_CANDIDATE_CAP", 5)
 LLM_DRAFT_TIMEOUT_SEC = _float_env("PROACTIVE_LLM_DRAFT_TIMEOUT_SEC", 8.0)
 LLM_DRAFT_MAX_FAILOVER_HOPS = 2
+
+ACT_POLICY_VERSION = "v63.1"
+ACT_CANDIDATE_CAP = _int_env("PROACTIVE_ACT_CANDIDATE_CAP", 1)
+ACT_LEASE_SECONDS = _int_env("PROACTIVE_ACT_LEASE_SECONDS", 45)
+ACT_WRITER_TIMEOUT_SEC = _float_env("PROACTIVE_ACT_WRITER_TIMEOUT_SEC", 8.0)
+ACT_MAX_ATTEMPTS = _int_env("PROACTIVE_ACT_MAX_ATTEMPTS", 3)
+DAILY_ACT_INTERNAL_BUDGET = _int_env("PROACTIVE_DAILY_ACT_INTERNAL_BUDGET", 8)
+DAILY_ACT_CALENDAR_BUDGET = _int_env("PROACTIVE_DAILY_ACT_CALENDAR_BUDGET", 2)
 
 
 def ask_ttl_seconds() -> int:

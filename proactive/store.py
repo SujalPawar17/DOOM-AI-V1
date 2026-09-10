@@ -2040,6 +2040,41 @@ class ProactiveStore:
         finally:
             self._release(conn)
 
+    def get_preparation(self, preparation_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT preparation_id, owner_id, suggestion_id, prediction_id, preparation_type,
+                           action_type, future_act_class, template_id, safe_params, param_hash,
+                           status, privacy_class, risk_class, fingerprint, rule_version,
+                           EXTRACT(EPOCH FROM valid_until)
+                    FROM world_preparations
+                    WHERE preparation_id = %s AND owner_id = %s
+                    """,
+                    (str(preparation_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            params = r[8] if isinstance(r[8], dict) else (json.loads(r[8]) if r[8] else {})
+            return {
+                "preparation_id": r[0], "owner_id": r[1], "suggestion_id": r[2],
+                "prediction_id": r[3], "preparation_type": r[4], "action_type": r[5],
+                "future_act_class": r[6], "template_id": r[7],
+                "safe_params": params if isinstance(params, dict) else {},
+                "param_hash": r[9], "status": r[10], "privacy_class": r[11],
+                "risk_class": r[12], "fingerprint": r[13], "rule_version": r[14],
+                "valid_until": float(r[15]) if r[15] is not None else None,
+            }
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
     def get_preparation_by_fingerprint(self, owner_id: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         conn = self._conn()
         if not conn:
@@ -2385,9 +2420,9 @@ class ProactiveStore:
                     INSERT INTO world_approval_requests (
                         approval_id, owner_id, preparation_id, action_type, param_hash,
                         binding_hash, csrf_binding_id, risk_class, privacy_class, status,
-                        valid_until, rule_version
+                        valid_until, rule_version, action_hash
                     ) VALUES (
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING', to_timestamp(%s), %s
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING', to_timestamp(%s), %s, %s
                     )
                     ON CONFLICT (preparation_id) WHERE status = 'PENDING' DO NOTHING
                     RETURNING approval_id
@@ -2402,6 +2437,7 @@ class ProactiveStore:
                         str(row.get("privacy_class") or "NORMAL")[:16],
                         vu,
                         str(row.get("rule_version") or "v626.1")[:16],
+                        str(row.get("action_hash") or "")[:64],
                     ),
                 )
                 got = cur.fetchone()
@@ -2461,6 +2497,7 @@ class ProactiveStore:
             "valid_until": float(r[10]) if r[10] is not None else None,
             "rule_version": r[11],
             "decision_session_id": r[12],
+            "action_hash": r[13] if len(r) > 13 else "",
         }
 
     def get_approval(self, approval_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
@@ -2473,7 +2510,8 @@ class ProactiveStore:
                     """
                     SELECT approval_id, owner_id, preparation_id, action_type, param_hash,
                            binding_hash, csrf_binding_id, risk_class, privacy_class, status,
-                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id
+                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id,
+                           action_hash
                     FROM world_approval_requests
                     WHERE approval_id = %s AND owner_id = %s
                     """,
@@ -2498,7 +2536,8 @@ class ProactiveStore:
                     """
                     SELECT approval_id, owner_id, preparation_id, action_type, param_hash,
                            binding_hash, csrf_binding_id, risk_class, privacy_class, status,
-                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id
+                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id,
+                           action_hash
                     FROM world_approval_requests
                     WHERE owner_id = %s
                     ORDER BY created_at DESC
@@ -2594,7 +2633,8 @@ class ProactiveStore:
                     """
                     SELECT approval_id, owner_id, preparation_id, action_type, param_hash,
                            binding_hash, csrf_binding_id, risk_class, privacy_class, status,
-                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id
+                           EXTRACT(EPOCH FROM valid_until), rule_version, decision_session_id,
+                           action_hash
                     FROM world_approval_requests
                     WHERE approval_id = %s AND owner_id = %s
                     FOR UPDATE
@@ -2666,6 +2706,20 @@ class ProactiveStore:
                         """,
                         (eid, approval_id),
                     )
+                    cur.execute(
+                        """
+                        UPDATE world_actions
+                        SET status = 'APPROVED_NOT_RUN', approval_id = %s, updated_at = NOW()
+                        WHERE owner_id = %s AND preparation_id = %s
+                          AND status IN ('READY','APPROVAL_REQUIRED')
+                          AND action_hash = %s AND %s <> ''
+                        """,
+                        (
+                            approval_id, owner_id, str(row.get("preparation_id") or ""),
+                            str(row.get("action_hash") or ""),
+                            str(row.get("action_hash") or ""),
+                        ),
+                    )
                     conn.commit()
                     emit(
                         "proactive.ask.approved",
@@ -2729,6 +2783,15 @@ class ProactiveStore:
                         VALUES (%s,%s,'APPROVED','REVOKED','revoke')
                         """,
                         (eid, approval_id),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE world_actions
+                        SET status = 'REVOKED', updated_at = NOW()
+                        WHERE approval_id = %s AND owner_id = %s
+                          AND status IN ('READY','APPROVAL_REQUIRED','APPROVED_NOT_RUN','RUN_REQUESTED')
+                        """,
+                        (approval_id, owner_id),
                     )
                     conn.commit()
                     emit(
@@ -3174,8 +3237,564 @@ class ProactiveStore:
         finally:
             self._release(conn)
 
+    def _action_row(self, r) -> Dict[str, Any]:
+        tref = r[6]
+        epar = r[7]
+        if isinstance(tref, str):
+            try:
+                tref = json.loads(tref)
+            except Exception:
+                tref = {}
+        if isinstance(epar, str):
+            try:
+                epar = json.loads(epar)
+            except Exception:
+                epar = {}
+        return {
+            "action_id": r[0], "owner_id": r[1], "preparation_id": r[2], "approval_id": r[3] or "",
+            "capability_id": r[4], "action_type": r[5],
+            "target_ref": tref if isinstance(tref, dict) else {},
+            "exec_params": epar if isinstance(epar, dict) else {},
+            "param_hash": r[8], "action_hash": r[9], "risk_class": r[10], "privacy_class": r[11],
+            "reversibility": r[12], "idempotency_key": r[13], "policy_version": r[14],
+            "status": r[15],
+            "valid_until": float(r[16]) if r[16] is not None else None,
+            "attempt_n": int(r[17] or 0),
+            "lease_owner": r[18] or "",
+        }
+
+    def insert_world_action(self, row: Dict[str, Any]) -> str:
+        if str(row.get("privacy_class") or "") == "SENSITIVE":
+            return ""
+        conn = self._conn()
+        if not conn:
+            return ""
+        aid = str(row.get("action_id") or uuid.uuid4())[:64]
+        owner = str(row.get("owner_id") or OWNER_ID)[:64]
+        vu = float(row.get("valid_until") or time.time() + 3600)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_actions (
+                        action_id, owner_id, preparation_id, approval_id, capability_id, action_type,
+                        target_ref, exec_params, param_hash, action_hash, risk_class, privacy_class,
+                        reversibility, idempotency_key, policy_version, status, valid_until, provenance
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,'READY',
+                        to_timestamp(%s), %s::jsonb
+                    )
+                    ON CONFLICT (owner_id, action_hash) DO NOTHING
+                    RETURNING action_id
+                    """,
+                    (
+                        aid, owner, str(row.get("preparation_id") or "")[:64],
+                        (str(row.get("approval_id"))[:64] if row.get("approval_id") else None),
+                        str(row.get("capability_id") or "")[:40],
+                        str(row.get("action_type") or "")[:40],
+                        json.dumps(row.get("target_ref") or {}),
+                        json.dumps(row.get("exec_params") or {}),
+                        str(row.get("param_hash") or "")[:64],
+                        str(row.get("action_hash") or "")[:64],
+                        str(row.get("risk_class") or "LOW")[:16],
+                        str(row.get("privacy_class") or "NORMAL")[:16],
+                        str(row.get("reversibility") or "REVERSIBLE")[:32],
+                        str(row.get("idempotency_key") or "")[:64],
+                        str(row.get("policy_version") or "v63.1")[:16],
+                        vu,
+                        json.dumps(row.get("provenance") or {}),
+                    ),
+                )
+                got = cur.fetchone()
+                if not got:
+                    cur.execute(
+                        """
+                        SELECT action_id FROM world_actions
+                        WHERE owner_id = %s AND action_hash = %s
+                        """,
+                        (owner, str(row.get("action_hash") or "")[:64]),
+                    )
+                    r2 = cur.fetchone()
+                    conn.commit()
+                    return str(r2[0]) if r2 else ""
+                out = str(got[0])
+                cur.execute(
+                    """
+                    INSERT INTO world_action_events (event_id, action_id, from_status, to_status, reason)
+                    VALUES (%s,%s,NULL,'READY','created')
+                    """,
+                    (str(uuid.uuid4())[:64], out),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO world_action_idempotency
+                    (owner_id, idempotency_key, action_id, state)
+                    VALUES (%s,%s,%s,'OPEN')
+                    ON CONFLICT (owner_id, idempotency_key) DO NOTHING
+                    """,
+                    (owner, str(row.get("idempotency_key") or "")[:64], out),
+                )
+            conn.commit()
+            return out
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            self._release(conn)
+
+    def get_action(self, action_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT action_id, owner_id, preparation_id, approval_id, capability_id, action_type,
+                           target_ref, exec_params, param_hash, action_hash, risk_class, privacy_class,
+                           reversibility, idempotency_key, policy_version, status,
+                           EXTRACT(EPOCH FROM valid_until), attempt_n, lease_owner
+                    FROM world_actions
+                    WHERE action_id = %s AND owner_id = %s
+                    """,
+                    (str(action_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            return self._action_row(r) if r else None
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def get_action_by_preparation(self, preparation_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT action_id, owner_id, preparation_id, approval_id, capability_id, action_type,
+                           target_ref, exec_params, param_hash, action_hash, risk_class, privacy_class,
+                           reversibility, idempotency_key, policy_version, status,
+                           EXTRACT(EPOCH FROM valid_until), attempt_n, lease_owner
+                    FROM world_actions
+                    WHERE preparation_id = %s AND owner_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (str(preparation_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            return self._action_row(r) if r else None
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def bind_action_approval(self, action_id: str, approval_id: str, owner_id: str) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_actions
+                    SET approval_id = %s, status = 'APPROVAL_REQUIRED', updated_at = NOW()
+                    WHERE action_id = %s AND owner_id = %s AND status IN ('READY','CREATED')
+                    """,
+                    (str(approval_id)[:64], str(action_id)[:64], str(owner_id)[:64]),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def enqueue_run(self, action_id: str, owner_id: str) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_actions
+                    SET status = 'RUN_REQUESTED', updated_at = NOW()
+                    WHERE action_id = %s AND owner_id = %s AND status = 'APPROVED_NOT_RUN'
+                    """,
+                    (str(action_id)[:64], str(owner_id)[:64]),
+                )
+                n = cur.rowcount
+                if n:
+                    cur.execute(
+                        """
+                        INSERT INTO world_action_events (event_id, action_id, from_status, to_status, reason)
+                        VALUES (%s,%s,'APPROVED_NOT_RUN','RUN_REQUESTED','run_requested')
+                        """,
+                        (str(uuid.uuid4())[:64], str(action_id)[:64]),
+                    )
+            conn.commit()
+            return bool(n)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def claim_run(self, owner_id: str, worker_id: str) -> Optional[Dict[str, Any]]:
+        from proactive.config import ACT_LEASE_SECONDS
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT action_id FROM world_actions
+                    WHERE owner_id = %s AND status = 'RUN_REQUESTED'
+                      AND (lease_until IS NULL OR lease_until < NOW())
+                    ORDER BY created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """,
+                    (owner_id,),
+                )
+                r = cur.fetchone()
+                if not r:
+                    conn.commit()
+                    return None
+                cur.execute(
+                    """
+                    UPDATE world_actions
+                    SET status = 'PRECONDITION_CHECK', lease_owner = %s,
+                        lease_until = NOW() + (%s || ' seconds')::interval, updated_at = NOW()
+                    WHERE action_id = %s AND status = 'RUN_REQUESTED'
+                    RETURNING action_id, owner_id, preparation_id, approval_id, capability_id, action_type,
+                           target_ref, exec_params, param_hash, action_hash, risk_class, privacy_class,
+                           reversibility, idempotency_key, policy_version, status,
+                           EXTRACT(EPOCH FROM valid_until), attempt_n, lease_owner
+                    """,
+                    (str(worker_id)[:64], str(int(ACT_LEASE_SECONDS)), r[0]),
+                )
+                got = cur.fetchone()
+            conn.commit()
+            return self._action_row(got) if got else None
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None
+        finally:
+            self._release(conn)
+
+    def begin_attempt(self, action_id: str, owner_id: str, worker_id: str) -> Optional[int]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_actions
+                    SET attempt_n = attempt_n + 1, status = 'EXECUTING', updated_at = NOW()
+                    WHERE action_id = %s AND owner_id = %s AND lease_owner = %s
+                      AND status = 'PRECONDITION_CHECK'
+                    RETURNING attempt_n
+                    """,
+                    (str(action_id)[:64], str(owner_id)[:64], str(worker_id)[:64]),
+                )
+                r = cur.fetchone()
+                if not r:
+                    conn.commit()
+                    return None
+                n = int(r[0])
+                cur.execute(
+                    """
+                    INSERT INTO world_action_attempts
+                    (attempt_id, action_id, attempt_n, state)
+                    VALUES (%s,%s,%s,'EXECUTING')
+                    """,
+                    (str(uuid.uuid4())[:64], str(action_id)[:64], n),
+                )
+                cur.execute(
+                    """
+                    UPDATE world_action_idempotency SET state = 'CLAIMED', updated_at = NOW()
+                    WHERE action_id = %s AND owner_id = %s
+                    """,
+                    (str(action_id)[:64], str(owner_id)[:64]),
+                )
+            conn.commit()
+            return n
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None
+        finally:
+            self._release(conn)
+
+    def finalize_action(
+        self,
+        action_id: str,
+        owner_id: str,
+        status: str,
+        reason: str,
+        worker_id: str,
+        attempt_n: int,
+        receipt_ref: str = "",
+    ) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                if worker_id:
+                    cur.execute(
+                        """
+                        UPDATE world_actions
+                        SET status = %s, lease_owner = '', lease_until = NULL, updated_at = NOW()
+                        WHERE action_id = %s AND owner_id = %s
+                          AND (lease_owner = %s OR lease_owner = '' OR status = 'PRECONDITION_CHECK')
+                          AND attempt_n = %s
+                        """,
+                        (str(status)[:24], str(action_id)[:64], str(owner_id)[:64], str(worker_id)[:64], int(attempt_n)),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE world_actions
+                        SET status = %s, lease_owner = '', lease_until = NULL, updated_at = NOW()
+                        WHERE action_id = %s AND owner_id = %s
+                          AND status NOT IN ('COMPLETED','EXECUTING','VERIFYING')
+                        """,
+                        (str(status)[:24], str(action_id)[:64], str(owner_id)[:64]),
+                    )
+                n = cur.rowcount
+                cur.execute(
+                    """
+                    INSERT INTO world_action_events (event_id, action_id, from_status, to_status, reason)
+                    VALUES (%s,%s,NULL,%s,%s)
+                    """,
+                    (str(uuid.uuid4())[:64], str(action_id)[:64], str(status)[:24], str(reason or "")[:40]),
+                )
+                ide = "COMPLETED" if status == "COMPLETED" else (
+                    "UNKNOWN" if status == "UNKNOWN_OUTCOME" else "OPEN"
+                )
+                if status == "FAILED" and reason in ("flag_off", "capability_disabled", "writer", "payload", "exec_params"):
+                    ide = "OPEN"
+                cur.execute(
+                    """
+                    UPDATE world_action_idempotency
+                    SET state = %s, receipt_ref = %s, updated_at = NOW()
+                    WHERE action_id = %s AND owner_id = %s
+                    """,
+                    (ide, str(receipt_ref or "")[:80], str(action_id)[:64], str(owner_id)[:64]),
+                )
+            conn.commit()
+            return bool(n)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def append_action_event(self, action_id: str, frm: str, to: str, reason: str) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_action_events (event_id, action_id, from_status, to_status, reason)
+                    VALUES (%s,%s,%s,%s,%s)
+                    """,
+                    (str(uuid.uuid4())[:64], str(action_id)[:64], str(frm or "")[:24] or None, str(to)[:24], str(reason)[:40]),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def insert_verification(self, action_id: str, attempt_n: int, method: str, verdict: str, observed: str) -> None:
+        conn = self._conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT attempt_id FROM world_action_attempts WHERE action_id = %s AND attempt_n = %s",
+                    (str(action_id)[:64], int(attempt_n)),
+                )
+                ar = cur.fetchone()
+                cur.execute(
+                    """
+                    INSERT INTO world_action_verifications
+                    (verification_id, action_id, attempt_id, method, verdict, observed_ref)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        str(uuid.uuid4())[:64], str(action_id)[:64],
+                        ar[0] if ar else None, str(method)[:32], str(verdict)[:24], str(observed or "")[:80],
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._release(conn)
+
+    def insert_action_receipt(self, row: Dict[str, Any]) -> bool:
+        conn = self._conn()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_action_receipts
+                    (receipt_id, action_id, owner_id, content_hash, note_template_id, claim_code)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        str(row.get("receipt_id") or uuid.uuid4())[:64],
+                        str(row.get("action_id") or "")[:64],
+                        str(row.get("owner_id") or OWNER_ID)[:64],
+                        str(row.get("content_hash") or "")[:64],
+                        str(row.get("note_template_id") or "")[:40],
+                        str(row.get("claim_code") or "")[:40],
+                    ),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            self._release(conn)
+
+    def get_action_receipt(self, action_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT receipt_id, content_hash, note_template_id, claim_code
+                    FROM world_action_receipts
+                    WHERE action_id = %s AND owner_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (str(action_id)[:64], str(owner_id)[:64]),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            return {"receipt_id": r[0], "content_hash": r[1], "note_template_id": r[2], "claim_code": r[3]}
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def get_idempotency(self, owner_id: str, key: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT action_id, state, receipt_ref FROM world_action_idempotency
+                    WHERE owner_id = %s AND idempotency_key = %s
+                    """,
+                    (str(owner_id)[:64], str(key)[:64]),
+                )
+                r = cur.fetchone()
+            if not r:
+                return None
+            return {"action_id": r[0], "state": r[1], "receipt_ref": r[2]}
+        except Exception:
+            return None
+        finally:
+            self._release(conn)
+
+    def count_actions_today(self, owner_id: str, capability_id: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM world_actions
+                    WHERE owner_id = %s AND capability_id = %s AND status = 'COMPLETED'
+                      AND created_at >= date_trunc('day', NOW())
+                    """,
+                    (str(owner_id)[:64], str(capability_id)[:40]),
+                )
+                r = cur.fetchone()
+            return int(r[0] or 0) if r else 0
+        except Exception:
+            return 0
+        finally:
+            self._release(conn)
+
+    def recover_act_leases(self, owner_id: str) -> int:
+        conn = self._conn()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE world_actions
+                    SET status = 'UNKNOWN_OUTCOME', lease_owner = '', lease_until = NULL, updated_at = NOW()
+                    WHERE owner_id = %s AND status IN ('EXECUTING','VERIFYING')
+                      AND lease_until IS NOT NULL AND lease_until < NOW()
+                    """,
+                    (str(owner_id)[:64],),
+                )
+                n = cur.rowcount
+            conn.commit()
+            return int(n or 0)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            self._release(conn)
+
 
 proactive_store = ProactiveStore()
+
 
 
 

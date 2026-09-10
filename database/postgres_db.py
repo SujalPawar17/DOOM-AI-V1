@@ -773,6 +773,111 @@ class PostgresManager:
                 UNIQUE (draft_id, channel)
             );
             """,
+            "ALTER TABLE world_approval_requests ADD COLUMN IF NOT EXISTS action_hash VARCHAR(64) NOT NULL DEFAULT '';",
+            """
+            CREATE TABLE IF NOT EXISTS world_actions (
+                action_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                preparation_id VARCHAR(64) NOT NULL
+                    REFERENCES world_preparations(preparation_id) ON DELETE CASCADE,
+                approval_id VARCHAR(64)
+                    REFERENCES world_approval_requests(approval_id) ON DELETE SET NULL,
+                capability_id VARCHAR(40) NOT NULL
+                    CHECK (capability_id IN ('INTERNAL_LEDGER_NOTE','CALENDAR_CREATE_HOLD')),
+                action_type VARCHAR(40) NOT NULL,
+                target_ref JSONB NOT NULL DEFAULT '{}',
+                exec_params JSONB NOT NULL DEFAULT '{}',
+                param_hash VARCHAR(64) NOT NULL,
+                action_hash VARCHAR(64) NOT NULL,
+                risk_class VARCHAR(16) NOT NULL
+                    CHECK (risk_class IN ('NONE','LOW','MEDIUM','HIGH','CRITICAL')),
+                privacy_class VARCHAR(16) NOT NULL
+                    CHECK (privacy_class IN ('NORMAL','PRIVATE','SENSITIVE')),
+                reversibility VARCHAR(32) NOT NULL
+                    CHECK (reversibility IN ('REVERSIBLE','PARTIALLY_REVERSIBLE','IRREVERSIBLE')),
+                idempotency_key VARCHAR(64) NOT NULL,
+                policy_version VARCHAR(16) NOT NULL DEFAULT 'v63.1',
+                status VARCHAR(24) NOT NULL DEFAULT 'CREATED'
+                    CHECK (status IN (
+                        'CREATED','READY','APPROVAL_REQUIRED','APPROVED_NOT_RUN',
+                        'RUN_REQUESTED','PRECONDITION_CHECK','EXECUTING','VERIFYING',
+                        'COMPLETED','FAILED','UNKNOWN_OUTCOME','CANCELLED','EXPIRED','REVOKED')),
+                valid_until TIMESTAMPTZ NOT NULL,
+                provenance JSONB NOT NULL DEFAULT '{}',
+                lease_owner VARCHAR(64) NOT NULL DEFAULT '',
+                lease_until TIMESTAMPTZ,
+                attempt_n INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (owner_id, action_hash),
+                UNIQUE (owner_id, idempotency_key)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_wact_owner_status ON world_actions (owner_id, status);",
+            "CREATE INDEX IF NOT EXISTS idx_wact_prep ON world_actions (preparation_id);",
+            """
+            CREATE TABLE IF NOT EXISTS world_action_events (
+                event_id VARCHAR(64) PRIMARY KEY,
+                action_id VARCHAR(64) NOT NULL
+                    REFERENCES world_actions(action_id) ON DELETE CASCADE,
+                from_status VARCHAR(24),
+                to_status VARCHAR(24) NOT NULL,
+                reason VARCHAR(40) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_waev_action ON world_action_events (action_id, created_at);",
+            """
+            CREATE TABLE IF NOT EXISTS world_action_attempts (
+                attempt_id VARCHAR(64) PRIMARY KEY,
+                action_id VARCHAR(64) NOT NULL
+                    REFERENCES world_actions(action_id) ON DELETE CASCADE,
+                attempt_n INTEGER NOT NULL,
+                state VARCHAR(32) NOT NULL,
+                started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ended_at TIMESTAMPTZ,
+                http_status INTEGER NOT NULL DEFAULT 0,
+                receipt_ref VARCHAR(80) NOT NULL DEFAULT '',
+                error_class VARCHAR(40) NOT NULL DEFAULT '',
+                UNIQUE (action_id, attempt_n)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_action_verifications (
+                verification_id VARCHAR(64) PRIMARY KEY,
+                action_id VARCHAR(64) NOT NULL
+                    REFERENCES world_actions(action_id) ON DELETE CASCADE,
+                attempt_id VARCHAR(64)
+                    REFERENCES world_action_attempts(attempt_id) ON DELETE SET NULL,
+                method VARCHAR(32) NOT NULL,
+                verdict VARCHAR(24) NOT NULL,
+                observed_ref VARCHAR(80) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_action_idempotency (
+                owner_id VARCHAR(64) NOT NULL,
+                idempotency_key VARCHAR(64) NOT NULL,
+                action_id VARCHAR(64) NOT NULL,
+                state VARCHAR(40) NOT NULL DEFAULT 'OPEN',
+                receipt_ref VARCHAR(80) NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (owner_id, idempotency_key)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_action_receipts (
+                receipt_id VARCHAR(64) PRIMARY KEY,
+                action_id VARCHAR(64) NOT NULL
+                    REFERENCES world_actions(action_id) ON DELETE CASCADE,
+                owner_id VARCHAR(64) NOT NULL,
+                content_hash VARCHAR(64) NOT NULL,
+                note_template_id VARCHAR(40) NOT NULL,
+                claim_code VARCHAR(40) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
             # V5.3.2: Status CHECK constraint on memory_records
             """
             DO $$
@@ -1049,6 +1154,8 @@ class PostgresManager:
             return
         try:
             with conn.cursor() as cur:
+                cur.execute("SET lock_timeout = '15000'")
+                cur.execute("SET statement_timeout = '60000'")
                 for q in queries:
                     cur.execute(q)
             conn.commit()
