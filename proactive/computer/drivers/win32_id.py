@@ -135,24 +135,32 @@ def _query_exe(pid: int) -> str:
         k32.CloseHandle(handle)
 
 
-def read_foreground_win32(*, max_title: int = 80) -> Win32Identity:
+def read_hwnd_win32(hwnd: int, *, max_title: int = 80) -> Win32Identity:
+    """Inspect a specific HWND. Does not call GetForegroundWindow()."""
     ident = Win32Identity()
     if sys.platform != "win32":
         ident.outcome = WINDOW_GONE
         return ident
-    user32 = _user32()
-    hwnd = int(user32.GetForegroundWindow() or 0)
-    if hwnd == 0:
+    handle = int(hwnd or 0)
+    if handle <= 0:
         ident.outcome = WINDOW_GONE
         return ident
-    ident.hwnd = hwnd
+    user32 = _user32()
+    try:
+        if not bool(user32.IsWindow(handle)):
+            ident.outcome = WINDOW_GONE
+            return ident
+    except Exception:
+        ident.outcome = WINDOW_GONE
+        return ident
+    ident.hwnd = handle
     pid = wintypes.DWORD(0)
-    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
     ident.pid = int(pid.value or 0)
-    ident.window_class = _class_name(hwnd)
-    ident.title_advisory = _title(hwnd, max_title)
-    ident.rect = _rect(hwnd)
-    ident.monitor_id = _monitor_index(hwnd)
+    ident.window_class = _class_name(handle)
+    ident.title_advisory = _title(handle, max_title)
+    ident.rect = _rect(handle)
+    ident.monitor_id = _monitor_index(handle)
     if ident.pid <= 0:
         ident.outcome = INVALID_IDENTITY
         return ident
@@ -163,6 +171,52 @@ def read_foreground_win32(*, max_title: int = 80) -> Win32Identity:
     ident.publisher_norm = _publisher_norm(ident.exe_path_norm)
     ident.outcome = OK
     return ident
+
+
+def read_foreground_win32(*, max_title: int = 80) -> Win32Identity:
+    ident = Win32Identity()
+    if sys.platform != "win32":
+        ident.outcome = WINDOW_GONE
+        return ident
+    user32 = _user32()
+    hwnd = int(user32.GetForegroundWindow() or 0)
+    if hwnd == 0:
+        ident.outcome = WINDOW_GONE
+        return ident
+    return read_hwnd_win32(hwnd, max_title=max_title)
+
+
+def enumerate_visible_windows(*, max_title: int = 80, limit: int = 40) -> list:
+    """Top-level visible windows with titles. No mutation. No secrets."""
+    out: list = []
+    if sys.platform != "win32":
+        return out
+    user32 = _user32()
+    cap = min(max(int(limit or 40), 1), 40)
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lparam):
+        if len(out) >= cap:
+            return False
+        try:
+            if not bool(user32.IsWindow(hwnd)) or not bool(user32.IsWindowVisible(hwnd)):
+                return True
+        except Exception:
+            return True
+        ident = read_hwnd_win32(int(hwnd), max_title=max_title)
+        if ident.outcome != OK:
+            return True
+        if not str(ident.title_advisory or "").strip():
+            return True
+        out.append(ident)
+        return True
+
+    cb = WNDENUMPROC(_cb)
+    try:
+        user32.EnumWindows(cb, 0)
+    except Exception:
+        return out
+    return out
 
 
 def exe_basename(exe_path_norm: str) -> str:

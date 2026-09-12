@@ -3,7 +3,7 @@ import time
 import re
 import os
 import psutil
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 from core.context_manager import context_manager
 from core.planner import planner, ExecutionPlan, PlanStep
 from core.model_router import model_router, NoCapableProviderError
@@ -102,6 +102,9 @@ class DOOMCore:
         lang: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         project_id: Optional[str] = None,
+        *,
+        identity: Any = None,
+        authorized_plan_hash: str = "",
     ) -> str:
         """
         DOOM V4.1 / V5.3.7.1 Master Production Entry Point — Integrated Cognitive Core.
@@ -115,6 +118,14 @@ class DOOMCore:
 
         start_time = time.time()
         user_prompt = user_input.strip()
+        from proactive.config import is_v8_enabled
+        if is_v8_enabled():
+            from orchestration.production import handle_v8_enabled_request
+            return handle_v8_enabled_request(
+                user_prompt,
+                identity=identity,
+                authorized_plan_hash=authorized_plan_hash,
+            )
         from observability.telemetry import emit, request_scope
 
         with request_scope() as corr:

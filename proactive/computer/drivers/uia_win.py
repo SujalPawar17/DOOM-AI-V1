@@ -6,13 +6,24 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence
+from pathlib import Path
+from typing import Any, List, Optional, Sequence, Tuple
 
 UIA_UNAVAILABLE = "UIA_UNAVAILABLE"
+UIA_WRAPPER_UNAVAILABLE = "UIA_WRAPPER_UNAVAILABLE"
+UIA_CLIENT_UNAVAILABLE = "UIA_CLIENT_UNAVAILABLE"
+UIA_ELEMENT_UNAVAILABLE = "UIA_ELEMENT_UNAVAILABLE"
 OBSERVATION_TIMEOUT = "OBSERVATION_TIMEOUT"
 TREE_LIMIT = "TREE_LIMIT"
 REDACTION_FAILED = "REDACTION_FAILED"
 OK = "OK"
+
+UIA_FAIL_CLOSED = frozenset({
+    UIA_UNAVAILABLE,
+    UIA_WRAPPER_UNAVAILABLE,
+    UIA_CLIENT_UNAVAILABLE,
+    UIA_ELEMENT_UNAVAILABLE,
+})
 
 
 @dataclass
@@ -20,6 +31,8 @@ class UiaWalkNode:
     runtime_id: str = ""
     automation_id: str = ""
     control_type: str = ""
+    name: str = ""
+    focused: bool = False
     is_password: bool = False
     leaked_secret: Optional[str] = None
     children: List["UiaWalkNode"] = field(default_factory=list)
@@ -102,9 +115,30 @@ def bounded_tree_walk(
     return meta
 
 
-def _com_node_from_element(el: Any, remaining_ms: float) -> Optional[UiaWalkNode]:
-    if el is None or remaining_ms <= 0:
-        return None
+# Internal walk outcomes only. Not planner capabilities.
+_INVALID_COM_ELEMENT = "INVALID_COM_ELEMENT"
+_PASSWORD_PROPERTY_UNAVAILABLE = "PASSWORD_PROPERTY_UNAVAILABLE"
+_PASSWORD_TRUE = "PASSWORD_TRUE"
+_NORMAL_ELEMENT = "NORMAL_ELEMENT"
+
+
+def _com_ptr_valid(el: Any) -> bool:
+    """True only for a usable COM element. NULL wrappers are not Python None."""
+    if el is None:
+        return False
+    try:
+        if not bool(el):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _com_node_from_element(el: Any, remaining_ms: float) -> Tuple[Optional[UiaWalkNode], str]:
+    if not _com_ptr_valid(el):
+        return None, _INVALID_COM_ELEMENT
+    if remaining_ms <= 0:
+        return None, _INVALID_COM_ELEMENT
     node = UiaWalkNode()
     try:
         rid = el.GetRuntimeId()
@@ -121,10 +155,20 @@ def _com_node_from_element(el: Any, remaining_ms: float) -> Optional[UiaWalkNode
     except Exception:
         node.control_type = ""
     try:
-        node.is_password = bool(el.CurrentIsPassword)
+        node.name = str(el.CurrentName or "")[:80]
     except Exception:
-        return None
-    return node
+        node.name = ""
+    try:
+        node.focused = bool(el.CurrentHasKeyboardFocus)
+    except Exception:
+        node.focused = False
+    try:
+        is_pw = bool(el.CurrentIsPassword)
+    except Exception:
+        # Fail closed for this element only. Never substitute password=false.
+        return None, _PASSWORD_PROPERTY_UNAVAILABLE
+    node.is_password = is_pw
+    return node, (_PASSWORD_TRUE if is_pw else _NORMAL_ELEMENT)
 
 
 def _com_fill_children(
@@ -147,23 +191,40 @@ def _com_fill_children(
         child = walker.GetFirstChildElement(el)
     except Exception:
         return UIA_UNAVAILABLE
+    invalid_skips = 0
     while child is not None:
+        if not _com_ptr_valid(child):
+            invalid_skips += 1
+            if invalid_skips > int(max_nodes):
+                break
+            try:
+                nxt = walker.GetNextSiblingElement(child)
+            except Exception:
+                break
+            if nxt is child:
+                break
+            child = nxt
+            continue
+        invalid_skips = 0
         if budget[0] <= 0:
             return TREE_LIMIT
         if (time.monotonic() - t0) * 1000.0 > float(timeout_ms):
             return OBSERVATION_TIMEOUT
         remain = float(timeout_ms) - (time.monotonic() - t0) * 1000.0
-        child_node = _com_node_from_element(child, remain)
-        if child_node is None and remain > 0:
-            return REDACTION_FAILED
-        if child_node is not None:
-            node.children.append(child_node)
-            budget[0] -= 1
-            err = _com_fill_children(
-                uia, child, child_node, depth + 1, max_depth, max_nodes, budget, t0, timeout_ms,
-            )
-            if err:
-                return err
+        child_node, kind = _com_node_from_element(child, remain)
+        if kind in (_INVALID_COM_ELEMENT, _PASSWORD_PROPERTY_UNAVAILABLE) or child_node is None:
+            try:
+                child = walker.GetNextSiblingElement(child)
+            except Exception:
+                break
+            continue
+        node.children.append(child_node)
+        budget[0] -= 1
+        err = _com_fill_children(
+            uia, child, child_node, depth + 1, max_depth, max_nodes, budget, t0, timeout_ms,
+        )
+        if err:
+            return err
         try:
             child = walker.GetNextSiblingElement(child)
         except Exception:
@@ -172,65 +233,114 @@ def _com_fill_children(
 
 
 _UIA_CLIENT = None
+_UIA_SETUP_ERROR = ""
+
+
+def _doom_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def comtypes_gen_dir() -> Path:
+    """Writable repository-local comtypes wrapper cache. Not site-packages."""
+    return _doom_root() / ".doom_runtime" / "comtypes_gen"
+
+
+def _prepare_comtypes_gen_dir() -> str:
+    import comtypes.client
+    import comtypes.gen as gen_pkg
+
+    path = comtypes_gen_dir()
+    path.mkdir(parents=True, exist_ok=True)
+    init_py = path / "__init__.py"
+    if not init_py.exists():
+        init_py.write_text("# generated comtypes wrappers (runtime cache)\n", encoding="utf-8")
+    target = str(path)
+    comtypes.client.gen_dir = target
+    paths = list(getattr(gen_pkg, "__path__", []) or [])
+    if target in paths:
+        paths.remove(target)
+    paths.insert(0, target)
+    gen_pkg.__path__ = paths
+    return target
+
+
+def reset_uia_client_for_tests() -> None:
+    global _UIA_CLIENT, _UIA_SETUP_ERROR
+    _UIA_CLIENT = None
+    _UIA_SETUP_ERROR = ""
 
 
 def create_uia_client() -> Any:
     """Return IUIAutomation or None. Local COM only. No network."""
-    global _UIA_CLIENT
+    global _UIA_CLIENT, _UIA_SETUP_ERROR
     if _UIA_CLIENT is not None:
         return _UIA_CLIENT
+    _UIA_SETUP_ERROR = ""
     try:
         import comtypes
         import comtypes.client
     except Exception:
+        _UIA_SETUP_ERROR = UIA_CLIENT_UNAVAILABLE
         return None
     try:
         comtypes.CoInitialize()
     except Exception:
         pass
     try:
+        _prepare_comtypes_gen_dir()
+    except Exception:
+        _UIA_SETUP_ERROR = UIA_WRAPPER_UNAVAILABLE
+        return None
+    try:
         comtypes.client.GetModule("UIAutomationCore.dll")
         from comtypes.gen.UIAutomationClient import IUIAutomation
+    except Exception:
+        _UIA_SETUP_ERROR = UIA_WRAPPER_UNAVAILABLE
+        return None
+    try:
         _UIA_CLIENT = comtypes.client.CreateObject(
             "{ff48dba4-60ef-4201-aa87-54103eef594e}",
             interface=IUIAutomation,
         )
+        if _UIA_CLIENT is None:
+            _UIA_SETUP_ERROR = UIA_CLIENT_UNAVAILABLE
+            return None
         return _UIA_CLIENT
     except Exception:
+        _UIA_SETUP_ERROR = UIA_CLIENT_UNAVAILABLE
         return None
 
 
-def _read_com(hwnd: int, timeout_ms: int, max_depth: int, max_nodes: int) -> UiaMeta:
+def _read_com(hwnd: int, timeout_ms: int, max_depth: int, max_nodes: int):
     t0 = time.monotonic()
+    uia = create_uia_client()
+    if uia is None:
+        code = _UIA_SETUP_ERROR or UIA_UNAVAILABLE
+        return UiaMeta(outcome=code), None
     try:
-        import comtypes.client
-    except Exception:
-        return UiaMeta(outcome=UIA_UNAVAILABLE)
-    try:
-        uia = comtypes.client.CreateObject(
-            "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-        )
         el = uia.ElementFromHandle(int(hwnd))
     except Exception:
-        return UiaMeta(outcome=UIA_UNAVAILABLE)
-    if el is None:
-        return UiaMeta(outcome=UIA_UNAVAILABLE)
+        return UiaMeta(outcome=UIA_ELEMENT_UNAVAILABLE), None
+    if not _com_ptr_valid(el):
+        return UiaMeta(outcome=UIA_ELEMENT_UNAVAILABLE), None
     remain = float(timeout_ms) - (time.monotonic() - t0) * 1000.0
-    root = _com_node_from_element(el, remain)
+    root, kind = _com_node_from_element(el, remain)
     if root is None:
         if remain <= 0:
-            return UiaMeta(outcome=OBSERVATION_TIMEOUT)
-        return UiaMeta(outcome=REDACTION_FAILED)
+            return UiaMeta(outcome=OBSERVATION_TIMEOUT), None
+        if kind == _PASSWORD_PROPERTY_UNAVAILABLE:
+            return UiaMeta(outcome=UIA_UNAVAILABLE), None
+        return UiaMeta(outcome=UIA_ELEMENT_UNAVAILABLE), None
     budget = [max(int(max_nodes) - 1, 0)]
     err = _com_fill_children(
         uia, el, root, 0, int(max_depth), int(max_nodes), budget, t0, int(timeout_ms),
     )
     if err == OBSERVATION_TIMEOUT:
-        return UiaMeta(outcome=OBSERVATION_TIMEOUT)
+        return UiaMeta(outcome=OBSERVATION_TIMEOUT), None
     if err == REDACTION_FAILED:
-        return UiaMeta(outcome=REDACTION_FAILED, sensitive_hit=True)
+        return UiaMeta(outcome=REDACTION_FAILED, sensitive_hit=True), None
     if err == UIA_UNAVAILABLE:
-        return UiaMeta(outcome=UIA_UNAVAILABLE)
+        return UiaMeta(outcome=UIA_UNAVAILABLE), None
     meta = bounded_tree_walk(
         root,
         timeout_ms=timeout_ms,
@@ -238,7 +348,7 @@ def _read_com(hwnd: int, timeout_ms: int, max_depth: int, max_nodes: int) -> Uia
         max_nodes=max_nodes,
         started=t0,
     )
-    return meta
+    return meta, root
 
 
 def read_foreground_uia_meta(
@@ -258,4 +368,27 @@ def read_foreground_uia_meta(
             max_depth=max_depth,
             max_nodes=max_nodes,
         )
+    meta, _root = _read_com(int(hwnd), int(timeout_ms), int(max_depth), int(max_nodes))
+    return meta
+
+
+def read_foreground_uia_tree(
+    hwnd: int,
+    *,
+    timeout_ms: int,
+    max_depth: int,
+    max_nodes: int,
+    tree_root: Optional[UiaWalkNode] = None,
+):
+    """Observe-only tree plus digest metadata. No mutation."""
+    if int(hwnd or 0) == 0:
+        return UiaMeta(outcome=UIA_UNAVAILABLE), None
+    if tree_root is not None:
+        meta = bounded_tree_walk(
+            tree_root,
+            timeout_ms=timeout_ms,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+        )
+        return meta, tree_root
     return _read_com(int(hwnd), int(timeout_ms), int(max_depth), int(max_nodes))

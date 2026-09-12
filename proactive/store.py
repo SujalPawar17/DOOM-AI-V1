@@ -3793,7 +3793,7 @@ class ProactiveStore:
             self._release(conn)
 
     def _computer_session_row(self, r) -> Dict[str, Any]:
-        return {
+        row = {
             "session_id": r[0],
             "owner_id": r[1],
             "status": r[2],
@@ -3802,7 +3802,19 @@ class ProactiveStore:
             "created_at": r[5],
             "updated_at": r[6],
             "expires_at": r[7],
+            "bound_hwnd": 0,
+            "bound_pid": 0,
+            "bound_exe_path_norm": "",
+            "bound_window_class": "",
+            "bound_title_advisory": "",
         }
+        if r is not None and len(r) > 8:
+            row["bound_hwnd"] = int(r[8] or 0)
+            row["bound_pid"] = int(r[9] or 0)
+            row["bound_exe_path_norm"] = str(r[10] or "")
+            row["bound_window_class"] = str(r[11] or "")
+            row["bound_title_advisory"] = str(r[12] or "")
+        return row
 
     def expire_computer_sessions(self, owner_id: str) -> int:
         conn = self._conn()
@@ -3859,7 +3871,10 @@ class ProactiveStore:
                     ) VALUES (%s, %s, 'OBSERVING', %s, FALSE, NOW() + (%s || ' seconds')::interval)
                     RETURNING session_id, owner_id, status, privacy_class, emergency_stop,
                               EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-                              EXTRACT(EPOCH FROM expires_at)
+                              EXTRACT(EPOCH FROM expires_at),
+                              COALESCE(bound_hwnd, 0), COALESCE(bound_pid, 0),
+                              COALESCE(bound_exe_path_norm, ''), COALESCE(bound_window_class, ''),
+                              COALESCE(bound_title_advisory, '')
                     """,
                     (sid, owner, str(privacy_class)[:16], str(int(ttl_sec))),
                 )
@@ -3885,7 +3900,10 @@ class ProactiveStore:
                     """
                     SELECT session_id, owner_id, status, privacy_class, emergency_stop,
                            EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-                           EXTRACT(EPOCH FROM expires_at)
+                           EXTRACT(EPOCH FROM expires_at),
+                           COALESCE(bound_hwnd, 0), COALESCE(bound_pid, 0),
+                           COALESCE(bound_exe_path_norm, ''), COALESCE(bound_window_class, ''),
+                           COALESCE(bound_title_advisory, '')
                     FROM computer_sessions
                     WHERE owner_id = %s AND status = 'OBSERVING'
                     ORDER BY created_at DESC
@@ -3910,7 +3928,10 @@ class ProactiveStore:
                     """
                     SELECT session_id, owner_id, status, privacy_class, emergency_stop,
                            EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-                           EXTRACT(EPOCH FROM expires_at)
+                           EXTRACT(EPOCH FROM expires_at),
+                           COALESCE(bound_hwnd, 0), COALESCE(bound_pid, 0),
+                           COALESCE(bound_exe_path_norm, ''), COALESCE(bound_window_class, ''),
+                           COALESCE(bound_title_advisory, '')
                     FROM computer_sessions
                     WHERE session_id = %s AND owner_id = %s
                     LIMIT 1
@@ -3935,7 +3956,10 @@ class ProactiveStore:
                     """
                     SELECT session_id, owner_id, status, privacy_class, emergency_stop,
                            EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-                           EXTRACT(EPOCH FROM expires_at)
+                           EXTRACT(EPOCH FROM expires_at),
+                           COALESCE(bound_hwnd, 0), COALESCE(bound_pid, 0),
+                           COALESCE(bound_exe_path_norm, ''), COALESCE(bound_window_class, ''),
+                           COALESCE(bound_title_advisory, '')
                     FROM computer_sessions
                     WHERE owner_id = %s
                     ORDER BY created_at DESC
@@ -3966,7 +3990,10 @@ class ProactiveStore:
                       AND status IN ('CREATED','OBSERVING','PAUSED')
                     RETURNING session_id, owner_id, status, privacy_class, emergency_stop,
                               EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-                              EXTRACT(EPOCH FROM expires_at)
+                              EXTRACT(EPOCH FROM expires_at),
+                              COALESCE(bound_hwnd, 0), COALESCE(bound_pid, 0),
+                              COALESCE(bound_exe_path_norm, ''), COALESCE(bound_window_class, ''),
+                              COALESCE(bound_title_advisory, '')
                     """,
                     (sid, owner),
                 )
@@ -3980,6 +4007,60 @@ class ProactiveStore:
                         """,
                         (str(uuid.uuid4())[:64], sid, owner),
                     )
+            conn.commit()
+            return self._computer_session_row(r) if r else None
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None
+        finally:
+            self._release(conn)
+
+    def bind_computer_session(
+        self,
+        session_id: str,
+        owner_id: str,
+        *,
+        hwnd: int,
+        pid: int,
+        exe_path_norm: str,
+        window_class: str,
+        title_advisory: str,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        if not conn:
+            return None
+        sid = str(session_id)[:64]
+        owner = str(owner_id)[:64]
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE computer_sessions
+                    SET bound_hwnd = %s, bound_pid = %s, bound_exe_path_norm = %s,
+                        bound_window_class = %s, bound_title_advisory = %s, updated_at = NOW()
+                    WHERE session_id = %s AND owner_id = %s AND status = 'OBSERVING'
+                      AND bound_hwnd IS NULL
+                    RETURNING session_id, owner_id, status, privacy_class, emergency_stop,
+                              EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
+                              EXTRACT(EPOCH FROM expires_at),
+                              COALESCE(bound_hwnd, 0), COALESCE(bound_pid, 0),
+                              COALESCE(bound_exe_path_norm, ''), COALESCE(bound_window_class, ''),
+                              COALESCE(bound_title_advisory, '')
+                    """,
+                    (
+                        int(hwnd),
+                        int(pid),
+                        str(exe_path_norm or "")[:512],
+                        str(window_class or "")[:64],
+                        str(title_advisory or "")[:80],
+                        sid,
+                        owner,
+                    ),
+                )
+                r = cur.fetchone()
             conn.commit()
             return self._computer_session_row(r) if r else None
         except Exception:

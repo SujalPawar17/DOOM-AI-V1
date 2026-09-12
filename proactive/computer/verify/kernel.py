@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.cost_guard import ResourceRequest, ResourceType, cost_guard
 from proactive.computer.actions.types import ApprovalState
@@ -325,8 +325,46 @@ def _eval_browser(vtype: VerificationType, exp: Dict[str, str], browser_fn: Call
     return VerificationStatus.INVALID_VERIFICATION_SPEC, "UNSUPPORTED_TYPE", after, ev
 
 
-def _eval_computer(vtype: VerificationType, exp: Dict[str, str], computer_fn: Callable, owner: str) -> Tuple[VerificationStatus, str, str, VerificationEvidence]:
-    obs = computer_fn(owner)
+def _unwrap_computer_obs(raw: Any) -> Tuple[Any, Tuple[Dict[str, str], ...]]:
+    targets: Tuple[Dict[str, str], ...] = ()
+    obs = raw
+    if isinstance(raw, tuple):
+        obs = raw[0] if raw else None
+        if len(raw) >= 3 and isinstance(raw[2], tuple):
+            targets = raw[2]
+    return obs, targets
+
+
+def _match_computer_targets(targets: Tuple[Dict[str, str], ...], exp: Dict[str, str]) -> List[Dict[str, str]]:
+    from proactive.computer.observe import uia_control_types_equal
+    hits: List[Dict[str, str]] = []
+    for item in targets:
+        if not isinstance(item, dict):
+            continue
+        if exp.get("automation_id") and str(item.get("automation_id") or "") != exp.get("automation_id"):
+            continue
+        if exp.get("runtime_id") and str(item.get("runtime_id") or "") != exp.get("runtime_id"):
+            continue
+        if exp.get("control_type") and not uia_control_types_equal(str(item.get("control_type") or ""), exp.get("control_type") or ""):
+            continue
+        if exp.get("name") and str(item.get("name") or "").strip().lower() != str(exp.get("name") or "").strip().lower():
+            continue
+        hits.append(item)
+    return hits
+
+
+def _eval_computer(
+    vtype: VerificationType,
+    exp: Dict[str, str],
+    computer_fn: Callable,
+    owner: str,
+    computer_session_id: str = "",
+) -> Tuple[VerificationStatus, str, str, VerificationEvidence]:
+    try:
+        raw = computer_fn(owner, computer_session_id=computer_session_id)
+    except TypeError:
+        raw = computer_fn(owner)
+    obs, targets = _unwrap_computer_obs(raw)
     after = str(getattr(obs, "observation_hash", "") or "")
     auto = str(getattr(obs, "uia_automation_id", "") or "")
     runtime = str(getattr(obs, "uia_runtime_id", "") or "")
@@ -348,11 +386,28 @@ def _eval_computer(vtype: VerificationType, exp: Dict[str, str], computer_fn: Ca
         if exp.get("runtime_id") and runtime != exp.get("runtime_id"):
             ok = False
         if exp.get("control_type") and ctype != exp.get("control_type"):
-            ok = False
+            from proactive.computer.observe import uia_control_types_equal
+            ok = uia_control_types_equal(ctype, exp.get("control_type") or "")
         return (VerificationStatus.VERIFIED if ok else VerificationStatus.NOT_VERIFIED, "" if ok else "IDENTITY_MISMATCH", after, ev)
     if vtype == VerificationType.TARGET_STATE_MATCH:
         want = exp.get("expected_outcome") or ""
         ok = (not want or outcome == want) and exists
+        named = bool(exp.get("name") or exp.get("automation_id"))
+        if ok and named:
+            if not targets:
+                from proactive.computer.observe import capture_structured_observation
+                try:
+                    _obs2, _code, targets = capture_structured_observation(
+                        owner, computer_session_id=str(computer_session_id or ""),
+                    )
+                except TypeError:
+                    _obs2, _code, targets = capture_structured_observation(owner)
+                if obs is None:
+                    obs = _obs2
+                    after = str(getattr(obs, "observation_hash", "") or "")
+            hits = _match_computer_targets(targets, exp)
+            if len(hits) != 1:
+                ok = False
         return (VerificationStatus.VERIFIED if ok else VerificationStatus.NOT_VERIFIED, "" if ok else "STATE_MISMATCH", after, ev)
     title = str(getattr(obs, "title_advisory", "") or "")[:80]
     if vtype == VerificationType.TEXT_PRESENT:
@@ -433,7 +488,7 @@ def execute_verification(
         elif spec.capability == "browser":
             last = _eval_browser(vtype, exp, bfn, owner, exp.get("session_id", ""))
         else:
-            last = _eval_computer(vtype, exp, computer_fn, owner)
+            last = _eval_computer(vtype, exp, computer_fn, owner, request.computer_session_id)
         if last[0] == VerificationStatus.VERIFIED:
             return _result(
                 request, VerificationStatus.VERIFIED, after=last[2],

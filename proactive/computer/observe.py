@@ -5,16 +5,20 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from proactive.computer.drivers.uia_win import (
     OBSERVATION_TIMEOUT,
     REDACTION_FAILED,
     TREE_LIMIT,
+    UIA_FAIL_CLOSED,
     UIA_UNAVAILABLE,
     UiaWalkNode,
     read_foreground_uia_meta,
+    read_foreground_uia_tree,
 )
+
+_DRIVER_UIA_META = read_foreground_uia_meta
 from proactive.computer.drivers.win32_id import (
     INVALID_IDENTITY,
     WINDOW_GONE,
@@ -95,15 +99,109 @@ def _hud_ws(card: Dict[str, Any]) -> None:
         pass
 
 
-def capture_observation(
+MAX_STRUCTURED_TARGETS = 32
+_UIA_TYPES = {
+    "50000": "Button",
+    "50002": "CheckBox",
+    "50003": "ComboBox",
+    "50004": "Edit",
+    "50005": "Hyperlink",
+    "50011": "MenuItem",
+    "50013": "RadioButton",
+    "50020": "Text",
+    "50030": "Document",
+}
+_UIA_NAMES = {name.lower(): code for code, name in _UIA_TYPES.items()}
+
+
+def canonical_uia_control_type(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if text in _UIA_TYPES:
+        return _UIA_TYPES[text]
+    return text
+
+
+def uia_control_types_equal(left: str, right: str) -> bool:
+    a = str(left or "").strip()
+    b = str(right or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    ca = canonical_uia_control_type(a)
+    cb = canonical_uia_control_type(b)
+    if ca and cb and ca.lower() == cb.lower():
+        return True
+    if a in _UIA_TYPES and _UIA_TYPES[a].lower() == b.lower():
+        return True
+    if b in _UIA_TYPES and _UIA_TYPES[b].lower() == a.lower():
+        return True
+    if a.lower() in _UIA_NAMES and _UIA_NAMES[a.lower()] == b:
+        return True
+    if b.lower() in _UIA_NAMES and _UIA_NAMES[b.lower()] == a:
+        return True
+    return False
+
+
+def _flatten_structured_targets(root: Optional[UiaWalkNode]) -> Tuple[Dict[str, str], ...]:
+    if root is None:
+        return ()
+    out: List[Dict[str, str]] = []
+    stack = [root]
+    while stack and len(out) < MAX_STRUCTURED_TARGETS:
+        node = stack.pop()
+        if node is None:
+            continue
+        if bool(getattr(node, "is_password", False)):
+            continue
+        aid = str(getattr(node, "automation_id", "") or "")[:128]
+        rid = str(getattr(node, "runtime_id", "") or "")[:256]
+        raw_type = str(getattr(node, "control_type", "") or "")[:64]
+        ctype = _UIA_TYPES.get(raw_type, raw_type)
+        name = str(getattr(node, "name", "") or "")[:80]
+        if (aid or rid) and ctype and name:
+            row = {
+                "automation_id": aid,
+                "runtime_id": rid,
+                "control_type": ctype,
+                "name": name,
+            }
+            if bool(getattr(node, "focused", False)):
+                row["selected"] = "true"
+            out.append(row)
+        kids = list(getattr(node, "children", None) or [])
+        for child in reversed(kids):
+            stack.append(child)
+    return tuple(out)
+
+
+def capture_structured_observation(
     owner_id: str,
     *,
     win32: Optional[Win32Identity] = None,
     uia_root: Optional[UiaWalkNode] = None,
-) -> Tuple[Optional[ComputerObservation], str]:
+    computer_session_id: str = "",
+    identity_fn=None,
+) -> Tuple[Optional[ComputerObservation], str, Tuple[Dict[str, str], ...]]:
+    """One read-only capture plus bounded named targets. No click/type."""
+    from proactive.computer.session import get_session, validate_bound_identity
+
     t0 = time.monotonic()
     budget = float(timeout_ms())
-    ident = win32 if win32 is not None else read_foreground_win32(max_title=max_title())
+    sid = str(computer_session_id or "").strip()[:64]
+    ident = win32
+    if sid:
+        row = get_session(sid, str(owner_id or "")[:64])
+        if not row:
+            return None, "SESSION_UNAVAILABLE", ()
+        live, err = validate_bound_identity(row, identity_fn=identity_fn)
+        if live is None:
+            return None, err, ()
+        ident = live
+    elif ident is None:
+        ident = read_foreground_win32(max_title=max_title())
     obs = ComputerObservation(owner_id=str(owner_id or "")[:64], privacy_class=PRIVACY_DEFAULT)
     obs.capture_unix_ms = int(time.time() * 1000)
     obs.title_advisory = str(ident.title_advisory or "")[: max_title()]
@@ -111,7 +209,7 @@ def capture_observation(
     if ident.outcome == INVALID_IDENTITY:
         obs.outcome_code = INVALID_IDENTITY
         obs.latency_ms = (time.monotonic() - t0) * 1000.0
-        return None, INVALID_IDENTITY
+        return None, INVALID_IDENTITY, ()
     obs.hwnd = int(ident.hwnd or 0)
     obs.pid = int(ident.pid or 0)
     obs.exe_path_norm = str(ident.exe_path_norm or "")
@@ -120,26 +218,33 @@ def capture_observation(
     obs.monitor_id = int(ident.monitor_id or 0)
     if ident.outcome == WINDOW_GONE or obs.hwnd == 0:
         obs.outcome_code = WINDOW_GONE
+        root = uia_root
     else:
         remain = budget - (time.monotonic() - t0) * 1000.0
         uia_timeout = max(1, int(remain))
-        uia = read_foreground_uia_meta(
-            obs.hwnd,
+        kwargs = dict(
             timeout_ms=uia_timeout,
             max_depth=max_depth(),
             max_nodes=max_nodes(),
             tree_root=uia_root,
         )
+        if uia_root is not None:
+            uia, root = read_foreground_uia_tree(obs.hwnd, **kwargs)
+        elif read_foreground_uia_meta is not _DRIVER_UIA_META:
+            uia = read_foreground_uia_meta(obs.hwnd, **kwargs)
+            root = None
+        else:
+            uia, root = read_foreground_uia_tree(obs.hwnd, **kwargs)
         if uia.outcome == REDACTION_FAILED:
             obs.outcome_code = REDACTION_FAILED
             obs.latency_ms = (time.monotonic() - t0) * 1000.0
-            return None, REDACTION_FAILED
+            return None, REDACTION_FAILED, ()
         if uia.outcome == OBSERVATION_TIMEOUT:
             obs.outcome_code = OBSERVATION_TIMEOUT
-        elif uia.outcome == UIA_UNAVAILABLE:
-            obs.outcome_code = UIA_UNAVAILABLE if ident.outcome != WINDOW_GONE else WINDOW_GONE
-            if ident.outcome != WINDOW_GONE and ident.outcome != INVALID_IDENTITY:
-                obs.outcome_code = UIA_UNAVAILABLE
+        elif uia.outcome in UIA_FAIL_CLOSED:
+            obs.outcome_code = str(uia.outcome)
+            if ident.outcome == WINDOW_GONE:
+                obs.outcome_code = WINDOW_GONE
         elif uia.outcome == TREE_LIMIT:
             obs.outcome_code = TREE_LIMIT
             obs.uia_runtime_id = uia.runtime_id
@@ -163,12 +268,30 @@ def capture_observation(
     except Exception:
         obs.outcome_code = HASH_FAILURE
         obs.latency_ms = (time.monotonic() - t0) * 1000.0
-        return None, HASH_FAILURE
+        return None, HASH_FAILURE, ()
     if not obs.observation_hash:
         obs.outcome_code = HASH_FAILURE
-        return None, HASH_FAILURE
+        return None, HASH_FAILURE, ()
     obs.latency_ms = (time.monotonic() - t0) * 1000.0
-    return obs, obs.outcome_code
+    return obs, obs.outcome_code, _flatten_structured_targets(root)
+
+
+def capture_observation(
+    owner_id: str,
+    *,
+    win32: Optional[Win32Identity] = None,
+    uia_root: Optional[UiaWalkNode] = None,
+    computer_session_id: str = "",
+    identity_fn=None,
+) -> Tuple[Optional[ComputerObservation], str]:
+    obs, code, _targets = capture_structured_observation(
+        owner_id,
+        win32=win32,
+        uia_root=uia_root,
+        computer_session_id=computer_session_id,
+        identity_fn=identity_fn,
+    )
+    return obs, code
 
 
 def _persist(session: Dict[str, Any], obs: ComputerObservation) -> str:
@@ -212,7 +335,11 @@ def evaluate_computer_observation(owner_id: str = OWNER_ID) -> int:
         return 0
     if str(session.get("status") or "") != "OBSERVING":
         return 0
-    obs, drop_reason = capture_observation(owner)
+    sid = str(session.get("session_id") or "")[:64]
+    if int(session.get("bound_hwnd") or 0) > 0:
+        obs, drop_reason = capture_observation(owner, computer_session_id=sid)
+    else:
+        obs, drop_reason = capture_observation(owner)
     if obs is None:
         proactive_store.insert_computer_observation_event(
             str(session.get("session_id") or ""),

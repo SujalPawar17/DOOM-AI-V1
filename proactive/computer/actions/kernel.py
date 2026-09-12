@@ -187,7 +187,16 @@ def execute_computer_action(
     expected = str(request.precondition_observation_hash or "")
     obs = current_observation
     if obs is None:
-        obs, _code = capture_observation(owner)
+        sid = str(request.session_id or "")[:64]
+        if not sid:
+            return _result(
+                request, Status.PRECONDITION_FAILED,
+                precondition="failed", execution="not_started",
+                error="WINDOW_UNBOUND",
+                before=expected,
+                telemetry=tel,
+            )
+        obs, _code = capture_observation(owner, computer_session_id=sid)
     if obs is None or not str(obs.observation_hash or ""):
         return _result(
             request, Status.PRECONDITION_FAILED,
@@ -227,7 +236,8 @@ def execute_computer_action(
         return _result(request, rstatus, precondition="failed", execution="not_started", before=before, telemetry=tel)
 
     live = resolved.identity
-    if str(live.control_type or "") != str(request.target.control_type or ""):
+    from proactive.computer.observe import uia_control_types_equal
+    if not uia_control_types_equal(live.control_type, request.target.control_type):
         return _result(
             request, Status.PRECONDITION_FAILED,
             precondition="failed", execution="not_started",
@@ -274,7 +284,7 @@ def execute_computer_action(
         if post_observation is not None:
             after = str(post_observation.observation_hash or "")
         else:
-            after_obs, _code = capture_observation(owner)
+            after_obs, _code = capture_observation(owner, computer_session_id=str(request.session_id or "")[:64])
             after = str(after_obs.observation_hash or "") if after_obs is not None else ""
 
     return _result(

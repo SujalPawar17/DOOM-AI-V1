@@ -152,6 +152,29 @@
                             </div>
                         </form>
 
+                        <div class="v8-computer-session" id="v8-computer-session">
+                            <span class="v8-cs-label">V7 computer session</span>
+                            <span class="v8-cs-status" id="v8-cs-status">none</span>
+                            <button type="button" class="v8-cs-start" id="v8-cs-start">Start computer session</button>
+                            <button type="button" class="v8-cs-stop" id="v8-cs-stop" hidden>Stop</button>
+                            <div class="v8-cs-bind" id="v8-cs-bind" hidden>
+                                <div class="v8-cs-bind-label">Select target window</div>
+                                <select class="v8-cs-candidates" id="v8-cs-candidates" size="6"></select>
+                                <button type="button" class="v8-cs-bind-btn" id="v8-cs-bind-btn">Bind selected window</button>
+                                <span class="v8-cs-bind-status" id="v8-cs-bind-status"></span>
+                            </div>
+                        </div>
+
+                        <div class="v8-ask-approval" id="v8-ask-approval" hidden>
+                            <div class="v8-ask-title">DOOM wants to perform this one action</div>
+                            <div class="v8-ask-body" id="v8-ask-body"></div>
+                            <div class="v8-ask-note">This approval applies only to this exact action. It is not general computer access.</div>
+                            <div class="v8-ask-actions">
+                                <button type="button" class="v8-ask-approve" id="v8-ask-approve">Approve this action</button>
+                                <button type="button" class="v8-ask-cancel" id="v8-ask-cancel">Cancel</button>
+                            </div>
+                        </div>
+
                         <!-- Quick Actions -->
                         <div class="quick-actions">
                             <span class="quick-label">Quick:</span>

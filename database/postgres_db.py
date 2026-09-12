@@ -915,6 +915,11 @@ class PostgresManager:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_csess_one_observing
             ON computer_sessions (owner_id) WHERE status = 'OBSERVING';
             """,
+            "ALTER TABLE computer_sessions ADD COLUMN IF NOT EXISTS bound_hwnd BIGINT;",
+            "ALTER TABLE computer_sessions ADD COLUMN IF NOT EXISTS bound_pid INTEGER;",
+            "ALTER TABLE computer_sessions ADD COLUMN IF NOT EXISTS bound_exe_path_norm VARCHAR(512);",
+            "ALTER TABLE computer_sessions ADD COLUMN IF NOT EXISTS bound_window_class VARCHAR(64);",
+            "ALTER TABLE computer_sessions ADD COLUMN IF NOT EXISTS bound_title_advisory VARCHAR(80);",
             """
             CREATE TABLE IF NOT EXISTS computer_observations (
                 observation_id VARCHAR(64) PRIMARY KEY,
@@ -1220,6 +1225,8 @@ class PostgresManager:
             """,
             "CREATE INDEX IF NOT EXISTS idx_transfer_matrix_pair ON project_transfer_matrix(source_project_id, target_project_id);",
         ]
+        from orchestration.task.ledger_schema import LEDGER_DDL
+        queries.extend(LEDGER_DDL)
 
         conn = self.get_connection()
         if not conn:

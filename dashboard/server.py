@@ -515,17 +515,184 @@ async def ask_session_unlock(request: Request):
     return resp
 
 
+def _remap_ask_error(err: JSONResponse) -> JSONResponse:
+    try:
+        payload = json.loads(bytes(err.body).decode("utf-8"))
+    except Exception:
+        return err
+    code = str(payload.get("error") or "")
+    mapped = {
+        "csrf": "CSRF_FAILURE",
+        "origin": "ORIGIN_FAILURE",
+        "unauthenticated": "IDENTITY_REQUIRED",
+    }.get(code, code)
+    return JSONResponse({"ok": False, "error": mapped}, status_code=err.status_code)
+
+
+def _v8_ask_session(request: Request, *, need_csrf: bool):
+    from dashboard.ask_session import require_ask_session
+    sess, err = require_ask_session(request, need_csrf=need_csrf)
+    if err:
+        return None, _remap_ask_error(err)
+    return sess, None
+
+
+def _v8_error(code: str, http: int = 409) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": str(code or "BLOCKED")[:64]}, status_code=http)
+
+
+def _v8_http_for(code: str) -> int:
+    if code in ("IDENTITY_REQUIRED",):
+        return 401
+    if code in ("CSRF_FAILURE", "ORIGIN_FAILURE"):
+        return 403
+    if code in ("PLAN_NOT_FOUND",):
+        return 404
+    return 409
+
+
+@app.post("/api/proactive/v8/command")
+async def v8_authenticated_command(request: Request):
+    """V8 request path. Identity comes only from the ASK cookie session."""
+    from orchestration.identity import identity_from_ask_session_row
+    from proactive.config import is_v8_enabled
+    sess, err = _v8_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    goal = str(body.get("goal") or "").strip()
+    if not goal:
+        return JSONResponse({"ok": False, "error": "empty_goal"}, status_code=400)
+    ident, status = identity_from_ask_session_row(
+        sess,
+        computer_session_id=str(body.get("computer_session_id") or ""),
+    )
+    if ident is None:
+        http = 401 if status == "IDENTITY_REQUIRED" else 409
+        return _v8_error(status, http)
+    if not is_v8_enabled():
+        response = doom_core.process_request(goal, identity=ident)
+        return {"ok": True, "response": response, "owner_id": ident.owner_id}
+
+    from orchestration.authorization import medium_computer_approvable, safe_plan_display, stash_pending_plan
+    from orchestration.executor import execute_plan
+    from orchestration.executor_errors import ExecutionStatus
+    from orchestration.production import prepare_v8_request
+
+    prep = prepare_v8_request(goal, identity=ident)
+    if prep.plan is None:
+        return {
+            "ok": False,
+            "error": prep.status,
+            "response": f"[V8] {prep.status}" + (f": {prep.reason}" if prep.reason else ""),
+            "owner_id": ident.owner_id,
+        }
+    ok_medium, medium_code = medium_computer_approvable(prep.plan)
+    if ok_medium:
+        pending_id, stash_err = stash_pending_plan(prep.plan, ident)
+        if pending_id is None:
+            return _v8_error(stash_err, _v8_http_for(stash_err))
+        return {
+            "ok": True,
+            "status": ExecutionStatus.APPROVAL_REQUIRED.value,
+            "plan_id": pending_id,
+            "display": safe_plan_display(prep.plan),
+            "risk": prep.plan.plan_risk,
+            "response": f"[V8] {ExecutionStatus.APPROVAL_REQUIRED.value}",
+            "owner_id": ident.owner_id,
+        }
+    if prep.plan.plan_risk in ("HIGH", "CRITICAL") or prep.plan.approval_required:
+        return _v8_error(medium_code, _v8_http_for(medium_code))
+
+    result = execute_plan(prep.plan, identity=ident, authorized_plan_hash="")
+    extra = prep.intent if result.status is ExecutionStatus.SUCCESS else ""
+    response = f"[V8] {result.status.value}" + (f": {extra}" if extra else "")
+    return {"ok": True, "status": result.status.value, "response": response, "owner_id": ident.owner_id}
+
+
+@app.get("/api/proactive/v8/plans/{plan_id}")
+async def v8_pending_plan_get(request: Request, plan_id: str):
+    from orchestration.authorization import pending_display
+    from orchestration.identity import identity_from_ask_session_row
+    sess, err = _v8_ask_session(request, need_csrf=False)
+    if err:
+        return err
+    ident, status = identity_from_ask_session_row(sess)
+    if ident is None:
+        return _v8_error(status, 401 if status == "IDENTITY_REQUIRED" else 409)
+    display, code = pending_display(str(plan_id)[:64], ident)
+    if display is None:
+        return _v8_error(code, _v8_http_for(code))
+    return {"ok": True, "plan_id": str(plan_id)[:64], "display": display}
+
+
+@app.post("/api/proactive/v8/authorize")
+async def v8_authorize_plan(request: Request):
+    """Explicit ASK approval for a server-stashed MEDIUM computer plan."""
+    from orchestration.authorization import claim_authorization, revoke_pending
+    from orchestration.executor import execute_plan
+    from orchestration.executor_errors import ExecutionStatus
+    from orchestration.identity import identity_from_ask_session_row
+    sess, err = _v8_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    plan_id = str(body.get("plan_id") or "").strip()[:64]
+    decision = str(body.get("decision") or "approve").strip().lower()
+    ident, status = identity_from_ask_session_row(sess)
+    if ident is None:
+        return _v8_error(status, 401 if status == "IDENTITY_REQUIRED" else 409)
+    if not plan_id:
+        return _v8_error(ExecutionStatus.PLAN_NOT_FOUND.value, 404)
+    if decision in ("cancel", "reject", "deny"):
+        code = revoke_pending(plan_id, ident)
+        if code != "OK":
+            return _v8_error(code, _v8_http_for(code))
+        return {"ok": True, "status": ExecutionStatus.AUTHORIZATION_REVOKED.value}
+    requested_cs = str(body.get("computer_session_id") or "")
+    claim, code = claim_authorization(
+        plan_id,
+        ident,
+        requested_computer_session_id=requested_cs,
+    )
+    if claim is None:
+        return _v8_error(code, _v8_http_for(code))
+    result = execute_plan(
+        claim.plan,
+        identity=claim.identity,
+        authorized_plan_hash=claim.authorized_plan_hash,
+    )
+    return {
+        "ok": result.status is ExecutionStatus.SUCCESS,
+        "status": result.status.value,
+        "response": f"[V8] {result.status.value}",
+        "owner_id": claim.identity.owner_id,
+    }
+
+
 @app.get("/api/proactive/session")
 async def ask_session_get(request: Request):
     from dashboard.ask_session import require_ask_session
     sess, err = require_ask_session(request, need_csrf=False)
     if err:
         return err
+    from proactive.config import is_v8_enabled
     return {
         "ok": True,
         "csrf": sess.get("csrf_token"),
         "owner_id": sess.get("owner_id"),
         "expires_at": int(sess.get("expires_at") or 0),
+        "v8_enabled": bool(is_v8_enabled()),
     }
 
 
@@ -735,26 +902,29 @@ async def computer_session_create(request: Request):
     http = int(result.pop("http", 200) or 200)
     if not result.get("ok"):
         return JSONResponse(result, status_code=http if http in (401, 403, 404, 409, 503) else 409)
+    from proactive.computer.session import public_computer_session
+    result["session"] = public_computer_session(result.get("session"))
     return result
 
 
 @app.get("/api/proactive/computer/sessions")
 async def computer_session_list(request: Request):
     from dashboard.ask_session import require_ask_session
-    from proactive.computer.session import list_sessions
+    from proactive.computer.session import list_sessions, public_computer_session
     sess, err = require_ask_session(request, need_csrf=False)
     if err:
         return err
     owner = str(sess.get("owner_id") or "")
     if not _computer_flags():
         return {"ok": True, "sessions": [], "enabled": False}
-    return {"ok": True, "sessions": list_sessions(owner), "enabled": True}
+    rows = [public_computer_session(r) for r in list_sessions(owner)]
+    return {"ok": True, "sessions": rows, "enabled": True}
 
 
 @app.get("/api/proactive/computer/sessions/{session_id}")
 async def computer_session_get(request: Request, session_id: str):
     from dashboard.ask_session import require_ask_session
-    from proactive.computer.session import get_session
+    from proactive.computer.session import get_session, public_computer_session
     sess, err = require_ask_session(request, need_csrf=False)
     if err:
         return err
@@ -762,7 +932,7 @@ async def computer_session_get(request: Request, session_id: str):
     row = get_session(str(session_id)[:64], owner)
     if not row:
         return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
-    return {"ok": True, "session": row}
+    return {"ok": True, "session": public_computer_session(row)}
 
 
 @app.get("/api/proactive/computer/sessions/{session_id}/observation")
@@ -796,7 +966,68 @@ async def computer_session_stop(request: Request, session_id: str):
     http = int(result.pop("http", 200) or 200)
     if not result.get("ok"):
         return JSONResponse(result, status_code=http if http in (401, 403, 404, 409) else 404)
+    if result.get("session"):
+        from proactive.computer.session import public_computer_session
+        result["session"] = public_computer_session(result.get("session"))
     return result
+
+
+_BIND_HTTP = {
+    "OK": 200,
+    "ALREADY_BOUND": 409,
+    "CANDIDATE_EXPIRED": 409,
+    "WINDOW_GONE": 409,
+    "INVALID_CANDIDATE": 400,
+    "SESSION_UNAVAILABLE": 404,
+    "PID_MISMATCH": 409,
+    "EXE_MISMATCH": 409,
+    "CLASS_MISMATCH": 409,
+    "HWND_REUSE": 409,
+    "INVALID_IDENTITY": 409,
+}
+
+
+@app.get("/api/proactive/computer/sessions/{session_id}/window-candidates")
+async def computer_window_candidates(request: Request, session_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.computer.session import list_bind_candidates
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    if not _computer_flags():
+        return JSONResponse({"ok": False, "enabled": False}, status_code=403)
+    owner = str(sess.get("owner_id") or "")
+    rows, code = list_bind_candidates(owner, str(session_id)[:64])
+    if rows is None:
+        http = _BIND_HTTP.get(code, 409)
+        return JSONResponse({"ok": False, "error": code}, status_code=http)
+    return {"ok": True, "candidates": rows}
+
+
+@app.post("/api/proactive/computer/sessions/{session_id}/bind-window")
+async def computer_bind_window(request: Request, session_id: str):
+    from dashboard.ask_session import require_ask_session
+    from proactive.computer.session import bind_session_window, public_computer_session
+    sess, err = require_ask_session(request, need_csrf=True)
+    if err:
+        return err
+    if not _computer_flags():
+        return JSONResponse({"ok": False, "enabled": False}, status_code=403)
+    owner = str(sess.get("owner_id") or "")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    if "hwnd" in body or "pid" in body or "window_handle" in body:
+        return JSONResponse({"ok": False, "error": "INVALID_CANDIDATE"}, status_code=400)
+    cid = str(body.get("candidate_id") or "").strip()[:64]
+    bound, code = bind_session_window(owner, str(session_id)[:64], cid)
+    if bound is None:
+        http = _BIND_HTTP.get(code, 409)
+        return JSONResponse({"ok": False, "error": code}, status_code=http)
+    return {"ok": True, "session": public_computer_session(bound)}
 
 
 @app.get("/api/proactive/approvals")

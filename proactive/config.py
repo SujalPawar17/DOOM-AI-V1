@@ -179,6 +179,26 @@ def is_computer_experience_enabled() -> bool:
     return _bool_env("PROACTIVE_COMPUTER_EXPERIENCE_ENABLED", False)
 
 
+def is_v8_enabled() -> bool:
+    """V8.1 goal/intent kernel master flag. Default false. Classification only; no execution."""
+    return _bool_env("PROACTIVE_V8_ENABLED", False)
+
+
+def is_v8_ledger_enabled() -> bool:
+    """V8.7 persistent task ledger. Default false. Records state only; never executes."""
+    return _bool_env("PROACTIVE_V8_LEDGER_ENABLED", False)
+
+
+def is_v8_context_enabled() -> bool:
+    """V8.8 read-only memory/experience context. Default false. Never executes."""
+    return _bool_env("PROACTIVE_V8_CONTEXT_ENABLED", False)
+
+
+def is_v8_audit_enabled() -> bool:
+    """V8.9 explainability/audit. Default false. Descriptive only; never executes."""
+    return _bool_env("PROACTIVE_V8_AUDIT_ENABLED", False)
+
+
 COMPUTER_TIMEOUT_MS = _int_env("PROACTIVE_COMPUTER_TIMEOUT_MS", 800)
 COMPUTER_MAX_DEPTH = _int_env("PROACTIVE_COMPUTER_MAX_DEPTH", 6)
 COMPUTER_MAX_NODES = _int_env("PROACTIVE_COMPUTER_MAX_NODES", 80)

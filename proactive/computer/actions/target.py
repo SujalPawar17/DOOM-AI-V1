@@ -36,6 +36,11 @@ def _eq(a: str, b: str) -> bool:
     return str(a or "") == str(b or "")
 
 
+def _control_eq(a: str, b: str) -> bool:
+    from proactive.computer.observe import uia_control_types_equal
+    return uia_control_types_equal(a, b)
+
+
 def _specified(value: str) -> bool:
     return bool(str(value or "").strip())
 
@@ -49,7 +54,7 @@ def _ancestry_ok(node: ActionNode, expected: Sequence[AncestryNode]) -> bool:
             return False
         if _specified(spec.automation_id) and not _eq(spec.automation_id, cur.automation_id):
             return False
-        if _specified(spec.control_type) and not _eq(spec.control_type, cur.control_type):
+        if _specified(spec.control_type) and not _control_eq(spec.control_type, cur.control_type):
             return False
         if _specified(spec.runtime_id) and not _eq(spec.runtime_id, cur.runtime_id):
             return False
@@ -62,7 +67,7 @@ def _matches(node: ActionNode, ident: TargetIdentity) -> bool:
         return False
     if _specified(ident.runtime_id) and not _eq(ident.runtime_id, node.runtime_id):
         return False
-    if _specified(ident.control_type) and not _eq(ident.control_type, node.control_type):
+    if _specified(ident.control_type) and not _control_eq(ident.control_type, node.control_type):
         return False
     if _specified(ident.framework_id) and not _eq(ident.framework_id, node.framework_id):
         return False

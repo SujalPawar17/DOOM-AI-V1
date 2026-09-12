@@ -966,6 +966,199 @@ document.addEventListener("DOMContentLoaded", () => {
     // ─────────────────────────────────────────────────────────────────────────
     // 12. Interactive Command Execution
     // ─────────────────────────────────────────────────────────────────────────
+    const v8AskPanel = document.getElementById("v8-ask-approval");
+    const v8AskBody = document.getElementById("v8-ask-body");
+    const v8AskApprove = document.getElementById("v8-ask-approve");
+    const v8AskCancel = document.getElementById("v8-ask-cancel");
+    let v8PendingPlanId = "";
+    let v8AskCsrf = "";
+
+    function hideV8AskApproval() {
+        v8PendingPlanId = "";
+        if (v8AskPanel) v8AskPanel.hidden = true;
+        if (v8AskBody) v8AskBody.textContent = "";
+    }
+
+    function showV8AskApproval(planId, display) {
+        v8PendingPlanId = planId || "";
+        if (!v8AskPanel || !v8AskBody) return;
+        const action = (display && display.action) || "";
+        const name = (display && display.name) || "";
+        const control = (display && display.control_type) || "";
+        const text = (display && display.text) || "";
+        let lines = [action];
+        if (name) lines.push(`Target: ${name}`);
+        if (control) lines.push(`Type: ${control}`);
+        if (action === "TYPE" && text) {
+            lines.push(`Text: "${text}"`);
+        }
+        v8AskBody.textContent = lines.join("\n");
+        v8AskPanel.hidden = false;
+    }
+
+    async function getAskMeta() {
+        const res = await fetch("/api/proactive/session");
+        if (!res.ok) return { csrf: "", v8: false };
+        const data = await res.json();
+        if (!data || !data.ok) return { csrf: "", v8: false };
+        return { csrf: data.csrf || "", v8: Boolean(data.v8_enabled) };
+    }
+
+    const v8CsStatus = document.getElementById("v8-cs-status");
+    const v8CsStart = document.getElementById("v8-cs-start");
+    const v8CsStop = document.getElementById("v8-cs-stop");
+    const v8CsBind = document.getElementById("v8-cs-bind");
+    const v8CsCandidates = document.getElementById("v8-cs-candidates");
+    const v8CsBindBtn = document.getElementById("v8-cs-bind-btn");
+    const v8CsBindStatus = document.getElementById("v8-cs-bind-status");
+
+    function hideBindPicker() {
+        if (v8CsBind) v8CsBind.hidden = true;
+        if (v8CsCandidates) v8CsCandidates.innerHTML = "";
+        if (v8CsBindStatus) v8CsBindStatus.textContent = "";
+    }
+
+    async function getLiveComputerSession() {
+        const res = await fetch("/api/proactive/computer/sessions");
+        if (!res.ok) return null;
+        const data = await res.json();
+        const rows = (data && data.sessions) || [];
+        return rows.find((s) => String(s.status || "").toUpperCase() === "OBSERVING") || null;
+    }
+
+    async function getLiveComputerSessionId() {
+        const live = await getLiveComputerSession();
+        return live ? String(live.session_id || "") : "";
+    }
+
+    async function refreshComputerSessionStatus() {
+        const live = await getLiveComputerSession();
+        const sid = live ? String(live.session_id || "") : "";
+        const bound = Boolean(live && live.bound);
+        const title = live && live.bound_title ? String(live.bound_title) : "";
+        if (v8CsStatus) {
+            if (!sid) v8CsStatus.textContent = "none";
+            else if (bound) v8CsStatus.textContent = "BOUND: " + (title || sid.slice(0, 8));
+            else v8CsStatus.textContent = "OBSERVING " + sid.slice(0, 8);
+        }
+        if (v8CsStart) v8CsStart.hidden = Boolean(sid);
+        if (v8CsStop) v8CsStop.hidden = !sid;
+        if (bound) hideBindPicker();
+        return { sid, bound, live };
+    }
+
+    async function loadWindowCandidates(sid) {
+        const meta = await getAskMeta();
+        if (!meta.csrf || !sid || !v8CsCandidates || !v8CsBind) return;
+        const res = await fetch(
+            "/api/proactive/computer/sessions/" + encodeURIComponent(sid) + "/window-candidates",
+            { headers: { "X-DOOM-CSRF": meta.csrf } }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            v8CsBind.hidden = false;
+            if (v8CsBindStatus) v8CsBindStatus.textContent = data.error || ("HTTP " + res.status);
+            return;
+        }
+        const rows = data.candidates || [];
+        v8CsCandidates.innerHTML = "";
+        rows.forEach((c) => {
+            const opt = document.createElement("option");
+            opt.value = String(c.candidate_id || "");
+            opt.textContent = String(c.title || "") + " — " + String(c.exe || "");
+            v8CsCandidates.appendChild(opt);
+        });
+        v8CsBind.hidden = false;
+        if (v8CsBindStatus) v8CsBindStatus.textContent = rows.length ? "Select a window, then bind." : "No candidate windows.";
+    }
+
+    if (v8CsStart) {
+        v8CsStart.addEventListener("click", async () => {
+            const meta = await getAskMeta();
+            if (!meta.csrf) {
+                if (v8CsStatus) v8CsStatus.textContent = "ASK session required";
+                return;
+            }
+            const res = await fetch("/api/proactive/computer/sessions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-DOOM-CSRF": meta.csrf },
+                body: "{}"
+            });
+            const st = await refreshComputerSessionStatus();
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                if (v8CsStatus) v8CsStatus.textContent = data.error || ("HTTP " + res.status);
+                return;
+            }
+            if (st.sid && !st.bound) await loadWindowCandidates(st.sid);
+        });
+    }
+    if (v8CsBindBtn) {
+        v8CsBindBtn.addEventListener("click", async () => {
+            const meta = await getAskMeta();
+            const st = await refreshComputerSessionStatus();
+            const cid = v8CsCandidates ? v8CsCandidates.value : "";
+            if (!meta.csrf || !st.sid || !cid) {
+                if (v8CsBindStatus) v8CsBindStatus.textContent = "Select a window first.";
+                return;
+            }
+            const res = await fetch(
+                "/api/proactive/computer/sessions/" + encodeURIComponent(st.sid) + "/bind-window",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-DOOM-CSRF": meta.csrf },
+                    body: JSON.stringify({ candidate_id: cid })
+                }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                if (v8CsBindStatus) v8CsBindStatus.textContent = data.error || ("HTTP " + res.status);
+                return;
+            }
+            await refreshComputerSessionStatus();
+        });
+    }
+    if (v8CsStop) {
+        v8CsStop.addEventListener("click", async () => {
+            const meta = await getAskMeta();
+            const sid = await getLiveComputerSessionId();
+            if (!meta.csrf || !sid) return;
+            await fetch("/api/proactive/computer/sessions/" + encodeURIComponent(sid) + "/stop", {
+                method: "POST",
+                headers: { "X-DOOM-CSRF": meta.csrf }
+            });
+            hideBindPicker();
+            await refreshComputerSessionStatus();
+        });
+    }
+    refreshComputerSessionStatus();
+
+    async function postV8Authorize(decision) {
+        if (!v8PendingPlanId || !v8AskCsrf) return;
+        const res = await fetch("/api/proactive/v8/authorize", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-DOOM-CSRF": v8AskCsrf
+            },
+            body: JSON.stringify({ plan_id: v8PendingPlanId, decision })
+        });
+        const data = await res.json().catch(() => ({}));
+        hideV8AskApproval();
+        responseContent.textContent = data.response || data.error || "No response received.";
+        responseMeta.textContent = data.status || (res.ok ? "Authorized" : "Authorization failed");
+        if (data.response) speakText(data.response);
+        refreshAuditLogs();
+        refreshEpisodes();
+    }
+
+    if (v8AskApprove) {
+        v8AskApprove.addEventListener("click", () => postV8Authorize("approve"));
+    }
+    if (v8AskCancel) {
+        v8AskCancel.addEventListener("click", () => postV8Authorize("cancel"));
+    }
+
     async function executeGoal(goalText) {
         if (!goalText || !goalText.trim()) return;
 
@@ -979,19 +1172,46 @@ document.addEventListener("DOMContentLoaded", () => {
 
         responseMeta.textContent = "Orchestrating agent goal...";
         responseContent.textContent = "Routing model, reasoning task intent, executing tools...";
+        hideV8AskApproval();
 
         try {
-            const res = await fetch("/api/command", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ goal: goalText })
-            });
+            const askMeta = await getAskMeta();
+            v8AskCsrf = askMeta.csrf;
+            let res;
+            if (askMeta.csrf && askMeta.v8) {
+                const computerSessionId = await getLiveComputerSessionId();
+                res = await fetch("/api/proactive/v8/command", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-DOOM-CSRF": v8AskCsrf
+                    },
+                    body: JSON.stringify({
+                        goal: goalText,
+                        computer_session_id: computerSessionId
+                    })
+                });
+            } else {
+                res = await fetch("/api/command", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ goal: goalText })
+                });
+            }
             const data = await res.json();
 
-            responseContent.textContent = data.response || "No response received.";
-            responseMeta.textContent = `Completed in ${data.latency_ms}ms // ${data.timestamp}`;
+            if (data.status === "APPROVAL_REQUIRED" && data.plan_id) {
+                showV8AskApproval(data.plan_id, data.display || {});
+                responseContent.textContent = "Waiting for explicit ASK approval.";
+                responseMeta.textContent = "APPROVAL_REQUIRED";
+            } else {
+                responseContent.textContent = data.response || data.error || "No response received.";
+                responseMeta.textContent = data.latency_ms
+                    ? `Completed in ${data.latency_ms}ms // ${data.timestamp}`
+                    : (data.status || `HTTP ${res.status}`);
+                if (data.response) speakText(data.response);
+            }
 
-            speakText(data.response);
             refreshAuditLogs();
             refreshEpisodes();
         } catch (err) {

@@ -1679,6 +1679,90 @@ input, textarea { font-family: inherit; }
     .memory-grid .memory-card-featured { grid-column: 1 / -1; }
 }
 
+.v8-computer-session {
+    margin: 10px 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+.v8-cs-status { font-family: var(--font-mono); color: var(--cyan); }
+.v8-cs-start, .v8-cs-stop, .v8-cs-bind-btn {
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border: 1px solid var(--border-subtle);
+    background: transparent;
+    color: var(--text-secondary);
+}
+.v8-cs-bind {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.v8-cs-bind-label {
+    flex-basis: 100%;
+    color: var(--text-muted);
+}
+.v8-cs-candidates {
+    min-width: 280px;
+    max-width: 100%;
+    background: var(--bg-secondary, #111);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+.v8-cs-bind-status { color: var(--text-muted); }
+.v8-ask-approval {
+    margin: 12px 0 0;
+    padding: 14px 16px;
+    border: 1px solid var(--border-accent);
+    border-radius: 10px;
+    background: rgba(0, 220, 245, 0.06);
+}
+.v8-ask-title {
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    margin-bottom: 8px;
+}
+.v8-ask-body {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    margin-bottom: 12px;
+}
+.v8-ask-note {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+.v8-ask-approve, .v8-ask-cancel {
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.v8-ask-approve {
+    border: 1px solid rgba(16, 185, 129, 0.45);
+    background: var(--green-dim);
+    color: var(--green);
+}
+.v8-ask-cancel {
+    border: 1px solid var(--border-subtle);
+    background: transparent;
+    color: var(--text-secondary);
+}
+
 @media (max-width: 1024px) {
     .chat-sidebar { display: none; }
     .chat-layout { padding: var(--space-sm); }
