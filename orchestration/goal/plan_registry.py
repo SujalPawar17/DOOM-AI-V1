@@ -7,9 +7,11 @@ from typing import Dict, FrozenSet, Tuple
 MAX_STEPS = 16
 MAX_DEPENDENCY_DEPTH = 4
 MIN_TIMEOUT_MS = 1
-MAX_TIMEOUT_MS = 30000
+MAX_TIMEOUT_MS = 55000
 MAX_IDEMPOTENT_RETRIES = 2
 MAX_PARAM_CHARS = 512
+CONVERSATION_MAX_TEXT = 2048
+CONVERSATION_TIMEOUT_MS = 55000
 PLAN_SCHEMA_VERSION = "v82.1"
 
 CAP_COMPUTER = "computer"
@@ -19,11 +21,14 @@ CAP_SEQUENCE = "sequence"
 CAP_VERIFICATION = "verification"
 CAP_WORLD_ACT = "world_act"
 CAP_MEMORY_READ = "memory_read"
+CAP_MEMORY_WRITE = "memory_write"
+CAP_SYSTEM_READ = "system_read"
 CAP_CONVERSATION = "conversation"
 
 ALLOWED_CAPABILITIES = frozenset({
     CAP_COMPUTER, CAP_BROWSER, CAP_FILESYSTEM, CAP_SEQUENCE,
-    CAP_VERIFICATION, CAP_WORLD_ACT, CAP_MEMORY_READ, CAP_CONVERSATION,
+    CAP_VERIFICATION, CAP_WORLD_ACT, CAP_MEMORY_READ, CAP_MEMORY_WRITE,
+    CAP_SYSTEM_READ, CAP_CONVERSATION,
 })
 
 VERIFY_ACTIONS = frozenset({
@@ -51,6 +56,8 @@ ALLOWED_ACTIONS: Dict[str, FrozenSet[str]] = {
     CAP_VERIFICATION: VERIFY_ACTIONS,
     CAP_WORLD_ACT: frozenset({"CALENDAR_HOLD", "INTERNAL_NOTE"}),
     CAP_MEMORY_READ: frozenset({"RETRIEVE"}),
+    CAP_MEMORY_WRITE: frozenset({"SAVE"}),
+    CAP_SYSTEM_READ: frozenset({"REPORT"}),
     CAP_CONVERSATION: frozenset({"RESPOND"}),
 }
 
@@ -114,7 +121,9 @@ WORLD_PARAMS: Dict[str, FrozenSet[str]] = {
 }
 
 MEMORY_PARAMS = frozenset({"query"})
-CONVERSATION_PARAMS = frozenset()
+MEMORY_SAVE_PARAMS = frozenset({"text"})
+SYSTEM_REPORT_PARAMS = frozenset({"text"})
+CONVERSATION_PARAMS = frozenset({"text"})
 SEQUENCE_PARAMS = frozenset({"label"})
 
 FORBIDDEN_PARAM_KEYS = frozenset({
@@ -122,6 +131,8 @@ FORBIDDEN_PARAM_KEYS = frozenset({
     "eval", "exec", "subprocess", "tool_name", "all_tools", "python",
     "arbitrary_target", "callback", "lambda", "class_name",
     "hwnd", "pid", "exe_path", "exe_path_norm", "window_handle",
+    "xpath", "css", "css_selector", "javascript", "js",
+    "cookie", "cookies", "local_storage", "session_storage",
 })
 
 MUTATION_ACTIONS: FrozenSet[Tuple[str, str]] = frozenset({
@@ -167,6 +178,10 @@ def allowed_params(capability: str, action: str) -> FrozenSet[str]:
         return WORLD_PARAMS.get(action, frozenset())
     if capability == CAP_MEMORY_READ:
         return MEMORY_PARAMS
+    if capability == CAP_MEMORY_WRITE:
+        return MEMORY_SAVE_PARAMS
+    if capability == CAP_SYSTEM_READ:
+        return SYSTEM_REPORT_PARAMS
     if capability == CAP_CONVERSATION:
         return CONVERSATION_PARAMS
     if capability == CAP_SEQUENCE:
@@ -194,6 +209,10 @@ def policy_risk(capability: str, action: str) -> str:
     if capability == CAP_SEQUENCE:
         return "MEDIUM"
     if capability == CAP_MEMORY_READ:
+        return "LOW"
+    if capability == CAP_MEMORY_WRITE:
+        return "LOW"
+    if capability == CAP_SYSTEM_READ:
         return "LOW"
     if capability == CAP_CONVERSATION:
         return "LOW"

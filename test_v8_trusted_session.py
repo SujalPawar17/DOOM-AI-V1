@@ -148,12 +148,16 @@ class TestV8TrustedSession(unittest.TestCase):
         self.assertEqual(st, "OK")
         _v8_on()
         with patch("orchestration.production.execute_plan", wraps=execute_plan) as spy:
-            out = self.core.process_request("hello", identity=ident)
+            with patch(
+                "orchestration.conversation.respond.execute_respond",
+                return_value=(ExecutionStatus.SUCCESS.value, "Hello from DOOM."),
+            ):
+                out = self.core.process_request("hello", identity=ident)
         spy.assert_called_once()
         self.assertIs(spy.call_args.kwargs["identity"], ident)
         self.assertEqual(spy.call_args.kwargs["identity"].owner_id, "alice")
         self.assertEqual(spy.call_args.kwargs["identity"].session_id, row["session_id_hash"])
-        self.assertIn(ExecutionStatus.SUCCESS.value, out)
+        self.assertEqual(out, "Hello from DOOM.")
 
     def test_computer_session_not_fabricated(self):
         row, _, _ = _row_from_create("alice")

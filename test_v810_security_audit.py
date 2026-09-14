@@ -119,7 +119,7 @@ class TestV810SecurityAudit(unittest.TestCase):
                 self.assertIn(result.goal.normalized_intent, (
                     IntentClass.UNKNOWN, IntentClass.AMBIGUOUS, IntentClass.CONVERSATION,
                     IntentClass.COMPUTER, IntentClass.FILESYSTEM, IntentClass.BROWSER,
-                    IntentClass.WORLD_ACTION, IntentClass.MEMORY_READ,
+                    IntentClass.WORLD_ACTION, IntentClass.MEMORY_READ, IntentClass.MEMORY_SAVE,
                 ))
             proposal = plan_goal(result.goal) if result.goal else None
             if proposal and proposal.plan is None:

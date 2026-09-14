@@ -8,7 +8,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from orchestration.goal.catalog import lookup
 from orchestration.goal.plan_errors import PlanValidationError
-from orchestration.goal.plan_registry import MAX_DEPENDENCY_DEPTH, MAX_PARAM_CHARS, MAX_STEPS, MAX_TIMEOUT_MS
+from orchestration.goal.plan_registry import (
+    CONVERSATION_MAX_TEXT,
+    CONVERSATION_TIMEOUT_MS,
+    MAX_DEPENDENCY_DEPTH,
+    MAX_PARAM_CHARS,
+    MAX_STEPS,
+    MAX_TIMEOUT_MS,
+)
 from orchestration.goal.plan_types import GoalPlan
 from orchestration.goal.plan_validator import build_goal_plan
 from orchestration.goal.planner_errors import PlannerStatus
@@ -88,7 +95,14 @@ def _fail(status: PlannerStatus, code: str) -> PlanProposal:
     return PlanProposal(status=status, reason_code=code, plan=None, attempts=MAX_PLANNING_ATTEMPTS)
 
 
-def _base_step(capability: str, action: str, parameters: Dict[str, Any], *, verify: str = "") -> Dict[str, Any]:
+def _base_step(
+    capability: str,
+    action: str,
+    parameters: Dict[str, Any],
+    *,
+    verify: str = "",
+    timeout_ms: int = 0,
+) -> Dict[str, Any]:
     return {
         "step_id": "s1",
         "capability_id": capability,
@@ -98,17 +112,39 @@ def _base_step(capability: str, action: str, parameters: Dict[str, Any], *, veri
         "verification_required": bool(verify),
         "verification_type": verify,
         "retry_count": 0,
-        "timeout_ms": PLANNER_TIMEOUT_MS,
+        "timeout_ms": int(timeout_ms) if timeout_ms else PLANNER_TIMEOUT_MS,
     }
 
 
-def _conversation_steps(_goal: GoalSpec) -> List[Dict[str, Any]]:
-    return [_base_step("conversation", "RESPOND", {})]
+def _conversation_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
+    text = str(goal.raw_intent or "")[:CONVERSATION_MAX_TEXT]
+    return [_base_step(
+        "conversation",
+        "RESPOND",
+        {"text": text},
+        timeout_ms=CONVERSATION_TIMEOUT_MS,
+    )]
 
 
 def _memory_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
-    query = str(goal.raw_intent or "")[:MAX_PARAM_CHARS]
-    return [_base_step("memory_read", "RETRIEVE", {"query": query})]
+    # V8.17: recall through RESPOND + Safe Context (not empty RETRIEVE).
+    text = str(goal.raw_intent or "")[:CONVERSATION_MAX_TEXT]
+    return [_base_step(
+        "conversation",
+        "RESPOND",
+        {"text": text},
+        timeout_ms=CONVERSATION_TIMEOUT_MS,
+    )]
+
+
+def _memory_save_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
+    text = str(goal.raw_intent or "")[:CONVERSATION_MAX_TEXT]
+    return [_base_step("memory_write", "SAVE", {"text": text})]
+
+
+def _system_status_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
+    text = str(goal.raw_intent or "")[:CONVERSATION_MAX_TEXT]
+    return [_base_step("system_read", "REPORT", {"text": text}, timeout_ms=5000)]
 
 
 def _has_computer_session(goal: GoalSpec) -> bool:
@@ -326,10 +362,29 @@ def _computer_steps(goal: GoalSpec, planner_context: Any) -> Tuple[Optional[List
     return None, _fail(PlannerStatus.PLANNING_UNAVAILABLE, "PLANNING_UNAVAILABLE")
 
 
-def _browser_steps(goal: GoalSpec) -> Tuple[Optional[List[Dict[str, Any]]], Optional[PlanProposal]]:
+def _browser_resource_id(goal: GoalSpec, planner_context: Any) -> str:
+    """Browser resource handle from planner_context. Not ASK identity. Not V7 computer session."""
+    if not isinstance(planner_context, dict):
+        return ""
+    raw = str(planner_context.get("browser_session_id") or "")[:64]
+    if not raw.startswith("bws_") or len(raw) < 40 or len(raw) > 64:
+        return ""
+    if "\x00" in raw or " " in raw:
+        return ""
+    if raw == str(goal.session_id or "") or raw == str(goal.computer_session_id or ""):
+        return ""
+    return raw
+
+
+def _browser_steps(
+    goal: GoalSpec, planner_context: Any,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[PlanProposal]]:
     if not is_computer_browser_enabled():
         return None, _fail(PlannerStatus.CAPABILITY_UNAVAILABLE, "CAPABILITY_UNAVAILABLE")
     if not _has_computer_session(goal):
+        return None, _fail(PlannerStatus.PLANNING_UNAVAILABLE, "PLANNING_UNAVAILABLE")
+    browser_sid = _browser_resource_id(goal, planner_context)
+    if not browser_sid:
         return None, _fail(PlannerStatus.PLANNING_UNAVAILABLE, "PLANNING_UNAVAILABLE")
     text = str(goal.raw_intent or "")
     if re.search(r"(javascript:|data:|file:|vbscript:)", text, re.I):
@@ -337,7 +392,7 @@ def _browser_steps(goal: GoalSpec) -> Tuple[Optional[List[Dict[str, Any]]], Opti
     url = _extract_http_url(text)
     if url is None:
         return None, _fail(PlannerStatus.PLANNING_UNAVAILABLE, "PLANNING_UNAVAILABLE")
-    params = {"session_id": str(goal.computer_session_id)[:64], "url": url}
+    params = {"session_id": browser_sid, "url": url}
     return [_base_step("browser", "NAVIGATE", params, verify="URL_MATCH")], None
 
 
@@ -387,10 +442,14 @@ def plan_goal(goal: Any, planner_context: Any = None) -> PlanProposal:
         drafts = _conversation_steps(goal)
     elif goal.normalized_intent is IntentClass.MEMORY_READ:
         drafts = _memory_steps(goal)
+    elif goal.normalized_intent is IntentClass.MEMORY_SAVE:
+        drafts = _memory_save_steps(goal)
+    elif goal.normalized_intent is IntentClass.SYSTEM_STATUS:
+        drafts = _system_status_steps(goal)
     elif goal.normalized_intent is IntentClass.COMPUTER:
         drafts, extra_fail = _computer_steps(goal, planner_context)
     elif goal.normalized_intent is IntentClass.BROWSER:
-        drafts, extra_fail = _browser_steps(goal)
+        drafts, extra_fail = _browser_steps(goal, planner_context)
     elif goal.normalized_intent is IntentClass.FILESYSTEM:
         drafts, extra_fail = _filesystem_steps(goal)
     else:

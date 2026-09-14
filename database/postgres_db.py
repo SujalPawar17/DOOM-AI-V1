@@ -622,6 +622,19 @@ class PostgresManager:
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_ask_sessions_owner_exp ON ask_sessions (owner_id, expires_at);",
+            # V8.17: owner-scoped explicit personal memories (no embeddings)
+            """
+            CREATE TABLE IF NOT EXISTS v8_personal_memories (
+                memory_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                fact_key VARCHAR(96) NOT NULL,
+                content TEXT NOT NULL,
+                created_at DOUBLE PRECISION NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                UNIQUE (owner_id, fact_key)
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_v8_pm_owner_updated ON v8_personal_memories (owner_id, updated_at DESC);",
             """
             CREATE TABLE IF NOT EXISTS world_preparations (
                 preparation_id VARCHAR(64) PRIMARY KEY,
@@ -1225,8 +1238,17 @@ class PostgresManager:
             """,
             "CREATE INDEX IF NOT EXISTS idx_transfer_matrix_pair ON project_transfer_matrix(source_project_id, target_project_id);",
         ]
-        from orchestration.task.ledger_schema import LEDGER_DDL
-        queries.extend(LEDGER_DDL)
+        # Importing orchestration.task.* while PostgresManager() is still constructing
+        # re-enters this module for postgres_manager and raises a circular ImportError.
+        # Apply V8.7 DDL only after the module singleton exists (see _apply_v8_ledger_ddl).
+        try:
+            import sys
+            _mod = sys.modules.get(__name__)
+            if _mod is not None and getattr(_mod, "postgres_manager", None) is not None:
+                from orchestration.task.ledger_schema import LEDGER_DDL
+                queries.extend(LEDGER_DDL)
+        except ImportError:
+            pass
 
         conn = self.get_connection()
         if not conn:
@@ -1893,3 +1915,33 @@ class PostgresManager:
 
 # Global singleton instance
 postgres_manager = PostgresManager()
+
+
+def _apply_v8_ledger_ddl():
+    """Apply V8.7 ledger DDL after postgres_manager exists. Same LEDGER_DDL, no duplicate schema."""
+    if postgres_manager._pool is None and not postgres_manager.is_connected():
+        return
+    try:
+        from orchestration.task.ledger_schema import LEDGER_DDL
+    except Exception:
+        return
+    conn = postgres_manager.get_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET lock_timeout = '15000'")
+            cur.execute("SET statement_timeout = '60000'")
+            for q in LEDGER_DDL:
+                cur.execute(q)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        postgres_manager.release_connection(conn)
+
+
+_apply_v8_ledger_ddl()

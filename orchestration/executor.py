@@ -28,6 +28,7 @@ from proactive.config import is_v8_enabled
 
 _LOCK = threading.Lock()
 _HOOK_LOCK = threading.Lock()
+_TLS = threading.local()
 _LEDGER: Dict[str, str] = {}
 _MAX_LEDGER = 256
 IDENTITY_MAX_LEN = 64
@@ -176,6 +177,7 @@ class ExecutionResult:
     verification_state: str
     started_unix_ms: int
     ended_unix_ms: int
+    response_text: str = ""
 
     def as_public(self) -> Dict[str, Any]:
         return {
@@ -193,6 +195,7 @@ class ExecutionResult:
             "started_unix_ms": self.started_unix_ms,
             "ended_unix_ms": self.ended_unix_ms,
             "execution_permitted_field_ignored": True,
+            "response_text": self.response_text,
         }
 
 
@@ -217,9 +220,10 @@ def _result(
     approval_granted: bool = False,
     start: int = 0,
     end: int = 0,
+    response_text: str = "",
 ) -> ExecutionResult:
     now = int(time.time() * 1000)
-    return ExecutionResult(
+    result = ExecutionResult(
         execution_id=eid or str(uuid.uuid4()),
         goal_id="" if plan is None else plan.goal_id,
         plan_hash="" if plan is None else plan.plan_hash,
@@ -233,7 +237,74 @@ def _result(
         verification_state=verification,
         started_unix_ms=start or now,
         ended_unix_ms=end or now,
+        response_text=str(response_text or ""),
     )
+    _audit_execution(plan, result)
+    return result
+
+
+def _audit_execution(plan: Optional[GoalPlan], result: ExecutionResult) -> None:
+    """Describe an already-computed execution result. Does not authorize or retry."""
+    from orchestration.audit.codes import AuditEventCode, AuditReasonCode
+    from orchestration.audit.recorder import try_record_event
+
+    if plan is None:
+        return
+    status = result.status
+    status_events = {
+        ExecutionStatus.APPROVAL_REQUIRED: (AuditEventCode.APPROVAL_REQUIRED, AuditReasonCode.APPROVAL_REQUIRED),
+        ExecutionStatus.PLAN_HASH_MISMATCH: (AuditEventCode.PLAN_HASH_MISMATCH, AuditReasonCode.PLAN_HASH_MISMATCH),
+        ExecutionStatus.INVALID_PLAN: (AuditEventCode.VALIDATION_FAILED, AuditReasonCode.INVALID_PLAN),
+        ExecutionStatus.EMERGENCY_STOPPED: (AuditEventCode.EMERGENCY_STOPPED, AuditReasonCode.EMERGENCY_STOP),
+        ExecutionStatus.NOT_VERIFIED: (AuditEventCode.NOT_VERIFIED, AuditReasonCode.NOT_VERIFIED),
+        ExecutionStatus.VERIFICATION_FAILED: (AuditEventCode.VERIFICATION_FAILED, AuditReasonCode.VERIFICATION_FAILED),
+        ExecutionStatus.ABORTED: (AuditEventCode.TASK_ABORTED, AuditReasonCode.ABORTED),
+        ExecutionStatus.CANCELLED: (AuditEventCode.TASK_CANCELLED, AuditReasonCode.CANCELLED),
+        ExecutionStatus.V8_DISABLED: (AuditEventCode.PLAN_REJECTED, AuditReasonCode.V8_DISABLED),
+        ExecutionStatus.CAPABILITY_UNAVAILABLE: (AuditEventCode.STEP_BLOCKED, AuditReasonCode.CAPABILITY_UNAVAILABLE),
+        ExecutionStatus.SESSION_UNAVAILABLE: (AuditEventCode.STEP_BLOCKED, AuditReasonCode.SESSION_UNAVAILABLE),
+        ExecutionStatus.IDENTITY_REQUIRED: (AuditEventCode.STEP_BLOCKED, AuditReasonCode.OWNER_MISMATCH),
+        ExecutionStatus.SUCCESS: (AuditEventCode.STEP_COMPLETED, AuditReasonCode.SUCCESS),
+        ExecutionStatus.STEP_FAILED: (AuditEventCode.STEP_FAILED, AuditReasonCode.STEP_FAILED),
+        ExecutionStatus.TIMEOUT: (AuditEventCode.STEP_FAILED, AuditReasonCode.TIMEOUT),
+        ExecutionStatus.PRECONDITION_FAILED: (AuditEventCode.STEP_BLOCKED, AuditReasonCode.PRECONDITION_FAILED),
+        ExecutionStatus.STALE_OBSERVATION_HASH: (AuditEventCode.STEP_BLOCKED, AuditReasonCode.PRECONDITION_FAILED),
+        ExecutionStatus.BLOCKED: (AuditEventCode.STEP_BLOCKED, AuditReasonCode.BLOCKED),
+    }
+    pair = status_events.get(status)
+    if pair is not None:
+        try_record_event(
+            owner_id=plan.owner_id,
+            session_id=plan.session_id,
+            goal_id=plan.goal_id,
+            plan_hash=plan.plan_hash,
+            step_id=result.failed_step_id,
+            event_code=pair[0],
+            reason_code=pair[1],
+            outcome=status.value,
+        )
+    vstate = str(result.verification_state or "")
+    if vstate == ExecutionStatus.NOT_VERIFIED.value and status is not ExecutionStatus.NOT_VERIFIED:
+        try_record_event(
+            owner_id=plan.owner_id,
+            session_id=plan.session_id,
+            goal_id=plan.goal_id,
+            plan_hash=plan.plan_hash,
+            event_code=AuditEventCode.NOT_VERIFIED,
+            reason_code=AuditReasonCode.NOT_VERIFIED,
+            outcome=vstate,
+        )
+    elif vstate == "VERIFIED" or vstate == ExecutionStatus.SUCCESS.value:
+        if status is ExecutionStatus.SUCCESS:
+            try_record_event(
+                owner_id=plan.owner_id,
+                session_id=plan.session_id,
+                goal_id=plan.goal_id,
+                plan_hash=plan.plan_hash,
+                event_code=AuditEventCode.VERIFICATION_PASSED,
+                reason_code=AuditReasonCode.VERIFICATION_PASSED,
+                outcome="VERIFIED",
+            )
 
 
 def _needs_computer_session(step: PlanStep) -> bool:
@@ -350,15 +421,21 @@ def _default_computer(step: PlanStep, plan: GoalPlan) -> str:
 
 def _default_browser(step: PlanStep, plan: GoalPlan) -> str:
     from proactive.computer.browser.kernel import execute_browser_action
+    from proactive.computer.browser.session_ids import conflicts_with, is_browser_session_id
     from proactive.computer.actions.types import ApprovalState
     from proactive.computer.browser.types import BrowserActionRequest, BrowserActionType, BrowserTarget
     params = dict(step.parameters)
+    sid = str(params.get("session_id") or "")[:64]
+    if not is_browser_session_id(sid) or conflicts_with(
+        sid, ask_id=plan.session_id, computer_id=plan.computer_session_id,
+    ):
+        return ExecutionStatus.SESSION_UNAVAILABLE.value
     req = BrowserActionRequest(
         action_id=step.step_id,
         action_type=BrowserActionType(step.action),
-        session_id=str(params.get("session_id") or plan.computer_session_id),
+        session_id=sid,
         owner_id=plan.owner_id,
-        approval_state=ApprovalState.NONE,
+        approval_state=ApprovalState.APPROVED,
         precondition_observation_hash=str(params.get("precondition_observation_hash") or ""),
         target=BrowserTarget(
             role=str(params.get("role") or ""),
@@ -369,7 +446,7 @@ def _default_browser(step: PlanStep, plan: GoalPlan) -> str:
         url=str(params.get("url") or ""),
         text=str(params.get("text") or ""),
     )
-    out = execute_browser_action(req)
+    out = execute_browser_action(req, computer_session_id=plan.computer_session_id)
     return getattr(out.status, "value", str(out.status))
 
 
@@ -439,6 +516,8 @@ def _default_verify(step: PlanStep, plan: GoalPlan) -> str:
             if val:
                 expected.append((str(key), str(val)))
         expected.append(("expected_outcome", "OK"))
+        if step.action == "TYPE":
+            expected.append(("expected_value", str(params.get("text") or "")))
         spec = VerificationSpec(
             verification_id=step.step_id,
             capability=cap,
@@ -479,14 +558,50 @@ def _default_world(step: PlanStep, plan: GoalPlan) -> str:
 
 
 def _default_memory(step: PlanStep, plan: GoalPlan) -> str:
+    # Legacy RETRIEVE path kept for registry compatibility; V8.17 recall uses RESPOND.
     from memory.manager import memory_manager
     params = dict(step.parameters)
     memory_manager.retrieve(str(params.get("query") or ""))
     return ExecutionStatus.SUCCESS.value
 
 
+def _default_memory_write(step: PlanStep, plan: GoalPlan) -> str:
+    from orchestration.conversation.personal_memory import save_personal_memory
+    if step.capability_id != "memory_write" or step.action != "SAVE":
+        return ExecutionStatus.ACTION_UNAVAILABLE.value
+    params = dict(step.parameters)
+    text = str(params.get("text") or "")
+    ok, code, message = save_personal_memory(str(plan.owner_id or ""), text)
+    _TLS.response_text = str(message or "")[:2048]
+    if ok:
+        return ExecutionStatus.SUCCESS.value
+    if code == "SENSITIVE_REJECTED":
+        return ExecutionStatus.SUCCESS.value
+    if code == "MEMORY_LIMIT":
+        return ExecutionStatus.SUCCESS.value
+    return ExecutionStatus.LOCAL_MODEL_ERROR.value
+
+
+def _default_system_read(step: PlanStep, plan: GoalPlan) -> str:
+    """Read-only system awareness. Never mutates. Never invokes Ollama."""
+    from orchestration.system.observe import report_system_status
+    if step.capability_id != "system_read" or step.action != "REPORT":
+        return ExecutionStatus.ACTION_UNAVAILABLE.value
+    params = dict(step.parameters)
+    query = str(params.get("text") or "")
+    try:
+        _TLS.response_text = report_system_status(query)[:2048]
+        return ExecutionStatus.SUCCESS.value
+    except Exception:
+        _TLS.response_text = "System observation is temporarily unavailable."
+        return ExecutionStatus.SUCCESS.value
+
+
 def _default_conversation(step: PlanStep, plan: GoalPlan) -> str:
-    return ExecutionStatus.SUCCESS.value
+    from orchestration.conversation.respond import execute_respond
+    status, text = execute_respond(step, plan)
+    _TLS.response_text = str(text or "")
+    return status
 
 
 _DEFAULTS: Dict[str, Adapter] = {
@@ -497,6 +612,8 @@ _DEFAULTS: Dict[str, Adapter] = {
     "verification": _default_verify,
     "world_act": _default_world,
     "memory_read": _default_memory,
+    "memory_write": _default_memory_write,
+    "system_read": _default_system_read,
     "conversation": _default_conversation,
 }
 
@@ -528,6 +645,7 @@ def execute_plan(
     whenever V8 is enabled. Authorization remains authorized_plan_hash, not identity.
     """
     start = int(time.time() * 1000)
+    _TLS.response_text = ""
     if not is_v8_enabled():
         return _result(plan if type(plan) is GoalPlan else None, ExecutionStatus.V8_DISABLED, start=start)
     ident_status = validate_execution_identity(identity)
@@ -651,11 +769,18 @@ def execute_plan(
             ExecutionStatus.PRECONDITION_FAILED.value: ExecutionStatus.PRECONDITION_FAILED,
             ExecutionStatus.STALE_OBSERVATION_HASH.value: ExecutionStatus.STALE_OBSERVATION_HASH,
             ExecutionStatus.BLOCKED.value: ExecutionStatus.BLOCKED,
+            ExecutionStatus.SESSION_UNAVAILABLE.value: ExecutionStatus.SESSION_UNAVAILABLE,
+            ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value: ExecutionStatus.LOCAL_MODEL_UNAVAILABLE,
+            ExecutionStatus.LOCAL_MODEL_TIMEOUT.value: ExecutionStatus.LOCAL_MODEL_TIMEOUT,
+            ExecutionStatus.LOCAL_MODEL_ERROR.value: ExecutionStatus.LOCAL_MODEL_ERROR,
+            ExecutionStatus.INPUT_TOO_LARGE.value: ExecutionStatus.INPUT_TOO_LARGE,
+            ExecutionStatus.OUTPUT_LIMIT.value: ExecutionStatus.OUTPUT_LIMIT,
         }.get(status, ExecutionStatus.STEP_FAILED)
         return _result(
             plan, mapped, eid=eid, completed=tuple(completed), failed=step.step_id,
             steps=tuple(records), verification=verify_state or vstat, start=start,
             approval_granted=approval_ok,
+            response_text=str(getattr(_TLS, "response_text", "") or ""),
         )
     overall = ExecutionStatus.SUCCESS
     if verify_state == ExecutionStatus.NOT_VERIFIED.value:
@@ -665,4 +790,5 @@ def execute_plan(
     return _result(
         plan, overall, eid=eid, completed=tuple(completed), steps=tuple(records),
         verification=verify_state, start=start, approval_granted=approval_ok,
+        response_text=str(getattr(_TLS, "response_text", "") or ""),
     )

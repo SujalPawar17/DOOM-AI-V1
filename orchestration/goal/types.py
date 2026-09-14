@@ -22,6 +22,8 @@ class IntentClass(str, Enum):
     BROWSER = "BROWSER"
     FILESYSTEM = "FILESYSTEM"
     MEMORY_READ = "MEMORY_READ"
+    MEMORY_SAVE = "MEMORY_SAVE"
+    SYSTEM_STATUS = "SYSTEM_STATUS"
     WORLD_ACTION = "WORLD_ACTION"
     CONVERSATION = "CONVERSATION"
     UNKNOWN = "UNKNOWN"
@@ -36,6 +38,8 @@ class CapabilityClass(str, Enum):
     VERIFICATION = "verification"
     WORLD_ACT = "world_act"
     MEMORY_READ = "memory_read"
+    MEMORY_WRITE = "memory_write"
+    SYSTEM_READ = "system_read"
     CONVERSATION = "conversation"
     NONE = "none"
 
@@ -57,6 +61,8 @@ INTENT_TO_CAPABILITY = {
     IntentClass.BROWSER: CapabilityClass.BROWSER,
     IntentClass.FILESYSTEM: CapabilityClass.FILESYSTEM,
     IntentClass.MEMORY_READ: CapabilityClass.MEMORY_READ,
+    IntentClass.MEMORY_SAVE: CapabilityClass.MEMORY_WRITE,
+    IntentClass.SYSTEM_STATUS: CapabilityClass.SYSTEM_READ,
     IntentClass.WORLD_ACTION: CapabilityClass.WORLD_ACT,
     IntentClass.CONVERSATION: CapabilityClass.CONVERSATION,
     IntentClass.UNKNOWN: CapabilityClass.NONE,

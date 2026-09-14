@@ -236,7 +236,7 @@ class TestV8ObservationTargetBridge(unittest.TestCase):
         os.environ["PROACTIVE_ACT_ENABLED"] = "true"
         os.environ["PROACTIVE_ACT_CALENDAR_HOLD_ENABLED"] = "true"
         ctx = {"owner_id": "alice", "session_id": "s", "computer_session_id": "cs-1"}
-        self.assertEqual(plan_goal(process_goal("Open https://example.com", context=ctx).goal).status, PlannerStatus.SUCCESS)
+        self.assertEqual(plan_goal(process_goal("Open https://example.com", context=ctx).goal, {"browser_session_id": "bws_11111111-1111-4111-8111-111111111111"}).status, PlannerStatus.SUCCESS)
         self.assertEqual(plan_goal(process_goal("open javascript:alert(1)").goal).status, PlannerStatus.UNSUPPORTED_INTENT)
         self.assertEqual(
             plan_goal(process_goal(r'List files in "C:\Users\dell\tmp\safe"', context=ctx).goal).status,

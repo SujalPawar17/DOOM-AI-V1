@@ -12,7 +12,7 @@ DOOM_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if DOOM_ROOT not in sys.path:
     sys.path.insert(0, DOOM_ROOT)
 
-load_dotenv()
+load_dotenv(os.path.join(DOOM_ROOT, ".env"))
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
@@ -104,6 +104,12 @@ async def on_server_startup():
                 pass
     task_engine.set_state_broadcaster(broadcast_task_state)
     cognitive_engine.set_broadcaster(broadcast_task_state)
+
+    try:
+        from orchestration.task.ledger import ensure_rehydrated
+        ensure_rehydrated()
+    except Exception:
+        print("[DASHBOARD] V8 ledger rehydrate skipped")
 
     def _ws_ops_event(event):
         try:
@@ -282,6 +288,7 @@ async def get_system_status():
     memory_counts = postgres_manager.get_table_counts() if memory_online else {}
     provider_status = model_router.get_provider_status()
 
+    from proactive.config import is_v8_enabled
     return {
         "status": "OPERATIONAL",
         "system": "DOOM V2 Personal AI OS",
@@ -293,7 +300,8 @@ async def get_system_status():
         },
         "models": provider_status,
         "tools_count": len(ALL_TOOLS),
-        "telemetry": get_live_telemetry()
+        "telemetry": get_live_telemetry(),
+        "v8_enabled": bool(is_v8_enabled()),
     }
 
 @app.get("/api/memory/episodes")
@@ -610,8 +618,8 @@ async def v8_authenticated_command(request: Request):
         return _v8_error(medium_code, _v8_http_for(medium_code))
 
     result = execute_plan(prep.plan, identity=ident, authorized_plan_hash="")
-    extra = prep.intent if result.status is ExecutionStatus.SUCCESS else ""
-    response = f"[V8] {result.status.value}" + (f": {extra}" if extra else "")
+    from orchestration.production import format_v8_execution
+    response = format_v8_execution(result, intent=prep.intent)
     return {"ok": True, "status": result.status.value, "response": response, "owner_id": ident.owner_id}
 
 

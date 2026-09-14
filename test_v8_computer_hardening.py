@@ -850,8 +850,12 @@ class TestComputerControlHardening(unittest.TestCase):
         _v8_on()
         with patch("core.orchestrator.DOOMCore") as unused:
             unused.process = MagicMock()
-            text = handle_v8_enabled_request("hello", identity=_ident())
-        self.assertTrue(text.startswith("[V8]"))
+            with patch(
+                "orchestration.conversation.respond.execute_respond",
+                return_value=(ExecutionStatus.SUCCESS.value, "Hello from DOOM."),
+            ):
+                text = handle_v8_enabled_request("hello", identity=_ident())
+        self.assertEqual(text, "Hello from DOOM.")
 
     def test_73_computer_verify_not_filesystem(self):
         src = EXEC.read_text(encoding="utf-8")

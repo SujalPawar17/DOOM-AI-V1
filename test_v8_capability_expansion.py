@@ -83,7 +83,10 @@ def _goal(text, **ctx):
 
 
 def _plan(text, planner_context=None, **ctx):
-    return plan_goal(_goal(text, **ctx), planner_context)
+    merged = {"browser_session_id": "bws_11111111-1111-4111-8111-111111111111"}
+    if isinstance(planner_context, dict):
+        merged.update(planner_context)
+    return plan_goal(_goal(text, **ctx), merged)
 
 
 class _Spy:

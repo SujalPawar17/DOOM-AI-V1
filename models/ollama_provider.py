@@ -52,15 +52,33 @@ class OllamaProvider(BaseLLMProvider):
                  **kwargs) -> LLMResponse:
         url = f"{self.base_url}/api/generate"
         full_prompt = f"{system_prompt}\n\nUser: {prompt}\nDOOM:" if system_prompt else prompt
-        
+        options = {"temperature": temperature}
+        predict = kwargs.get("num_predict")
+        if predict is not None:
+            try:
+                options["num_predict"] = int(predict)
+            except (TypeError, ValueError):
+                pass
         payload = {
             "model": self.model,
             "prompt": full_prompt,
             "stream": False,
-            "options": {"temperature": temperature}
+            "options": options,
         }
-        res = requests.post(url, json=payload, timeout=30)
-        res.raise_for_status()
+        timeout = kwargs.get("timeout", 30)
+        try:
+            timeout_s = float(timeout)
+        except (TypeError, ValueError):
+            timeout_s = 30.0
+        try:
+            res = requests.post(url, json=payload, timeout=timeout_s)
+            res.raise_for_status()
+        except requests.Timeout as exc:
+            from models.base_provider import ProviderTimeoutError
+            raise ProviderTimeoutError("local model timeout", provider=self.name, timeout=timeout_s) from exc
+        except requests.ConnectionError as exc:
+            from models.base_provider import ProviderUnavailableError
+            raise ProviderUnavailableError("local model unavailable", provider=self.name) from exc
         data = res.json()
 
         return LLMResponse(

@@ -16,6 +16,7 @@ from orchestration.goal.plan_registry import (
     MAX_DEPENDENCY_DEPTH,
     MAX_IDEMPOTENT_RETRIES,
     MAX_PARAM_CHARS,
+    CONVERSATION_MAX_TEXT,
     MAX_STEPS,
     MAX_TIMEOUT_MS,
     MIN_TIMEOUT_MS,
@@ -90,7 +91,10 @@ def _freeze_params(raw: Any, capability: str, action: str) -> Tuple[Tuple[str, P
         if isinstance(value, float):
             _fail("FORBIDDEN_PARAMETER")
         text = str(value)
-        if len(text) > MAX_PARAM_CHARS:
+        limit = MAX_PARAM_CHARS
+        if capability == "conversation" and name == "text":
+            limit = CONVERSATION_MAX_TEXT
+        if len(text) > limit:
             _fail("PARAMETER_TOO_LONG")
         items.append((name, text))
     items.sort(key=lambda kv: kv[0])

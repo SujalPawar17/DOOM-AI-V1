@@ -152,11 +152,15 @@ class TestV8ProductionIntegration(unittest.TestCase):
         _v8_on()
         ident = _ident()
         with patch("orchestration.production.execute_plan", wraps=execute_plan) as spy:
-            out = self.core.process_request("hello", identity=ident)
+            with patch(
+                "orchestration.conversation.respond.execute_respond",
+                return_value=(ExecutionStatus.SUCCESS.value, "Hello from DOOM."),
+            ):
+                out = self.core.process_request("hello", identity=ident)
         spy.assert_called_once()
         kwargs = spy.call_args.kwargs
         self.assertIs(kwargs["identity"], ident)
-        self.assertIn(ExecutionStatus.SUCCESS.value, out)
+        self.assertEqual(out, "Hello from DOOM.")
 
     def test_wrong_authorized_hash_rejected_when_required(self):
         _v8_on()
@@ -239,19 +243,23 @@ class TestV8ProductionIntegration(unittest.TestCase):
         self.assertNotIn("ALL_TOOLS", src)
         self.assertNotIn("TaskEngine", src)
         _v8_on()
-        out = self.core.process_request("hello", identity=_ident())
-        self.assertIn(ExecutionStatus.SUCCESS.value, out)
+        with patch(
+            "orchestration.conversation.respond.execute_respond",
+            return_value=(ExecutionStatus.SUCCESS.value, "Hello from DOOM."),
+        ):
+            out = self.core.process_request("hello", identity=_ident())
+        self.assertEqual(out, "Hello from DOOM.")
 
     def test_memory_read_does_not_write(self):
         _v8_on()
-        with patch("orchestration.executor.memory_manager", create=True):
-            with patch("memory.manager.memory_manager.retrieve", return_value=[]) as retr:
-                with patch("memory.manager.memory_manager.store", create=True) as store:
-                    out = self.core.process_request("what do you remember", identity=_ident())
-        self.assertTrue("SUCCESS" in out or "PLANNING_UNAVAILABLE" in out or "UNSUPPORTED" in out)
-        if "SUCCESS" in out:
-            retr.assert_called()
-            store.assert_not_called()
+        with patch("memory.manager.memory_manager.store", create=True) as store:
+            with patch(
+                "orchestration.conversation.respond.execute_respond",
+                return_value=(ExecutionStatus.SUCCESS.value, "No personal memories on file."),
+            ):
+                out = self.core.process_request("what do you remember", identity=_ident())
+        self.assertEqual(out, "No personal memories on file.")
+        store.assert_not_called()
 
     def test_world_action_stays_unplanned(self):
         _v8_on()
@@ -377,9 +385,13 @@ class TestV8ProductionIntegration(unittest.TestCase):
         self.assertNotEqual(ident.session_id, raw)
         _v8_on()
         with patch.object(self.core.cognition, "process") as proc:
-            out = self.core.process_request("hello", identity=ident)
+            with patch(
+                "orchestration.conversation.respond.execute_respond",
+                return_value=(ExecutionStatus.SUCCESS.value, "Hello from DOOM."),
+            ):
+                out = self.core.process_request("hello", identity=ident)
         proc.assert_not_called()
-        self.assertIn(ExecutionStatus.SUCCESS.value, out)
+        self.assertEqual(out, "Hello from DOOM.")
 
     def test_forged_context_cannot_replace_ask_identity(self):
         from dashboard.ask_session import create_session, hash_session_token
@@ -389,12 +401,16 @@ class TestV8ProductionIntegration(unittest.TestCase):
         row = proactive_store.get_ask_session(hash_session_token(raw))
         ident, _ = identity_from_ask_session_row(row)
         _v8_on()
-        out = self.core.process_request(
-            "hello",
-            context={"owner_id": "attacker", "session_id": "forged"},
-            identity=ident,
-        )
-        self.assertIn(ExecutionStatus.SUCCESS.value, out)
+        with patch(
+            "orchestration.conversation.respond.execute_respond",
+            return_value=(ExecutionStatus.SUCCESS.value, "Hello from DOOM."),
+        ):
+            out = self.core.process_request(
+                "hello",
+                context={"owner_id": "attacker", "session_id": "forged"},
+                identity=ident,
+            )
+        self.assertEqual(out, "Hello from DOOM.")
         self.assertNotIn("attacker", out)
 
 

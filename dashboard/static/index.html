@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DOOM V3 — Personal AI Operating System</title>
     <meta name="description" content="DOOM V3 — Autonomous Personal AI Operating System by Sujal">
-    <link rel="stylesheet" href="/css/style.css?v=3.3">
+    <link rel="stylesheet" href="/css/style.css?v=3.4">
     <style>
         :root { --bg-void: #050b14; --text-primary: #e2eaf5; }
         html, body {
@@ -89,8 +89,11 @@
                     <span class="status-dot" id="ws-status-dot"></span>
                     <span class="status-label" id="ws-status-label">Online</span>
                 </div>
-                <button class="header-icon-btn" id="btn-voice-toggle" title="Toggle voice output" aria-label="Toggle voice">
+                <button class="header-icon-btn" id="btn-voice-toggle" title="DOOM speech enabled" aria-label="DOOM speech enabled" aria-pressed="true">
                     <svg id="voice-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+                </button>
+                <button class="header-icon-btn" id="btn-mic-toggle" title="DOOM hands-free listening enabled" aria-label="DOOM hands-free listening enabled" aria-pressed="true">
+                    <svg id="mic-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
                 </button>
                 <div class="header-clock">
                     <div class="clock-time" id="digital-clock">00:00:00</div>
@@ -151,6 +154,22 @@
                                 </button>
                             </div>
                         </form>
+
+                        <div class="v8-ask-session" id="v8-ask-session">
+                            <span class="v8-cs-label">ASK session</span>
+                            <span class="v8-cs-status" id="v8-ask-status">required</span>
+                            <form class="v8-ask-unlock-form" id="v8-ask-unlock-form">
+                                <input
+                                    type="password"
+                                    id="v8-ask-unlock"
+                                    class="v8-ask-unlock-input"
+                                    placeholder="ASK unlock secret"
+                                    autocomplete="off"
+                                    aria-label="ASK unlock secret"
+                                >
+                                <button type="submit" class="v8-cs-start" id="v8-ask-unlock-btn">Unlock ASK</button>
+                            </form>
+                        </div>
 
                         <div class="v8-computer-session" id="v8-computer-session">
                             <span class="v8-cs-label">V7 computer session</span>
@@ -765,6 +784,6 @@
         </main>
     </div>
 
-    <script src="/js/app.js?v=3.3"></script>
+    <script src="/js/app.js?v=3.7"></script>
 </body>
 </html>

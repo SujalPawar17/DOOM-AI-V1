@@ -72,6 +72,14 @@ def catalog_snapshot() -> Dict[CapabilityClass, CapabilityRecord]:
             v8, False,
         ),
         CapabilityRecord(
+            CapabilityClass.MEMORY_WRITE, "V8", True, True,
+            v8, False,
+        ),
+        CapabilityRecord(
+            CapabilityClass.SYSTEM_READ, "V8", True, True,
+            v8, False,
+        ),
+        CapabilityRecord(
             CapabilityClass.CONVERSATION, "V8", True, v8, v8, False,
         ),
         CapabilityRecord(

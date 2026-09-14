@@ -32,6 +32,18 @@ document.addEventListener("DOMContentLoaded", () => {
         gestureActive: false
     };
 
+    // Dashboard-local audio preference keys (UI gating only — not security).
+    const LS_SPEAKER = "doom_dashboard_speaker_enabled";
+    const LS_MIC = "doom_dashboard_mic_enabled";
+    try {
+        const savedSpeaker = localStorage.getItem(LS_SPEAKER);
+        if (savedSpeaker === "0" || savedSpeaker === "false") state.voiceEnabled = false;
+        if (savedSpeaker === "1" || savedSpeaker === "true") state.voiceEnabled = true;
+        const savedMic = localStorage.getItem(LS_MIC);
+        if (savedMic === "0" || savedMic === "false") state.handsFree = false;
+        if (savedMic === "1" || savedMic === "true") state.handsFree = true;
+    } catch (e) { /* ignore storage failures */ }
+
     // ─────────────────────────────────────────────────────────────────────────
     // DOM Elements
     // ─────────────────────────────────────────────────────────────────────────
@@ -56,6 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnVoiceToggle = document.getElementById("btn-voice-toggle");
     const voiceIcon = document.getElementById("voice-icon");
     const voiceLabel = document.getElementById("voice-label");
+    const btnMicToggle = document.getElementById("btn-mic-toggle");
     const btnHandsfreeToggle = document.getElementById("btn-handsfree-toggle");
     const handsfreeIcon = document.getElementById("handsfree-icon") || { textContent: '' };
     const handsfreeLabel = document.getElementById("handsfree-label") || { textContent: '' };
@@ -104,6 +117,40 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Null-safe helper to update text content
     function safeText(el, text) { if (el) el.textContent = text; }
+
+    function escapeHtml(text) {
+        if (!text) return "";
+        return String(text)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    // Display-only Markdown fence rendering. Escapes all text. Never executes code.
+    function renderMarkdownWithCodeFences(text) {
+        const raw = String(text || "");
+        if (!raw) return "";
+        const fenceRe = /```([A-Za-z0-9_+-]*)[ \t]*\r?\n?([\s\S]*?)```/g;
+        let html = "";
+        let last = 0;
+        let match;
+        while ((match = fenceRe.exec(raw)) !== null) {
+            html += escapeHtml(raw.slice(last, match.index));
+            const lang = escapeHtml((match[1] || "code").trim() || "code");
+            const code = escapeHtml(match[2] || "").replace(/\n$/, "");
+            html += `<div class="md-code-block"><div class="md-code-lang">${lang}</div><pre class="md-code-pre"><code>${code}</code></pre></div>`;
+            last = match.index + match[0].length;
+        }
+        html += escapeHtml(raw.slice(last));
+        return html;
+    }
+
+    function setResponseHtml(text) {
+        if (!responseContent) return;
+        responseContent.innerHTML = renderMarkdownWithCodeFences(text);
+    }
     // ─────────────────────────────────────────────────────────────────────────
     // 1. Digital Master Clock & Uptime
     // ─────────────────────────────────────────────────────────────────────────
@@ -419,11 +466,104 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 6. In-Browser Neural Voice: Single-Invocation Lock & Deduplication
+    // 6. In-Browser Neural Voice: Speaker mute + single-invocation lock
     // ─────────────────────────────────────────────────────────────────────────
     let currentSpeechAudio = null;
     let lastSpokenText = "";
     let lastSpokenTime = 0;
+    let micGeneration = 0;
+    let commandInFlight = false;
+
+    function persistAudioPrefs() {
+        try {
+            localStorage.setItem(LS_SPEAKER, state.voiceEnabled ? "1" : "0");
+            localStorage.setItem(LS_MIC, state.handsFree ? "1" : "0");
+        } catch (e) { /* ignore */ }
+    }
+
+    function syncSpeakerUi() {
+        if (!btnVoiceToggle) return;
+        if (state.voiceEnabled) {
+            btnVoiceToggle.classList.remove("muted");
+            btnVoiceToggle.title = "DOOM speech enabled";
+            btnVoiceToggle.setAttribute("aria-label", "DOOM speech enabled");
+            btnVoiceToggle.setAttribute("aria-pressed", "true");
+        } else {
+            btnVoiceToggle.classList.add("muted");
+            btnVoiceToggle.title = "DOOM speech muted";
+            btnVoiceToggle.setAttribute("aria-label", "DOOM speech muted");
+            btnVoiceToggle.setAttribute("aria-pressed", "false");
+        }
+    }
+
+    function syncMicUi() {
+        const listening = !!state.handsFree;
+        if (btnMicToggle) {
+            if (listening) {
+                btnMicToggle.classList.remove("muted");
+                btnMicToggle.classList.add("active-listen");
+                btnMicToggle.title = "DOOM hands-free listening enabled";
+                btnMicToggle.setAttribute("aria-label", "DOOM hands-free listening enabled");
+                btnMicToggle.setAttribute("aria-pressed", "true");
+            } else {
+                btnMicToggle.classList.add("muted");
+                btnMicToggle.classList.remove("active-listen");
+                btnMicToggle.title = "DOOM hands-free listening disabled";
+                btnMicToggle.setAttribute("aria-label", "DOOM hands-free listening disabled");
+                btnMicToggle.setAttribute("aria-pressed", "false");
+            }
+        }
+        if (btnHandsfreeToggle) {
+            if (listening) {
+                btnHandsfreeToggle.classList.add("active");
+                handsfreeIcon.textContent = "🎙️";
+                handsfreeLabel.textContent = "HANDS-FREE ON";
+            } else {
+                btnHandsfreeToggle.classList.remove("active");
+                handsfreeIcon.textContent = "🔇";
+                handsfreeLabel.textContent = "HANDS-FREE OFF";
+            }
+        }
+        if (responseMeta && !listening && state.coreState === "IDLE") {
+            responseMeta.textContent = "Ready (listening off)";
+        }
+    }
+
+    function setSpeakerEnabled(on) {
+        state.voiceEnabled = !!on;
+        persistAudioPrefs();
+        syncSpeakerUi();
+        if (!state.voiceEnabled) {
+            if (currentSpeechAudio) {
+                currentSpeechAudio.pause();
+                currentSpeechAudio = null;
+            }
+            if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+            if (state.coreState === "SPEAKING") {
+                state.coreState = "IDLE";
+                if (coreStateText) coreStateText.textContent = "DOOM ONLINE";
+            }
+        }
+    }
+
+    function setMicEnabled(on) {
+        micGeneration += 1;
+        state.handsFree = !!on;
+        persistAudioPrefs();
+        syncMicUi();
+        if (!recognition) return;
+        if (!state.handsFree) {
+            try { recognition.stop(); } catch (e) {}
+            state.isRecording = false;
+            if (btnMic) btnMic.classList.remove("recording");
+            if (termStatusIndicator) {
+                termStatusIndicator.textContent = "";
+                termStatusIndicator.classList.remove("active");
+            }
+        } else if (state.coreState !== "SPEAKING" && state.coreState !== "EXECUTING") {
+            try { recognition.start(); } catch (e) {}
+        }
+    }
 
     function speakText(text) {
         if (!state.voiceEnabled || !text) return;
@@ -477,6 +617,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     synthGain.gain.setValueAtTime(state.musicVolume * 0.25, synthContext.currentTime);
                 }
             }
+            // Resume hands-free listening after speech if still enabled.
+            if (state.handsFree && recognition) {
+                try { recognition.start(); } catch (e) {}
+            }
         };
 
         audio.onended = onSpeechFinish;
@@ -488,18 +632,18 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    syncSpeakerUi();
+    syncMicUi();
+
     if (btnVoiceToggle) {
         btnVoiceToggle.addEventListener("click", () => {
-            state.voiceEnabled = !state.voiceEnabled;
-            if (state.voiceEnabled) {
-                btnVoiceToggle.classList.remove("muted");
-                btnVoiceToggle.title = "Voice output ON";
-            } else {
-                btnVoiceToggle.classList.add("muted");
-                btnVoiceToggle.title = "Voice output OFF";
-                if (currentSpeechAudio) { currentSpeechAudio.pause(); currentSpeechAudio = null; }
-                if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-            }
+            setSpeakerEnabled(!state.voiceEnabled);
+        });
+    }
+
+    if (btnMicToggle) {
+        btnMicToggle.addEventListener("click", () => {
+            setMicEnabled(!state.handsFree);
         });
     }
 
@@ -515,8 +659,12 @@ document.addEventListener("DOMContentLoaded", () => {
         recognition.lang = "en-US";
 
         recognition.onstart = () => {
+            if (!state.handsFree) {
+                try { recognition.stop(); } catch (e) {}
+                return;
+            }
             state.isRecording = true;
-            btnMic.classList.add("recording");
+            if (btnMic) btnMic.classList.add("recording");
             if (termStatusIndicator) {
                 termStatusIndicator.textContent = "";
                 termStatusIndicator.classList.add("active");
@@ -525,11 +673,20 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         recognition.onresult = (event) => {
+            const genAtCallback = micGeneration;
+            if (!state.handsFree) return;
+            if (genAtCallback !== micGeneration) return; // late callback after mute
+            if (state.coreState === "SPEAKING" || state.coreState === "EXECUTING" || commandInFlight) {
+                console.log("[DOOM VOICE] Ignoring speech while busy/executing.");
+                return;
+            }
+
             const lastResultIndex = event.results.length - 1;
             const transcript = event.results[lastResultIndex][0].transcript.trim();
             console.log("[DOOM VOICE] Heard:", transcript);
 
             if (!transcript) return;
+            if (!state.handsFree || genAtCallback !== micGeneration) return;
 
             const lower = transcript.toLowerCase();
 
@@ -571,7 +728,18 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                 }
                 if (cleanPrompt) {
-                    commandInput.value = cleanPrompt;
+                    // Do not overwrite typed text if the user is actively composing.
+                    const typing = document.activeElement === commandInput
+                        && commandInput
+                        && commandInput.value
+                        && commandInput.value.trim()
+                        && commandInput.value.trim() !== cleanPrompt;
+                    if (typing) {
+                        console.log("[DOOM VOICE] Ignoring speech while typed input is active.");
+                        return;
+                    }
+                    if (!state.handsFree || genAtCallback !== micGeneration) return;
+                    if (commandInput) commandInput.value = cleanPrompt;
                     executeGoal(cleanPrompt);
                 }
             }
@@ -582,16 +750,17 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         recognition.onend = () => {
-            if (state.handsFree && state.coreState !== "SPEAKING") {
+            if (state.handsFree && state.coreState !== "SPEAKING" && state.coreState !== "EXECUTING") {
                 try { recognition.start(); } catch (err) {}
             } else {
                 state.isRecording = false;
-                btnMic.classList.remove("recording");
+                if (btnMic) btnMic.classList.remove("recording");
                 if (termStatusIndicator) {
                     termStatusIndicator.textContent = "";
                     termStatusIndicator.classList.remove("active");
                 }
-                if (responseMeta) responseMeta.textContent = "Ready";
+                if (responseMeta && state.handsFree) responseMeta.textContent = "Ready";
+                else if (responseMeta && !state.handsFree) responseMeta.textContent = "Ready (listening off)";
             }
         };
 
@@ -608,18 +777,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (btnHandsfreeToggle) {
         btnHandsfreeToggle.addEventListener("click", () => {
-            state.handsFree = !state.handsFree;
-            if (state.handsFree) {
-                btnHandsfreeToggle.classList.add("active");
-                handsfreeIcon.textContent = "🎙️";
-                handsfreeLabel.textContent = "HANDS-FREE ON";
-                try { recognition.start(); } catch (e) {}
-            } else {
-                btnHandsfreeToggle.classList.remove("active");
-                handsfreeIcon.textContent = "🔇";
-                handsfreeLabel.textContent = "HANDS-FREE OFF";
-                try { recognition.stop(); } catch (e) {}
-            }
+            setMicEnabled(!state.handsFree);
         });
     }
 
@@ -627,6 +785,10 @@ document.addEventListener("DOMContentLoaded", () => {
         btnMic.addEventListener("click", () => {
             if (!recognition) {
                 alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+                return;
+            }
+            if (!state.handsFree) {
+                // Header MIC OFF gates all speech input, including push-to-talk.
                 return;
             }
             if (state.isRecording) {
@@ -996,13 +1158,75 @@ document.addEventListener("DOMContentLoaded", () => {
         v8AskPanel.hidden = false;
     }
 
-    async function getAskMeta() {
-        const res = await fetch("/api/proactive/session");
-        if (!res.ok) return { csrf: "", v8: false };
-        const data = await res.json();
-        if (!data || !data.ok) return { csrf: "", v8: false };
-        return { csrf: data.csrf || "", v8: Boolean(data.v8_enabled) };
+    const v8AskStatus = document.getElementById("v8-ask-status");
+    const v8AskUnlockForm = document.getElementById("v8-ask-unlock-form");
+    const v8AskUnlockInput = document.getElementById("v8-ask-unlock");
+
+    async function fetchSameOrigin(url, options) {
+        const opts = options || {};
+        opts.credentials = "same-origin";
+        return fetch(url, opts);
     }
+
+    async function getPublicV8Enabled() {
+        try {
+            const res = await fetchSameOrigin("/api/status");
+            if (!res.ok) return true;
+            const data = await res.json();
+            if (!data || typeof data.v8_enabled !== "boolean") return true;
+            return data.v8_enabled;
+        } catch (_err) {
+            return true;
+        }
+    }
+
+    async function getAskMeta() {
+        const res = await fetchSameOrigin("/api/proactive/session");
+        if (!res.ok) return { csrf: "", v8: await getPublicV8Enabled(), authed: false };
+        const data = await res.json();
+        if (!data || !data.ok) return { csrf: "", v8: await getPublicV8Enabled(), authed: false };
+        return { csrf: data.csrf || "", v8: Boolean(data.v8_enabled), authed: true };
+    }
+
+    async function refreshAskStatus() {
+        const meta = await getAskMeta();
+        v8AskCsrf = meta.csrf || "";
+        if (v8AskStatus) {
+            v8AskStatus.textContent = meta.authed ? "active" : "required";
+        }
+        if (v8AskUnlockForm) v8AskUnlockForm.hidden = Boolean(meta.authed);
+        return meta;
+    }
+
+    if (v8AskUnlockForm) {
+        v8AskUnlockForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const secret = v8AskUnlockInput ? String(v8AskUnlockInput.value || "") : "";
+            if (v8AskUnlockInput) v8AskUnlockInput.value = "";
+            if (!secret) {
+                if (v8AskStatus) v8AskStatus.textContent = "required";
+                return;
+            }
+            if (v8AskStatus) v8AskStatus.textContent = "unlocking";
+            let res;
+            try {
+                res = await fetchSameOrigin("/api/proactive/session", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ unlock_secret: secret })
+                });
+            } catch (_err) {
+                if (v8AskStatus) v8AskStatus.textContent = "unlock failed";
+                return;
+            }
+            if (!res.ok) {
+                if (v8AskStatus) v8AskStatus.textContent = res.status === 401 ? "required" : ("unlock failed (" + res.status + ")");
+                return;
+            }
+            await refreshAskStatus();
+        });
+    }
+    refreshAskStatus();
 
     const v8CsStatus = document.getElementById("v8-cs-status");
     const v8CsStart = document.getElementById("v8-cs-start");
@@ -1019,7 +1243,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     async function getLiveComputerSession() {
-        const res = await fetch("/api/proactive/computer/sessions");
+        const res = await fetchSameOrigin("/api/proactive/computer/sessions");
         if (!res.ok) return null;
         const data = await res.json();
         const rows = (data && data.sessions) || [];
@@ -1050,7 +1274,7 @@ document.addEventListener("DOMContentLoaded", () => {
     async function loadWindowCandidates(sid) {
         const meta = await getAskMeta();
         if (!meta.csrf || !sid || !v8CsCandidates || !v8CsBind) return;
-        const res = await fetch(
+        const res = await fetchSameOrigin(
             "/api/proactive/computer/sessions/" + encodeURIComponent(sid) + "/window-candidates",
             { headers: { "X-DOOM-CSRF": meta.csrf } }
         );
@@ -1079,7 +1303,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (v8CsStatus) v8CsStatus.textContent = "ASK session required";
                 return;
             }
-            const res = await fetch("/api/proactive/computer/sessions", {
+            const res = await fetchSameOrigin("/api/proactive/computer/sessions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "X-DOOM-CSRF": meta.csrf },
                 body: "{}"
@@ -1102,7 +1326,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (v8CsBindStatus) v8CsBindStatus.textContent = "Select a window first.";
                 return;
             }
-            const res = await fetch(
+            const res = await fetchSameOrigin(
                 "/api/proactive/computer/sessions/" + encodeURIComponent(st.sid) + "/bind-window",
                 {
                     method: "POST",
@@ -1123,7 +1347,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const meta = await getAskMeta();
             const sid = await getLiveComputerSessionId();
             if (!meta.csrf || !sid) return;
-            await fetch("/api/proactive/computer/sessions/" + encodeURIComponent(sid) + "/stop", {
+            await fetchSameOrigin("/api/proactive/computer/sessions/" + encodeURIComponent(sid) + "/stop", {
                 method: "POST",
                 headers: { "X-DOOM-CSRF": meta.csrf }
             });
@@ -1135,7 +1359,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function postV8Authorize(decision) {
         if (!v8PendingPlanId || !v8AskCsrf) return;
-        const res = await fetch("/api/proactive/v8/authorize", {
+        const res = await fetchSameOrigin("/api/proactive/v8/authorize", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -1159,8 +1383,45 @@ document.addEventListener("DOMContentLoaded", () => {
         v8AskCancel.addEventListener("click", () => postV8Authorize("cancel"));
     }
 
+    async function postTrustedV8Command(goalText) {
+        const askMeta = await refreshAskStatus();
+        v8AskCsrf = askMeta.csrf || "";
+        if (askMeta.v8 && !askMeta.csrf) {
+            return {
+                v8: true,
+                blocked: true,
+                data: {
+                    error: "ASK session required. Unlock ASK first.",
+                    status: "IDENTITY_REQUIRED"
+                }
+            };
+        }
+        if (askMeta.v8 && askMeta.csrf) {
+            const computerSessionId = await getLiveComputerSessionId();
+            const res = await fetchSameOrigin("/api/proactive/v8/command", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-DOOM-CSRF": v8AskCsrf
+                },
+                body: JSON.stringify({
+                    goal: goalText,
+                    computer_session_id: computerSessionId
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            return { v8: true, blocked: false, res: res, data: data };
+        }
+        return { v8: false, blocked: false, res: null, data: null };
+    }
+
     async function executeGoal(goalText) {
         if (!goalText || !goalText.trim()) return;
+        if (commandInFlight) {
+            console.log("[DOOM] Ignoring overlapping command while one is in flight.");
+            return;
+        }
+        commandInFlight = true;
 
         state.coreState = "EXECUTING";
         coreStateText.textContent = "DOOM EXECUTING";
@@ -1175,37 +1436,36 @@ document.addEventListener("DOMContentLoaded", () => {
         hideV8AskApproval();
 
         try {
-            const askMeta = await getAskMeta();
-            v8AskCsrf = askMeta.csrf;
+            const routed = await postTrustedV8Command(goalText);
             let res;
-            if (askMeta.csrf && askMeta.v8) {
-                const computerSessionId = await getLiveComputerSessionId();
-                res = await fetch("/api/proactive/v8/command", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "X-DOOM-CSRF": v8AskCsrf
-                    },
-                    body: JSON.stringify({
-                        goal: goalText,
-                        computer_session_id: computerSessionId
-                    })
-                });
+            let data;
+            if (routed.blocked) {
+                setResponseHtml(routed.data.error);
+                responseMeta.textContent = "IDENTITY_REQUIRED";
+                return;
+            }
+            if (routed.v8) {
+                res = routed.res;
+                data = routed.data;
+            } else if (await getPublicV8Enabled()) {
+                setResponseHtml("ASK session required. Unlock ASK first.");
+                responseMeta.textContent = "IDENTITY_REQUIRED";
+                return;
             } else {
-                res = await fetch("/api/command", {
+                res = await fetchSameOrigin("/api/command", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ goal: goalText })
                 });
+                data = await res.json();
             }
-            const data = await res.json();
 
             if (data.status === "APPROVAL_REQUIRED" && data.plan_id) {
                 showV8AskApproval(data.plan_id, data.display || {});
-                responseContent.textContent = "Waiting for explicit ASK approval.";
+                setResponseHtml("Waiting for explicit ASK approval.");
                 responseMeta.textContent = "APPROVAL_REQUIRED";
             } else {
-                responseContent.textContent = data.response || data.error || "No response received.";
+                setResponseHtml(data.response || data.error || "No response received.");
                 responseMeta.textContent = data.latency_ms
                     ? `Completed in ${data.latency_ms}ms // ${data.timestamp}`
                     : (data.status || `HTTP ${res.status}`);
@@ -1215,9 +1475,10 @@ document.addEventListener("DOMContentLoaded", () => {
             refreshAuditLogs();
             refreshEpisodes();
         } catch (err) {
-            responseContent.textContent = `Error executing command: ${err.message}`;
+            setResponseHtml(`Error executing command: ${err.message}`);
             responseMeta.textContent = "Execution Failed";
         } finally {
+            commandInFlight = false;
             state.coreState = "IDLE";
             coreStateText.textContent = "DOOM ONLINE";
             if (termStatusIndicator) {
@@ -1226,6 +1487,9 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             btnExecute.disabled = false;
             commandInput.value = "";
+            if (state.handsFree && recognition) {
+                try { recognition.start(); } catch (e) {}
+            }
         }
     }
 
@@ -1398,16 +1662,6 @@ document.addEventListener("DOMContentLoaded", () => {
             refreshEpisodes();
             refreshFacts();
         });
-    }
-
-    function escapeHtml(text) {
-        if (!text) return "";
-        return String(text)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1720,15 +1974,14 @@ document.addEventListener("DOMContentLoaded", () => {
     /* ── Append V2 AI response bubble ── */
     function appendAIBubbleV2(data) {
         const ts = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-        const modeLabels2 = { pair_programmer:"Pair Programmer", architect:"Architect", debugger:"Bug Hunter", reviewer:"Code Reviewer" };
+        const raw = String((data && data.response) || "");
 
-        // Plain text (strip code blocks)
-        const plainText = data.response.replace(/```[\s\S]*?```/g, "").trim();
-
-        // Code blocks
-        let codeHtml = "";
+        // Agent Studio may supply structured code_blocks; V8 RESPOND returns raw markdown.
+        // Structured blocks: display them. Otherwise: render fences display-only (no execution).
+        let bodyHtml = "";
         if (data.code_blocks && data.code_blocks.length) {
-            codeHtml = data.code_blocks.map((cb, idx) => `
+            const plainText = raw.replace(/```[\s\S]*?```/g, "").trim();
+            const codeHtml = data.code_blocks.map((cb, idx) => `
                 <div class="agent-code-box" id="cbox-${idx}-${Date.now()}">
                     <div class="code-box-header">
                         <span class="code-lang-tag">📄 ${cb.language || "code"}</span>
@@ -1740,6 +1993,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                     <pre style="margin:0;padding:0.65rem;font-size:0.74rem;font-family:var(--font-mono);overflow-x:auto;background:rgba(0,0,0,0.45);color:#a5f3fc;white-space:pre-wrap;">${escapeHtml(cb.code)}</pre>
                 </div>`).join("");
+            bodyHtml = escapeHtml(plainText) + codeHtml;
+        } else {
+            bodyHtml = renderMarkdownWithCodeFences(raw);
         }
 
         const div = document.createElement("div");
@@ -1751,7 +2007,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     <span class="agent-msg-sender">DOOM AI</span>
                     <span class="agent-msg-timestamp">${ts} · ${data.latency_ms||0}ms · ${(modelLabels[data.model]||data.model||"").toUpperCase()}</span>
                 </div>
-                <div class="agent-msg-text" style="white-space:pre-wrap;">${escapeHtml(plainText)}${codeHtml}</div>
+                <div class="agent-msg-text" style="white-space:pre-wrap;">${bodyHtml}</div>
             </div>`;
         agentChatFeed.appendChild(div);
         agentChatFeed.scrollTop = agentChatFeed.scrollHeight;
@@ -1823,11 +2079,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return div;
     }
 
-    /* ── Helper: escape HTML ── */
-    function escapeHtml(str) {
-        return String(str || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-    }
-
     /* ── Main: Send agent message ── */
     async function sendAgentMessage() {
         const prompt = agentPromptInput ? agentPromptInput.value.trim() : "";
@@ -1858,19 +2109,44 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         try {
-            const res = await fetch("/api/agent/chat", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    prompt,
-                    model: selectedModel,
-                    mode: activeAgentMode,
-                    file_path: filePath || null,
-                    file_content: fileContent
-                })
-            });
-
-            const data = await res.json();
+            const routed = await postTrustedV8Command(prompt);
+            let data;
+            if (routed.blocked) {
+                hideTyping();
+                data = { response: routed.data.error, latency_ms: 0, model: "v8" };
+                agentConversation.push({ role: "assistant", content: data.response });
+                appendAIBubbleV2(data);
+                return;
+            }
+            if (routed.v8) {
+                data = routed.data || {};
+                if (data.status === "APPROVAL_REQUIRED" && data.plan_id) {
+                    hideTyping();
+                    showV8AskApproval(data.plan_id, data.display || {});
+                    data = { response: "Waiting for explicit ASK approval.", latency_ms: data.latency_ms || 0, model: "v8" };
+                    agentConversation.push({ role: "assistant", content: data.response });
+                    appendAIBubbleV2(data);
+                    return;
+                }
+                data = {
+                    response: data.response || data.error || "No response received.",
+                    latency_ms: data.latency_ms || 0,
+                    model: "ollama"
+                };
+            } else {
+                const res = await fetch("/api/agent/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        prompt,
+                        model: selectedModel,
+                        mode: activeAgentMode,
+                        file_path: filePath || null,
+                        file_content: fileContent
+                    })
+                });
+                data = await res.json();
+            }
             agentConversation.push({ role: "assistant", content: data.response });
 
             hideTyping();

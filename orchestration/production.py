@@ -91,4 +91,24 @@ def handle_v8_enabled_request(
         authorized_plan_hash=str(authorized_plan_hash or ""),
     )
     extra = prep.intent if result.status is ExecutionStatus.SUCCESS else ""
-    return _text(result.status.value, extra)
+    return format_v8_execution(result, intent=extra)
+
+
+def format_v8_execution(result: Any, *, intent: str = "") -> str:
+    """User-facing V8 text. Conversation SUCCESS returns model text; errors stay bounded."""
+    status = result.status
+    if status is ExecutionStatus.SUCCESS:
+        body = str(getattr(result, "response_text", "") or "").strip()
+        if body:
+            # Final dashboard-facing gate: strip internal context/security preambles.
+            try:
+                from orchestration.conversation.respond import scrub_internal_markers
+                body = scrub_internal_markers(body)
+            except Exception:
+                pass
+            body = str(body or "").strip()
+            if body:
+                return body[:2048]
+        extra = str(intent or "").strip()[:64]
+        return _text(status.value, extra)
+    return _text(status.value, "")
