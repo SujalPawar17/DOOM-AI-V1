@@ -111,4 +111,8 @@ def format_v8_execution(result: Any, *, intent: str = "") -> str:
                 return body[:2048]
         extra = str(intent or "").strip()[:64]
         return _text(status.value, extra)
+    if status is ExecutionStatus.LOCAL_MODEL_TIMEOUT:
+        body = str(getattr(result, "response_text", "") or "").strip()
+        if body:
+            return body[:2048]
     return _text(status.value, "")

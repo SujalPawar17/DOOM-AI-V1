@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from orchestration.conversation.prompt import CONTEXT_DATA_NOTICE
@@ -22,6 +23,9 @@ MAX_MEMORY_ITEMS = 4
 _LOCK = threading.Lock()
 # Trusted key: owner_id + session_id from plan only.
 _CONV: Dict[str, List[Dict[str, str]]] = {}
+# Continuation anchor freshness (seconds). Not persistent memory.
+ANCHOR_TTL_SEC = 1200  # 20 minutes
+_TEST_ANCHOR_TTL_SEC: Optional[float] = None
 
 _EXCLUDE = re.compile(
     r"(?i)("
@@ -48,8 +52,57 @@ def _conv_key(owner_id: str, session_id: str) -> str:
 
 
 def reset_conversation_context_for_tests() -> None:
+    global _TEST_ANCHOR_TTL_SEC
     with _LOCK:
         _CONV.clear()
+    _TEST_ANCHOR_TTL_SEC = None
+
+
+def set_anchor_ttl_for_tests(seconds: Optional[float]) -> None:
+    global _TEST_ANCHOR_TTL_SEC
+    _TEST_ANCHOR_TTL_SEC = seconds
+
+
+def _anchor_ttl() -> float:
+    if _TEST_ANCHOR_TTL_SEC is not None:
+        return float(_TEST_ANCHOR_TTL_SEC)
+    return float(ANCHOR_TTL_SEC)
+
+
+def clear_conversation_thread(owner_id: str, session_id: str) -> None:
+    """Drop in-memory turns for this owner/session. Does not touch personal memory."""
+    key = _conv_key(owner_id, session_id)
+    if not key:
+        return
+    with _LOCK:
+        _CONV.pop(key, None)
+
+
+def _last_assistant_ts(rows: List[Dict[str, str]]) -> float:
+    for row in reversed(rows):
+        if str(row.get("role") or "") == "assistant":
+            try:
+                return float(row.get("ts") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def _anchor_exchange_rows(rows: List[Dict[str, str]]) -> Tuple[Dict[str, str], ...]:
+    """Last user+assistant pair only (current anchor)."""
+    if not rows:
+        return ()
+    last_user_idx = -1
+    last_asst_idx = -1
+    for i, row in enumerate(rows):
+        role = str(row.get("role") or "")
+        if role == "user" and str(row.get("text") or "").strip():
+            last_user_idx = i
+        elif role == "assistant" and str(row.get("text") or "").strip():
+            last_asst_idx = i
+    if last_asst_idx < 0 or last_user_idx < 0 or last_user_idx > last_asst_idx:
+        return ()
+    return tuple(rows[last_user_idx : last_asst_idx + 1])
 
 
 def exclude_sensitive_text(text: str) -> bool:
@@ -150,6 +203,13 @@ def conversation_relevant(query: str, *, has_turns: bool) -> bool:
         r"\b(my|me|i|prefer|remember|system|cpu|ram)\b", q
     ):
         return False
+    # V8.21 continuations always want thread context when turns exist.
+    try:
+        from orchestration.conversation.resolve import is_continuation_utterance
+        if is_continuation_utterance(q):
+            return True
+    except Exception:
+        pass
     return True
 
 
@@ -164,15 +224,22 @@ def record_conversation_turn(
     if not key:
         return
     user = sanitize_context_text(user_text, limit=MAX_CONV_MSG_CHARS)
-    assistant = sanitize_context_text(assistant_text, limit=MAX_CONV_MSG_CHARS)
+    try:
+        from orchestration.conversation.resolve import durable_assistant_thread_text
+        assistant = durable_assistant_thread_text(
+            assistant_text, limit=MAX_CONV_MSG_CHARS
+        )
+    except Exception:
+        assistant = sanitize_context_text(assistant_text, limit=MAX_CONV_MSG_CHARS)
     if not user and not assistant:
         return
+    now = str(time.time())
     with _LOCK:
         rows = _CONV.setdefault(key, [])
         if user:
-            rows.append({"role": "user", "text": user})
+            rows.append({"role": "user", "text": user, "ts": now})
         if assistant:
-            rows.append({"role": "assistant", "text": assistant})
+            rows.append({"role": "assistant", "text": assistant, "ts": now})
         # Keep at most MAX_CONV_TURNS message pairs ≈ 2*turns entries, trim by count + chars.
         while len(rows) > MAX_CONV_TURNS * 2:
             rows.pop(0)
@@ -182,12 +249,26 @@ def record_conversation_turn(
             total -= len(removed.get("text") or "")
 
 
-def get_conversation_turns(owner_id: str, session_id: str) -> Tuple[Dict[str, str], ...]:
+def get_conversation_turns(
+    owner_id: str,
+    session_id: str,
+    *,
+    for_continuation: bool = False,
+) -> Tuple[Dict[str, str], ...]:
     key = _conv_key(owner_id, session_id)
     if not key:
         return ()
     with _LOCK:
         rows = list(_CONV.get(key, []))
+    if for_continuation:
+        if not rows:
+            return ()
+        last_ts = _last_assistant_ts(rows)
+        if last_ts <= 0.0 or (time.time() - last_ts) > _anchor_ttl():
+            return ()
+        rows = list(_anchor_exchange_rows(rows))
+        if not rows:
+            return ()
     out: List[Dict[str, str]] = []
     budget = MAX_CONV_TOTAL_CHARS
     for row in reversed(rows):

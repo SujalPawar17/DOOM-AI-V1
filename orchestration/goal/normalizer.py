@@ -40,6 +40,27 @@ _CONVERSATION_CODE = re.compile(
     re.IGNORECASE,
 )
 
+# V8.21: short conversational continuations (context resolved in RESPOND).
+# Do NOT match bare STT junk like "what" / "okay" / "doom".
+_CONVERSATION_CONTINUATION = re.compile(
+    r"^(why(\s+is\s+that)?|"
+    r"why is (it|that|this)\b|"
+    r"tell me more|"
+    r"explain (that|more|the last part)|"
+    r"what did you mean|what do you mean|"
+    r"continue|go on|keep going|carry on|"
+    r"what about (the )?(first|second|third|1st|2nd|3rd|other)( (one|option))?|"
+    r"what about .{1,60}|"
+    r"compare (that|it|this|them)( with .*)?|"
+    r"is that better|is this better|is it better|"
+    r"which one|which is better|which would you (choose|pick)|"
+    r"the other one|"
+    r"that|this|it|"
+    r"elaborate|go deeper|more details?"
+    r")[\s?.!]*$",
+    re.IGNORECASE,
+)
+
 _INSTRUCTIONAL = re.compile(
     r"^\s*(how (do i|does one|can i|to)|what is the (best )?way to|"
     r"help me (to )?(learn|understand how))\b",
@@ -228,5 +249,7 @@ def normalize_intent(raw_intent: str) -> IntentClass:
     if _GREETING_PREFIX.search(text):
         return IntentClass.CONVERSATION
     if _CONVERSATION_SAY.search(text) or _CONVERSATION_CODE.search(text):
+        return IntentClass.CONVERSATION
+    if _CONVERSATION_CONTINUATION.match(text):
         return IntentClass.CONVERSATION
     return IntentClass.UNKNOWN

@@ -26,6 +26,10 @@ MAX_SYSTEM_PROMPT_CHARS = 3600
 MODEL_TIMEOUT_SEC = 50
 MAX_GENERATION_TOKENS = 256
 
+TIMEOUT_FOLLOWUP_BASE = (
+    "I couldn't finish that follow-up with the local model in time. Please try again."
+)
+
 _PROVIDER_LOCK = threading.Lock()
 _TEST_PROVIDER: Any = None
 
@@ -37,8 +41,10 @@ _INTERNAL_MARKERS = re.compile(
     r"(?i)"
     r"</?safe_context\b[^>]*>|"
     r"</?situation\b[^>]*>|"
+    r"</?conversation_context\b[^>]*>|"
     r"\bsafe[_ ]?context\b|"
     r"\bsituation[_ ]?model\b|"
+    r"\bconversation[_ ]?context\b|"
     r"\bcontext (assembler|injection|wrapper|block)\b|"
     r"\buntrusted contextual data\b|"
     r"\bexecutionidentity\b|"
@@ -186,8 +192,56 @@ def execute_respond(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     if not user_text.strip():
         return ExecutionStatus.LOCAL_MODEL_ERROR.value, ""
 
+    owner = str(plan.owner_id or "")
+    session = str(plan.session_id or "")
+    continuation = False
+    anchor_topic = ""
+    try:
+        from orchestration.conversation.resolve import (
+            is_continuation_utterance,
+            is_new_standalone_topic,
+        )
+        continuation = is_continuation_utterance(user_text)
+        if is_new_standalone_topic(user_text):
+            from orchestration.conversation.context import clear_conversation_thread
+            clear_conversation_thread(owner, session)
+    except Exception:
+        continuation = False
+
+    # V8.21: deterministic thread reference resolution (no extra Ollama call).
+    effective_text = user_text
+    thread_block = ""
+    try:
+        from orchestration.conversation.resolve import resolve_conversation_reference
+        from orchestration.conversation.thread import (
+            current_anchor_turn,
+            format_conversation_context_block,
+            get_conversation_thread,
+        )
+        thread = get_conversation_thread(
+            owner,
+            session,
+            for_continuation=continuation,
+        )
+        resolution = resolve_conversation_reference(user_text, thread)
+        if resolution.status == "CLARIFY" and resolution.clarification:
+            return _finish_respond(plan, user_text, resolution.clarification)
+        if resolution.status == "RESOLVED" and resolution.effective_text:
+            effective_text = resolution.effective_text
+        anchor = current_anchor_turn(thread)
+        if anchor and anchor.user_text:
+            anchor_topic = anchor.user_text[:120]
+        if continuation and thread:
+            thread_block = format_conversation_context_block(thread)
+    except Exception:
+        effective_text = user_text
+        thread_block = ""
+
     # Narrow deterministic path for exact personal-fact questions with a hit.
+    # Prefer the original utterance; fall back to resolved text for references.
     direct = _try_direct_memory_answer(plan, user_text)
+    if not direct and effective_text != user_text:
+        direct = _try_direct_memory_answer(plan, effective_text)
     if direct:
         return _finish_respond(plan, user_text, direct)
 
@@ -208,21 +262,38 @@ def execute_respond(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     try:
         from orchestration.situation.assemble import assemble_situation_block
         from orchestration.situation.relevance import situation_relevant
-        if situation_relevant(user_text):
-            block, _st = assemble_situation_block(plan, user_text)
+        # Situation relevance uses the resolved request when available.
+        if situation_relevant(effective_text):
+            block, _st = assemble_situation_block(plan, effective_text)
     except Exception:
         block = ""
     if not block:
         try:
             from orchestration.conversation.safe_context import load_respond_context
-            block, _status = load_respond_context(plan, user_text)
+            block, _status = load_respond_context(plan, effective_text)
         except Exception:
             block = ""
+    # Inject bounded conversation thread as an explicit untrusted block.
+    # Avoid duplicating the same material when situation/safe_context already
+    # embedded "Recent conversation" for this turn.
+    extras = []
+    if thread_block and "<conversation_context>" not in (block or ""):
+        if "Recent conversation:" not in (block or ""):
+            extras.append(thread_block)
+        else:
+            # Situation/safe_context already carries recent turns; still attach
+            # the tagged block when this is an explicit continuation resolve.
+            if effective_text != user_text:
+                extras.append(thread_block)
+    parts = [system]
+    if extras:
+        parts.extend(extras)
     if block:
-        system = (system + "\n\n" + str(block))[:MAX_SYSTEM_PROMPT_CHARS]
+        parts.append(str(block))
+    system = "\n\n".join(parts)[:MAX_SYSTEM_PROMPT_CHARS]
     try:
         out = provider.generate(
-            user_text,
+            effective_text,
             system_prompt=system,
             tools=None,
             temperature=0.4,
@@ -233,6 +304,12 @@ def execute_respond(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     except CostGuardBlockedError:
         return ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value, ""
     except ProviderTimeoutError:
+        if effective_text != user_text:
+            hint = anchor_topic.strip()
+            msg = TIMEOUT_FOLLOWUP_BASE
+            if hint:
+                msg = f"{msg} (about: {hint})"
+            return ExecutionStatus.LOCAL_MODEL_TIMEOUT.value, msg[:512]
         return ExecutionStatus.LOCAL_MODEL_TIMEOUT.value, ""
     except ProviderUnavailableError:
         return ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value, ""
@@ -245,6 +322,8 @@ def execute_respond(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     # If the model meta-refuses despite a matching personal fact, use the fact.
     if _MEMORY_META_REFUSAL.search(raw):
         rescue = _try_direct_memory_answer(plan, user_text)
+        if not rescue and effective_text != user_text:
+            rescue = _try_direct_memory_answer(plan, effective_text)
         if rescue:
             return _finish_respond(plan, user_text, rescue)
     return _finish_respond(plan, user_text, raw)
