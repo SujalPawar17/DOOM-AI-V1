@@ -251,6 +251,12 @@ def normalize_intent(raw_intent: str) -> IntentClass:
             return IntentClass.DECISION
     except Exception:
         pass
+    try:
+        from orchestration.plan.relevance import plan_relevant
+        if plan_relevant(text):
+            return IntentClass.PLAN
+    except Exception:
+        pass
     if _CONVERSATION_TOPIC.search(text):
         return IntentClass.CONVERSATION
     if _GREETING_PREFIX.search(text):

@@ -603,6 +603,11 @@ def _default_conversation(step: PlanStep, plan: GoalPlan) -> str:
         status, text = execute_decide(step, plan)
         _TLS.response_text = str(text or "")
         return status
+    if step.action == "PLAN_STEPS":
+        from orchestration.plan.execute import execute_plan_steps
+        status, text = execute_plan_steps(step, plan)
+        _TLS.response_text = str(text or "")
+        return status
     from orchestration.conversation.respond import execute_respond
     status, text = execute_respond(step, plan)
     _TLS.response_text = str(text or "")

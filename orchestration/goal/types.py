@@ -27,6 +27,7 @@ class IntentClass(str, Enum):
     WORLD_ACTION = "WORLD_ACTION"
     CONVERSATION = "CONVERSATION"
     DECISION = "DECISION"
+    PLAN = "PLAN"
     UNKNOWN = "UNKNOWN"
     AMBIGUOUS = "AMBIGUOUS"
 
@@ -67,6 +68,7 @@ INTENT_TO_CAPABILITY = {
     IntentClass.WORLD_ACTION: CapabilityClass.WORLD_ACT,
     IntentClass.CONVERSATION: CapabilityClass.CONVERSATION,
     IntentClass.DECISION: CapabilityClass.CONVERSATION,
+    IntentClass.PLAN: CapabilityClass.CONVERSATION,
     IntentClass.UNKNOWN: CapabilityClass.NONE,
     IntentClass.AMBIGUOUS: CapabilityClass.NONE,
 }
