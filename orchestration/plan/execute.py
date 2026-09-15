@@ -279,19 +279,41 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
         text = scrub_internal_markers(text)
     except Exception:
         pass
-    _record_turn(plan, user_text, text)
+    _record_turn(plan, user_text, text, plan_result=result)
     return ExecutionStatus.SUCCESS.value, text
 
 
-def _record_turn(plan: GoalPlan, user_text: str, assistant_text: str) -> None:
+def _record_turn(
+    plan: GoalPlan,
+    user_text: str,
+    assistant_text: str,
+    *,
+    plan_result: Optional[PlanResult] = None,
+) -> None:
     try:
-        from orchestration.conversation.context import record_conversation_turn
+        from orchestration.conversation.context import (
+            MAX_CONV_MSG_CHARS,
+            record_conversation_turn,
+        )
+        from orchestration.plan.durable import serialize_plan_durable
 
+        to_store = assistant_text
+        if (
+            plan_result is not None
+            and plan_result.status is PlanStatus.OK
+            and plan_result.steps
+        ):
+            seeded = serialize_plan_durable(
+                plan_result, limit=MAX_CONV_MSG_CHARS
+            )
+            # Prefer structured seed; if it cannot fit safely, store nothing
+            # plan-shaped so REFINE fail-closes instead of recovering corruption.
+            to_store = seeded if seeded else "Plan recovery unavailable."
         record_conversation_turn(
             str(plan.owner_id or ""),
             str(plan.session_id or ""),
             user_text=user_text,
-            assistant_text=assistant_text,
+            assistant_text=to_store,
         )
     except Exception:
         pass

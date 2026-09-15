@@ -209,16 +209,33 @@ def durable_assistant_thread_text(text: str, *, limit: int) -> str:
     Extraction runs on the full scrubbed reply first. If truncating to ``limit``
     would drop a clear option list, store a compact numbered list instead.
     Does not raise overall conversation turn/total caps.
+
+    V8.24.1: plan-shaped replies use plan-preserving bounds (no option-compact
+    rewrite; no mid-token truncation of step titles).
     """
     raw = str(text or "").replace("\x00", "")
     if not raw.strip():
         return ""
-    opts = extract_options(raw)
     collapsed = " ".join(raw.split())
     from orchestration.conversation.context import exclude_sensitive_text
 
     if exclude_sensitive_text(collapsed):
         return ""
+
+    # V8.24.1 plan-aware path.
+    try:
+        from orchestration.plan.durable import looks_like_plan_text, preserve_plan_durable_text
+
+        if looks_like_plan_text(collapsed):
+            preserved = preserve_plan_durable_text(collapsed, limit=limit)
+            if preserved and not exclude_sensitive_text(preserved):
+                return preserved
+            # Fail closed: do not store a corrupted mid-cut plan.
+            return ""
+    except Exception:
+        pass
+
+    opts = extract_options(raw)
     truncated = collapsed[: max(0, int(limit))]
     if len(opts) < 2:
         return truncated

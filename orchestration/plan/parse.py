@@ -68,7 +68,9 @@ def _extract_steps_region(raw: str) -> str:
 
 
 def _parse_numbered(body: str) -> List[Tuple[str, str]]:
-    """Parse '1. Title detail 2. Title' including flattened single-line forms."""
+    """Parse numbered steps. Titles only — never treat flattened detail as required."""
+    from orchestration.plan.durable import truncate_at_word
+
     body = " ".join(str(body or "").split())
     if not body:
         return []
@@ -82,14 +84,13 @@ def _parse_numbered(body: str) -> List[Tuple[str, str]]:
         if not sm:
             continue
         rest = sm.group(2).strip()
-        # Optional indented detail was flattened — keep title only (first clause).
-        # Prefer first sentence-ish chunk up to a reasonable title length.
-        title = rest
-        detail = ""
-        # If another number appears mid-string we already split; title is rest.
-        title = sanitize_context_text(title, limit=MAX_STEP_TITLE_CHARS)
+        # Durable seeds store titles only. Sensitive blobs sanitize to empty → drop.
+        cleaned = sanitize_context_text(rest, limit=MAX_STEP_TITLE_CHARS * 2)
+        if not cleaned:
+            continue
+        title = truncate_at_word(cleaned, MAX_STEP_TITLE_CHARS)
         if title:
-            out.append((title, detail))
+            out.append((title, ""))
     return out
 
 
