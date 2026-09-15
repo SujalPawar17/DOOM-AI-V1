@@ -1,10 +1,12 @@
-"""V8.23 plan formatting. Template-first; optional single Ollama polish."""
+"""V8.23/V8.24 plan formatting. Template-first; optional single Ollama polish."""
 
 from __future__ import annotations
 
 import re
-from typing import Any, List, Optional, Sequence, Set, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
+from orchestration.plan.analysis import PlanAnalysis
+from orchestration.plan.modes import PlanMode
 from orchestration.plan.types import (
     PlanConfidence,
     PlanResult,
@@ -36,22 +38,14 @@ _AUTH_LEAK = re.compile(
     r")\b\s*[:=]"
 )
 
-_STOPWORDS = frozenset(
-    {
-        "a", "an", "the", "this", "that", "these", "those", "it", "its",
-        "is", "are", "was", "were", "be", "been", "being", "to", "of", "for",
-        "and", "or", "with", "your", "you", "their", "there", "here", "from",
-        "into", "onto", "over", "under", "also", "more", "very", "just",
-        "only", "still", "than", "then", "when", "which", "while", "where",
-        "what", "have", "has", "had", "will", "would", "could", "should",
-        "may", "might", "does", "did", "doing", "such", "some", "any", "all",
-        "each", "both", "few", "many", "much", "most", "other",
-        "about", "because", "since", "so", "as", "at", "by", "on", "in",
-    }
+CLARIFY_DEFAULT = (
+    "To build a useful plan, I need to know what you want to accomplish. "
+    "Please describe the goal in a sentence or two."
 )
 
 
 def format_plan_template(result: PlanResult) -> str:
+    """V8.23-compatible template (no analysis sections)."""
     if result.status is PlanStatus.CLARIFY or (
         result.status is PlanStatus.LOW_CONFIDENCE and result.clarification and not result.steps
     ):
@@ -87,10 +81,116 @@ def format_plan_template(result: PlanResult) -> str:
     return "\n".join(lines).strip()[:2048]
 
 
-CLARIFY_DEFAULT = (
-    "To build a useful plan, I need to know what you want to accomplish. "
-    "Please describe the goal in a sentence or two."
-)
+def format_plan_with_analysis(
+    result: PlanResult,
+    analysis: Optional[PlanAnalysis] = None,
+) -> str:
+    if result.status is PlanStatus.CLARIFY or (
+        result.status is PlanStatus.LOW_CONFIDENCE and result.clarification and not result.steps
+    ):
+        return (result.clarification or CLARIFY_DEFAULT).strip()[:2048]
+    if not result.steps:
+        if result.clarification:
+            return result.clarification.strip()[:2048]
+        return CLARIFY_DEFAULT
+
+    mode = analysis.mode if analysis else PlanMode.CREATE
+
+    if mode is PlanMode.NEXT and analysis and analysis.next_step_index:
+        lines = [
+            f"Next step: {analysis.next_step_index}. {analysis.next_step_title}",
+        ]
+        if analysis.next_rationale:
+            lines.append(analysis.next_rationale)
+        if analysis.dependencies:
+            lines.append("")
+            lines.append("Dependencies:")
+            for d in analysis.dependencies[:3]:
+                lines.append(
+                    f"- {d.to_index} depends on {d.from_index} — {d.reason}"
+                )
+        lines.append("")
+        lines.append(f"Confidence: {_CONF_LABEL.get(result.confidence, 'Low')}")
+        return "\n".join(lines).strip()[:2048]
+
+    if mode is PlanMode.VALIDATE and analysis:
+        lines = ["Plan validation"]
+        if analysis.issues:
+            lines.append("")
+            lines.append("Issues:")
+            for iss in analysis.issues:
+                lines.append(f"- {iss.message}")
+        blockers = result.blockers or ()
+        lines.append("")
+        lines.append("Blockers:")
+        if blockers:
+            for b in blockers:
+                lines.append(f"- {b}")
+        else:
+            lines.append("- None")
+        lines.append("")
+        lines.append(f"Confidence: {_CONF_LABEL.get(result.confidence, 'Low')}")
+        return "\n".join(lines).strip()[:2048]
+
+    if mode is PlanMode.DEPEND and analysis:
+        lines = ["Dependencies:"]
+        if analysis.dependencies:
+            for d in analysis.dependencies:
+                lines.append(
+                    f"- {d.to_index} depends on {d.from_index} — {d.reason}"
+                )
+        else:
+            lines.append("- None detected")
+        lines.append("")
+        lines.append(f"Confidence: {_CONF_LABEL.get(result.confidence, 'Low')}")
+        return "\n".join(lines).strip()[:2048]
+
+    # CREATE / REFINE full output
+    lines = [f"Plan: {result.title}"]
+    lines.append("")
+    lines.append("Steps:")
+    for s in result.steps:
+        lines.append(f"{s.index}. {s.title}")
+        if s.detail:
+            lines.append(f"   {s.detail}")
+    if analysis and analysis.priority_order:
+        lines.append("")
+        lines.append("Priority:")
+        lines.append(" → ".join(str(i) for i in analysis.priority_order))
+    if analysis and analysis.dependencies:
+        lines.append("")
+        lines.append("Dependencies:")
+        for d in analysis.dependencies:
+            lines.append(
+                f"- {d.to_index} depends on {d.from_index} — {d.reason}"
+            )
+    blockers = result.blockers or ()
+    lines.append("")
+    lines.append("Blockers:")
+    if blockers:
+        for b in blockers:
+            lines.append(f"- {b}")
+    else:
+        lines.append("- None")
+    if analysis and analysis.next_step_index:
+        lines.append("")
+        lines.append(
+            f"Next step: {analysis.next_step_index}. {analysis.next_step_title}"
+            + (f" — {analysis.next_rationale}" if analysis.next_rationale else "")
+        )
+    if result.reasons:
+        lines.append("")
+        lines.append("Why:")
+        for r in result.reasons:
+            lines.append(f"- {r}")
+    lines.append("")
+    lines.append(f"Confidence: {_CONF_LABEL.get(result.confidence, 'Low')}")
+    if result.assumptions:
+        lines.append("")
+        lines.append("Assumptions:")
+        for a in result.assumptions:
+            lines.append(f"- {a}")
+    return "\n".join(lines).strip()[:2048]
 
 
 def _norm_line(text: str) -> str:
@@ -109,9 +209,24 @@ def _extract_confidence_line(text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _extract_priority_line(text: str) -> str:
+    m = re.search(r"(?ims)^priority:\s*\n?\s*([0-9\s→\->,]+)", str(text or ""))
+    if not m:
+        return ""
+    return re.sub(r"[^\d]+", " ", m.group(1)).strip()
+
+
+def _extract_next_step_line(text: str) -> str:
+    m = re.search(r"(?im)^next step:\s*(.+)$", str(text or ""))
+    return m.group(1).strip() if m else ""
+
+
 def _parse_steps(text: str) -> List[Tuple[str, str]]:
-    """Return list of (title, detail) from numbered steps section."""
-    m = re.search(r"(?ims)^steps:\s*\n(.*?)(?=^[ \t]*(?:why|watch|confidence|assumptions)\s*:|\Z)", text)
+    m = re.search(
+        r"(?ims)^steps:\s*\n(.*?)(?=^[ \t]*(?:why|watch|priority|dependencies|"
+        r"blockers|next step|confidence|assumptions)\s*:|\Z)",
+        text,
+    )
     if not m:
         return []
     body = m.group(1)
@@ -138,7 +253,8 @@ def _parse_steps(text: str) -> List[Tuple[str, str]]:
 
 def _bullets_section(text: str, header: str) -> Optional[List[str]]:
     pat = re.compile(
-        rf"(?ims)^[ \t]*{re.escape(header)}\s*:?\s*\n(.*?)(?=^[ \t]*(?:plan|steps|why|watch|confidence|assumptions)\s*:|\Z)"
+        rf"(?ims)^[ \t]*{re.escape(header)}\s*:?\s*\n(.*?)(?=^[ \t]*(?:plan|steps|why|watch|"
+        rf"priority|dependencies|blockers|next step|confidence|assumptions)\s*:|\Z)"
     )
     m = pat.search(text)
     if not m:
@@ -169,10 +285,82 @@ def _steps_match(model_steps: Sequence[Tuple[str, str]], auth: Sequence[PlanStep
     return True
 
 
-def pin_ollama_formatting(deterministic: PlanResult, model_text: str) -> str:
-    template = format_plan_template(deterministic)
+def _priority_match(text: str, analysis: PlanAnalysis) -> bool:
+    if not analysis.priority_order:
+        return True
+    got = _extract_priority_line(text)
+    if not got:
+        return False
+    nums = [int(x) for x in got.split() if x.isdigit()]
+    return tuple(nums) == tuple(analysis.priority_order)
+
+
+def _deps_match(text: str, analysis: PlanAnalysis) -> bool:
+    auth = analysis.dependencies or ()
+    if not auth:
+        # Model must not invent a Dependencies section with edges
+        sec = _bullets_section(text, "dependencies")
+        if sec is None:
+            return True
+        meaningful = [s for s in sec if not re.search(r"(?i)^none", s)]
+        return len(meaningful) == 0
+    model_lines = _bullets_section(text, "dependencies")
+    if model_lines is None:
+        return False
+    auth_set = {(d.from_index, d.to_index) for d in auth}
+    model_set = set()
+    for line in model_lines:
+        m = re.search(r"(\d+)\s+depends on\s+(\d+)", line, re.I)
+        if m:
+            model_set.add((int(m.group(2)), int(m.group(1))))  # from, to
+    return model_set == auth_set
+
+
+def _next_match(text: str, analysis: PlanAnalysis) -> bool:
+    if not analysis.next_step_index:
+        return True
+    line = _extract_next_step_line(text)
+    if not line:
+        return False
+    m = re.match(r"(\d+)\.\s*(.+?)(?:\s*—|\s+-|\Z)", line)
+    if not m:
+        return False
+    if int(m.group(1)) != analysis.next_step_index:
+        return False
+    title = m.group(2).strip()
+    # Title may include rationale after em-dash already stripped
+    return _norm_line(title).startswith(_norm_line(analysis.next_step_title)[:40]) or _norm_line(
+        analysis.next_step_title
+    ) in _norm_line(title)
+
+
+def pin_ollama_formatting(
+    deterministic: PlanResult,
+    model_text: str,
+    analysis: Optional[PlanAnalysis] = None,
+) -> str:
+    template = (
+        format_plan_with_analysis(deterministic, analysis)
+        if analysis is not None
+        else format_plan_template(deterministic)
+    )
     if deterministic.status is not PlanStatus.OK or not deterministic.steps:
         return template
+    # Mode-specific templates without Plan: header
+    if analysis and analysis.mode in (PlanMode.NEXT, PlanMode.VALIDATE, PlanMode.DEPEND):
+        raw = str(model_text or "").strip()
+        if not raw or _AUTH_LEAK.search(raw) or _ACTION_UNSAFE.search(raw):
+            return template
+        if analysis.mode is PlanMode.NEXT and not _next_match(raw, analysis):
+            return template
+        if analysis.mode is PlanMode.DEPEND and not _deps_match(raw, analysis):
+            return template
+        conf = _extract_confidence_line(raw)
+        auth_conf = _CONF_LABEL.get(deterministic.confidence, "Low")
+        if conf and conf.strip().lower() != auth_conf.lower():
+            return template
+        return raw[:2048]
+
     raw = str(model_text or "").strip()
     if not raw or _AUTH_LEAK.search(raw) or _ACTION_UNSAFE.search(raw):
         return template
@@ -207,22 +395,36 @@ def pin_ollama_formatting(deterministic: PlanResult, model_text: str) -> str:
             return template
     elif model_ass and len(model_ass) > 0:
         return template
+    # Blockers section (V8.24) or Watch-outs (V8.23)
     auth_blk = tuple(deterministic.blockers or ())
-    model_blk = _bullets_section(cleaned, "watch-outs")
+    model_blk = _bullets_section(cleaned, "blockers")
+    if model_blk is None:
+        model_blk = _bullets_section(cleaned, "watch-outs")
     if auth_blk:
-        if model_blk is None or not _assumption_sets_match(model_blk, auth_blk):
+        # Allow "- None" absence vs list — require same normalized set excluding None
+        auth_set = {_norm_line(b) for b in auth_blk if _norm_line(b)}
+        if model_blk is None:
             return template
-    elif model_blk and len(model_blk) > 0:
-        return template
+        model_set = {_norm_line(b) for b in model_blk if _norm_line(b) and _norm_line(b) != "none"}
+        if model_set != auth_set:
+            return template
+    if analysis is not None:
+        if not _priority_match(cleaned, analysis):
+            return template
+        if not _deps_match(cleaned, analysis):
+            return template
+        if not _next_match(cleaned, analysis):
+            return template
     return cleaned[:2048]
 
 
 def maybe_polish_with_ollama(
     result: PlanResult,
     *,
+    analysis: Optional[PlanAnalysis] = None,
     provider: Any = None,
 ) -> Tuple[str, int]:
-    template = format_plan_template(result)
+    template = format_plan_with_analysis(result, analysis) if analysis is not None else format_plan_template(result)
     if result.status is not PlanStatus.OK or not result.steps:
         return template, 0
     if result.confidence in (PlanConfidence.HIGH, PlanConfidence.MEDIUM):
@@ -246,7 +448,8 @@ def maybe_polish_with_ollama(
             return template, 0
         prompt = (
             "Rephrase the following plan more naturally. "
-            "Do not change the plan title, steps, order, confidence, watch-outs, or assumptions. "
+            "Do not change the plan title, steps, order, confidence, blockers, "
+            "priority, dependencies, next step, or assumptions. "
             "Keep the same section headers.\n\n"
             f"{template}"
         )
@@ -260,7 +463,7 @@ def maybe_polish_with_ollama(
                 tools=None,
                 temperature=0.2,
                 timeout=50,
-                num_predict=220,
+                num_predict=280,
                 capability="v8_plan",
             )
         except (ProviderTimeoutError, ProviderUnavailableError, CostGuardBlockedError):
@@ -269,6 +472,6 @@ def maybe_polish_with_ollama(
             return template, 1
         if not isinstance(out, LLMResponse):
             return template, 1
-        return pin_ollama_formatting(result, str(out.text or "")), 1
+        return pin_ollama_formatting(result, str(out.text or ""), analysis=analysis), 1
     except Exception:
         return template, 0

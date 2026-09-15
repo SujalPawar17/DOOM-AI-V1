@@ -1,10 +1,11 @@
-"""V8.23 plan relevance. Narrow — requires planning frame and topic when needed."""
+"""V8.23/V8.24 plan relevance. Narrow — requires planning frame and topic when needed."""
 
 from __future__ import annotations
 
 import re
 
 from orchestration.decision.relevance import decision_relevant
+from orchestration.plan.modes import detect_plan_mode, needs_prior_plan, plan_mode_continuation
 
 _PLAN_CONTINUATION = re.compile(
     r"(?i)^(next steps|what next|how do i proceed|"
@@ -45,8 +46,11 @@ _TOPIC_IMPROVING = re.compile(
 
 
 def plan_continuation(query: str) -> bool:
+    """V8.23 + V8.24 continuations that need a V8.21 anchor."""
     q = " ".join(str(query or "").strip().split())
-    return bool(_PLAN_CONTINUATION.match(q))
+    if _PLAN_CONTINUATION.match(q):
+        return True
+    return plan_mode_continuation(q)
 
 
 def _topic_from_query(q: str) -> str:
@@ -71,6 +75,9 @@ def plan_relevant(query: str) -> bool:
         return False
     if _BROAD_NOT_PLAN.match(q):
         return False
+    # V8.24 refine/next/validate/depend — route to PLAN (clarify if no prior).
+    if needs_prior_plan(q) and detect_plan_mode(q).value != "CREATE":
+        return True
     if _MAKE_PLAN_ONLY.match(q):
         return True
     if plan_continuation(q):
