@@ -598,6 +598,11 @@ def _default_system_read(step: PlanStep, plan: GoalPlan) -> str:
 
 
 def _default_conversation(step: PlanStep, plan: GoalPlan) -> str:
+    if step.action == "DECIDE":
+        from orchestration.decision.execute import execute_decide
+        status, text = execute_decide(step, plan)
+        _TLS.response_text = str(text or "")
+        return status
     from orchestration.conversation.respond import execute_respond
     status, text = execute_respond(step, plan)
     _TLS.response_text = str(text or "")

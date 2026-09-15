@@ -126,6 +126,16 @@ def _conversation_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
     )]
 
 
+def _decision_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
+    text = str(goal.raw_intent or "")[:CONVERSATION_MAX_TEXT]
+    return [_base_step(
+        "conversation",
+        "DECIDE",
+        {"text": text},
+        timeout_ms=CONVERSATION_TIMEOUT_MS,
+    )]
+
+
 def _memory_steps(goal: GoalSpec) -> List[Dict[str, Any]]:
     # V8.17: recall through RESPOND + Safe Context (not empty RETRIEVE).
     text = str(goal.raw_intent or "")[:CONVERSATION_MAX_TEXT]
@@ -440,6 +450,8 @@ def plan_goal(goal: Any, planner_context: Any = None) -> PlanProposal:
     extra_fail: Optional[PlanProposal] = None
     if goal.normalized_intent is IntentClass.CONVERSATION:
         drafts = _conversation_steps(goal)
+    elif goal.normalized_intent is IntentClass.DECISION:
+        drafts = _decision_steps(goal)
     elif goal.normalized_intent is IntentClass.MEMORY_READ:
         drafts = _memory_steps(goal)
     elif goal.normalized_intent is IntentClass.MEMORY_SAVE:

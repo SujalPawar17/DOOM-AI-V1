@@ -244,6 +244,13 @@ def normalize_intent(raw_intent: str) -> IntentClass:
         return next(iter(hits))
     if len(hits) > 1:
         return IntentClass.AMBIGUOUS
+    # V8.22: narrow decision / trade-off questions (before broad conversation).
+    try:
+        from orchestration.decision.relevance import decision_relevant
+        if decision_relevant(text):
+            return IntentClass.DECISION
+    except Exception:
+        pass
     if _CONVERSATION_TOPIC.search(text):
         return IntentClass.CONVERSATION
     if _GREETING_PREFIX.search(text):

@@ -58,7 +58,7 @@ ALLOWED_ACTIONS: Dict[str, FrozenSet[str]] = {
     CAP_MEMORY_READ: frozenset({"RETRIEVE"}),
     CAP_MEMORY_WRITE: frozenset({"SAVE"}),
     CAP_SYSTEM_READ: frozenset({"REPORT"}),
-    CAP_CONVERSATION: frozenset({"RESPOND"}),
+    CAP_CONVERSATION: frozenset({"RESPOND", "DECIDE"}),
 }
 
 COMPUTER_PARAMS: Dict[str, FrozenSet[str]] = {
