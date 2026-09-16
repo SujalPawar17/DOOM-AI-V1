@@ -173,11 +173,23 @@ def _finish_respond(plan: GoalPlan, user_text: str, body: str) -> Tuple[str, str
 
 
 def _try_direct_memory_answer(plan: GoalPlan, user_text: str) -> Optional[str]:
+    owner = str(plan.owner_id or "")
+    # V8.27 Phase 4: User Model first, then personal-memory fallback.
+    try:
+        from orchestration.user_model.config import is_v827_user_model_enabled
+        from orchestration.user_model.resolve import try_direct_profile_fact_answer
+
+        if is_v827_user_model_enabled():
+            profile_ans = try_direct_profile_fact_answer(owner, user_text)
+            if profile_ans:
+                return profile_ans
+    except Exception:
+        pass
     try:
         from orchestration.conversation.personal_memory import (
             try_direct_personal_fact_answer,
         )
-        return try_direct_personal_fact_answer(str(plan.owner_id or ""), user_text)
+        return try_direct_personal_fact_answer(owner, user_text)
     except Exception:
         return None
 
@@ -191,6 +203,21 @@ def execute_respond(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
         return ExecutionStatus.INPUT_TOO_LARGE.value, ""
     if not user_text.strip():
         return ExecutionStatus.LOCAL_MODEL_ERROR.value, ""
+
+    # V8.27 Phase 2: explicit User Model UX (confirm / forget / transparency).
+    try:
+        from orchestration.user_model.intent import handle_user_model_request
+
+        um = handle_user_model_request(
+            str(plan.owner_id or ""),
+            str(plan.session_id or ""),
+            user_text,
+        )
+        if um is not None:
+            text = str(um or "").strip()[:MAX_OUTPUT_CHARS]
+            return _finish_respond(plan, user_text, text)
+    except Exception:
+        pass
 
     owner = str(plan.owner_id or "")
     session = str(plan.session_id or "")

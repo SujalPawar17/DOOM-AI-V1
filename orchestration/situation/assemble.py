@@ -89,9 +89,28 @@ def derive_factors(obs: Any) -> DerivedFactors:
         return DerivedFactors()
 
 
+_SITUATION_PROFILE_MAX = 2
+
+
 def _memory_items(owner_id: str, query: str) -> Tuple[str, ...]:
     if not situation_wants_memory(query):
         return ()
+    profile_texts: List[str] = []
+    try:
+        from orchestration.user_model.config import is_v827_user_model_enabled
+        from orchestration.user_model.resolve import profile_strings_for_consumer
+
+        if is_v827_user_model_enabled():
+            # Situation: constraint + temporary_fact only, max 2.
+            profile_texts = list(
+                profile_strings_for_consumer(
+                    owner_id, "SITUATION", query=query, limit=_SITUATION_PROFILE_MAX
+                )
+            )
+    except Exception:
+        profile_texts = []
+
+    mem_texts: List[str] = []
     try:
         from orchestration.conversation.personal_memory import (
             list_personal_memories,
@@ -100,14 +119,32 @@ def _memory_items(owner_id: str, query: str) -> Tuple[str, ...]:
         hits = search_personal_memories(owner_id, query, limit=MAX_MEMORY_ITEMS)
         if not hits:
             hits = list_personal_memories(owner_id, limit=MAX_MEMORY_ITEMS)
+        for hit in hits:
+            text = sanitize_context_text(
+                getattr(hit, "content", "") or "", limit=MAX_ITEM_CHARS
+            )
+            if text:
+                mem_texts.append(text)
     except Exception:
-        return ()
+        mem_texts = []
+
+    try:
+        if profile_texts:
+            from orchestration.user_model.resolve import merge_profile_then_memory
+
+            # Cap total situation memory at existing MAX_MEMORY_ITEMS, but
+            # profile contribution itself is already ≤2.
+            merged = merge_profile_then_memory(
+                profile_texts, mem_texts, limit=MAX_MEMORY_ITEMS
+            )
+        else:
+            merged = mem_texts[:MAX_MEMORY_ITEMS]
+    except Exception:
+        merged = mem_texts[:MAX_MEMORY_ITEMS]
+
     out: List[str] = []
     total = 0
-    for hit in hits:
-        text = sanitize_context_text(getattr(hit, "content", "") or "", limit=MAX_ITEM_CHARS)
-        if not text:
-            continue
+    for text in merged:
         if total + len(text) > MAX_MEMORY_SECTION_CHARS:
             break
         out.append(text)

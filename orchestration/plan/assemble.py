@@ -116,6 +116,21 @@ def _memory_preferences(owner_id: str, query: str) -> Tuple[List[str], bool]:
     if not owner_id:
         return prefs, False
     try:
+        profile_texts: List[str] = []
+        try:
+            from orchestration.user_model.config import is_v827_user_model_enabled
+            from orchestration.user_model.resolve import profile_strings_for_consumer
+
+            if is_v827_user_model_enabled():
+                profile_texts = list(
+                    profile_strings_for_consumer(
+                        owner_id, "PLAN", query=query, limit=MAX_PREFERENCES
+                    )
+                )
+        except Exception:
+            profile_texts = []
+
+        mem_texts: List[str] = []
         from orchestration.conversation.personal_memory import (
             list_personal_memories,
             search_personal_memories,
@@ -129,9 +144,16 @@ def _memory_preferences(owner_id: str, query: str) -> Tuple[List[str], bool]:
                 getattr(hit, "content", "") or "", limit=MAX_PREFERENCE_CHARS
             )
             if text:
-                prefs.append(text[:MAX_PREFERENCE_CHARS])
-            if len(prefs) >= MAX_PREFERENCES:
-                break
+                mem_texts.append(text[:MAX_PREFERENCE_CHARS])
+
+        if profile_texts:
+            from orchestration.user_model.resolve import merge_profile_then_memory
+
+            prefs = merge_profile_then_memory(
+                profile_texts, mem_texts, limit=MAX_PREFERENCES
+            )
+        else:
+            prefs = mem_texts[:MAX_PREFERENCES]
         return prefs, bool(prefs)
     except Exception:
         return [], False

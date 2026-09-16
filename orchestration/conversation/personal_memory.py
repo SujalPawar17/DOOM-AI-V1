@@ -219,6 +219,28 @@ def _confirmation_message(content: str) -> str:
     return f"Understood. I'll remember that {phrase}."
 
 
+def lookup_personal_memory_id(owner_id: str, fact_key: str) -> str:
+    """Return memory_id for owner+fact_key, or empty string. Read-only."""
+    owner = str(owner_id or "").strip()[:64]
+    key = str(fact_key or "").strip()[:MAX_FACT_KEY_CHARS]
+    if not owner or not key:
+        return ""
+    if _USE_TEST_STORE:
+        with _LOCK:
+            for row in _TEST_ROWS.get(owner, []):
+                if str(row.get("fact_key") or "") == key:
+                    return str(row.get("memory_id") or "")
+        return ""
+    try:
+        rows = _load_owner_rows(owner)
+        for row in rows:
+            if str(row.get("fact_key") or "") == key:
+                return str(row.get("memory_id") or "")
+    except Exception:
+        return ""
+    return ""
+
+
 def save_personal_memory(owner_id: str, raw_intent: str) -> Tuple[bool, str, str]:
     """Return (ok, code, safe_message). Never returns secrets."""
     owner = str(owner_id or "").strip()[:64]

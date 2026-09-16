@@ -288,6 +288,22 @@ def get_conversation_turns(
 def _load_personal_section(owner_id: str, query: str) -> str:
     if not memory_relevant(query):
         return ""
+    profile_texts: List[str] = []
+    try:
+        from orchestration.user_model.config import is_v827_user_model_enabled
+        from orchestration.user_model.resolve import profile_strings_for_consumer
+
+        if is_v827_user_model_enabled():
+            # Conversation bias: communication + preference, max 4.
+            profile_texts = list(
+                profile_strings_for_consumer(
+                    owner_id, "CONVERSATION", query=query, limit=MAX_MEMORY_ITEMS
+                )
+            )
+    except Exception:
+        profile_texts = []
+
+    mem_texts: List[str] = []
     try:
         from orchestration.conversation.personal_memory import (
             list_personal_memories,
@@ -297,11 +313,29 @@ def _load_personal_section(owner_id: str, query: str) -> str:
         if not hits:
             # Preference/advice phrasing may not lexically overlap stored facts.
             hits = list_personal_memories(owner_id, limit=MAX_MEMORY_ITEMS)
+        for hit in hits:
+            text = sanitize_context_text(
+                getattr(hit, "content", "") or "", limit=MAX_ITEM_CHARS
+            )
+            if text:
+                mem_texts.append(text)
     except Exception:
-        return ""
+        mem_texts = []
+
+    try:
+        if profile_texts:
+            from orchestration.user_model.resolve import merge_profile_then_memory
+
+            merged = merge_profile_then_memory(
+                profile_texts, mem_texts, limit=MAX_MEMORY_ITEMS
+            )
+        else:
+            merged = mem_texts[:MAX_MEMORY_ITEMS]
+    except Exception:
+        merged = mem_texts[:MAX_MEMORY_ITEMS]
+
     lines: List[str] = []
-    for i, hit in enumerate(hits, start=1):
-        text = sanitize_context_text(getattr(hit, "content", "") or "", limit=MAX_ITEM_CHARS)
+    for i, text in enumerate(merged, start=1):
         if not text:
             continue
         lines.append(f"{i}. {text}")

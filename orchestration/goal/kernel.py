@@ -52,6 +52,17 @@ def process_goal(raw_intent: str, context=None) -> GoalClassificationResult:
             intent = IntentClass.PLAN
     except Exception:
         pass
+    try:
+        from orchestration.user_model.intent import should_route_user_model
+
+        # Profile UX only uplifts UNKNOWN/CONVERSATION — never steals MEMORY_SAVE,
+        # DECISION, PLAN, COMPUTER, etc.
+        if intent in (IntentClass.UNKNOWN, IntentClass.CONVERSATION) and (
+            should_route_user_model(text, owner, session)
+        ):
+            intent = IntentClass.MEMORY_READ
+    except Exception:
+        pass
     cap = INTENT_TO_CAPABILITY[intent]
     gid = str(uuid.uuid4())
     ts = int(time.time() * 1000)

@@ -571,9 +571,17 @@ def _default_memory_write(step: PlanStep, plan: GoalPlan) -> str:
         return ExecutionStatus.ACTION_UNAVAILABLE.value
     params = dict(step.parameters)
     text = str(params.get("text") or "")
-    ok, code, message = save_personal_memory(str(plan.owner_id or ""), text)
+    owner = str(plan.owner_id or "")
+    ok, code, message = save_personal_memory(owner, text)
     _TLS.response_text = str(message or "")[:2048]
     if ok:
+        # V8.27 Phase 3: best-effort User Model projection (never fails MEMORY_SAVE).
+        try:
+            from orchestration.user_model.projection import project_after_memory_save
+
+            project_after_memory_save(owner, text)
+        except Exception:
+            pass
         return ExecutionStatus.SUCCESS.value
     if code == "SENSITIVE_REJECTED":
         return ExecutionStatus.SUCCESS.value
