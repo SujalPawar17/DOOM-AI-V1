@@ -1081,6 +1081,55 @@ def recover_goal(owner_id: str) -> RegistryResult:
     return get_active_goal(owner_id)
 
 
+# V8.26 Phase 3 — 14-day inactivity before ACTIVE recovery is refused.
+REGISTRY_INACTIVITY_SEC = 14 * 24 * 3600
+
+
+def recover_active_goal_for_owner(owner_id: str) -> RegistryResult:
+    """Phase 3: recover a usable ACTIVE goal for trusted owner, or fail closed.
+
+    Applies 14-day inactivity: marks STALE and refuses silent resume.
+    Never raises. Does not invent goals.
+    """
+    if not _enabled():
+        return RegistryResult(RegistryStatus.UNAVAILABLE)
+    owner = _normalize_owner(owner_id)
+    if not owner:
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    try:
+        res = get_active_goal(owner)
+    except Exception:
+        return RegistryResult(RegistryStatus.UNAVAILABLE)
+
+    if res.status is not RegistryStatus.OK or res.snapshot is None:
+        return res
+
+    snap = res.snapshot
+    status = validate_snapshot(snap, expected_owner=owner)
+    if status is not RegistryStatus.OK:
+        return RegistryResult(status)
+
+    if snap.lifecycle is not GoalLifecycle.ACTIVE:
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    now = time.time()
+    last = float(snap.last_active_at or 0.0)
+    if last > 0.0 and (now - last) > float(REGISTRY_INACTIVITY_SEC):
+        try:
+            mark_stale(
+                owner,
+                snap.goal_id,
+                "inactivity_14d",
+                int(snap.version),
+            )
+        except Exception:
+            pass
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    return RegistryResult(RegistryStatus.OK, snap)
+
+
 # ---------------------------------------------------------------------------
 # V8.26 Phase 2 — dual-write synchronization (persistence only)
 # ---------------------------------------------------------------------------

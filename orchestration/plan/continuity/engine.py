@@ -7,7 +7,7 @@ and Phase 2 durable/parser contracts. Zero execution authority.
 from __future__ import annotations
 
 import re
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 from orchestration.plan.continuity.detect import detect_progress_event
 from orchestration.plan.continuity.state import apply_progress_event, recompute_active_step
@@ -36,6 +36,15 @@ _GENERIC_NEXT = re.compile(
 _EXPLICIT_CREATE = re.compile(
     r"(?i)^(make me a plan|make a plan|create a plan|plan how to|plan for)\b"
 )
+_EXPLICIT_RESUME = re.compile(
+    r"(?i)^(?:"
+    r"(?:please\s+)?resume(?:\s+(?:my|the|that)\s+plan)?|"
+    r"continue(?:\s+(?:my|the|that)\s+plan)?|"
+    r"where was i|"
+    r"what(?:'s| is) left|"
+    r"what remains"
+    r")[\s?.!]*$"
+)
 
 
 def is_natural_continuation(query: str) -> bool:
@@ -44,6 +53,16 @@ def is_natural_continuation(query: str) -> bool:
     if not q:
         return False
     return bool(_NATURAL_CONTINUATION.match(q))
+
+
+def is_explicit_resume(query: str) -> bool:
+    """True for clear cross-session resume / where-was-I phrasing."""
+    q = " ".join(str(query or "").strip().split())
+    if not q:
+        return False
+    if is_natural_continuation(q):
+        return True
+    return bool(_EXPLICIT_RESUME.match(q))
 
 
 def needs_continuity_anchor(query: str) -> bool:
@@ -55,7 +74,7 @@ def needs_continuity_anchor(query: str) -> bool:
         return True
     if _GENERIC_NEXT.match(q):
         return True
-    if is_natural_continuation(q):
+    if is_natural_continuation(q) or is_explicit_resume(q):
         return True
     event = detect_progress_event(q)
     return event.kind is not ProgressEventKind.NOOP
@@ -82,15 +101,42 @@ def has_continuity_anchor(owner_id: str, session_id: str) -> bool:
         return False
 
 
+def has_registry_goal_anchor(owner_id: str) -> bool:
+    """True when an ACTIVE registry goal is recoverable for the trusted owner."""
+    owner = str(owner_id or "").strip()
+    if not owner:
+        return False
+    try:
+        from orchestration.plan.goal_registry import (
+            RegistryStatus,
+            is_goal_registry_sync_enabled,
+            recover_active_goal_for_owner,
+        )
+
+        if not is_goal_registry_sync_enabled():
+            return False
+        res = recover_active_goal_for_owner(owner)
+        return res.status is RegistryStatus.OK and res.snapshot is not None
+    except Exception:
+        return False
+
+
+def has_continuity_context(owner_id: str, session_id: str) -> bool:
+    """Conversation anchor first; ACTIVE registry is fallback only."""
+    if has_continuity_anchor(owner_id, session_id):
+        return True
+    return has_registry_goal_anchor(owner_id)
+
+
 def should_route_to_plan_with_anchor(
     query: str,
     owner_id: str,
     session_id: str,
 ) -> bool:
-    """Route progress utterances to PLAN only when an active plan anchor exists."""
+    """Route progress utterances to PLAN only when a continuity source exists."""
     if not needs_continuity_anchor(query):
         return False
-    return has_continuity_anchor(owner_id, session_id)
+    return has_continuity_context(owner_id, session_id)
 
 
 def should_route_natural_continuation_to_plan(
@@ -98,10 +144,10 @@ def should_route_natural_continuation_to_plan(
     owner_id: str,
     session_id: str,
 ) -> bool:
-    """Route natural continuation phrases to PLAN only when an anchor exists."""
-    if not is_natural_continuation(query):
+    """Route natural continuation / explicit resume to PLAN when a source exists."""
+    if not (is_natural_continuation(query) or is_explicit_resume(query)):
         return False
-    return has_continuity_anchor(owner_id, session_id)
+    return has_continuity_context(owner_id, session_id)
 
 
 def normalize_plan_mode_for_continuity(
@@ -116,7 +162,7 @@ def normalize_plan_mode_for_continuity(
     q = " ".join(str(query or "").strip().split())
     if mode is not PlanMode.CREATE:
         return mode
-    if is_natural_continuation(q) or _GENERIC_NEXT.match(q):
+    if is_natural_continuation(q) or is_explicit_resume(q) or _GENERIC_NEXT.match(q):
         return PlanMode.NEXT
     return mode
 
@@ -185,6 +231,111 @@ def build_continuity_state(
         step_records=provisional.step_records,
         active_step_index=active,
     )
+
+
+def plan_result_from_registry_snapshot(snapshot: Any) -> Optional[PlanResult]:
+    """Build a bounded PlanResult from a validated registry snapshot (no history)."""
+    if snapshot is None:
+        return None
+    try:
+        from orchestration.plan.types import (
+            PlanConfidence,
+            PlanStatus,
+            PlanStepItem,
+            PlanStepKind,
+        )
+
+        titles = tuple(str(t or "")[:80] for t in (getattr(snapshot, "step_titles", ()) or ()))
+        if not titles:
+            return None
+        steps = tuple(
+            PlanStepItem(i, title, "", PlanStepKind.PREPARE)
+            for i, title in enumerate(titles, start=1)
+        )
+        plan_title = str(
+            getattr(snapshot, "plan_title", "") or getattr(snapshot, "title", "") or "Plan"
+        )[:80]
+        blocker = str(getattr(snapshot, "blocker_summary", "") or "").strip()[:120]
+        return PlanResult(
+            status=PlanStatus.OK,
+            title=plan_title,
+            steps=steps,
+            confidence=PlanConfidence.MEDIUM,
+            blockers=(blocker,) if blocker else (),
+        )
+    except Exception:
+        return None
+
+
+def rehydrate_continuity_from_registry_snapshot(
+    snapshot: Any,
+    *,
+    dependencies: Sequence = (),
+) -> Optional[PlanContinuityState]:
+    """Rehydrate PlanContinuityState from registry snapshot without mutating it.
+
+    Registry remains cross-session persistence; returned state is runtime FSM input.
+    """
+    if snapshot is None:
+        return None
+    try:
+        result = plan_result_from_registry_snapshot(snapshot)
+        if result is None:
+            return None
+        raw_states = tuple(getattr(snapshot, "step_states", ()) or ())
+        states: list[StepState] = []
+        for i, _step in enumerate(result.steps):
+            if i < len(raw_states):
+                val = getattr(raw_states[i], "value", raw_states[i])
+                states.append(StepState(str(val)))
+            else:
+                states.append(StepState.PENDING)
+
+        records: list[StepStateRecord] = []
+        blocker = str(getattr(snapshot, "blocker_summary", "") or "").strip()[:80]
+        for i, step in enumerate(result.steps, start=1):
+            st = states[i - 1]
+            detail = blocker if st is StepState.BLOCKED and blocker else (step.title or "")[:80]
+            records.append(StepStateRecord(index=i, state=st, detail=detail))
+
+        goal_title = str(
+            getattr(snapshot, "title", "") or getattr(snapshot, "plan_title", "") or result.title
+        )[:80]
+        provisional = PlanContinuityState(
+            goal_title=goal_title,
+            goal_state=GoalState.ACTIVE,
+            step_records=tuple(records),
+            active_step_index=int(getattr(snapshot, "active_step_index", 1) or 1),
+        )
+        recomputed = recompute_active_step(provisional, dependencies=dependencies)
+        preferred = int(getattr(snapshot, "active_step_index", 0) or 0)
+        active = recomputed
+        if 1 <= preferred <= len(records):
+            pref_state = records[preferred - 1].state
+            if pref_state not in (
+                StepState.COMPLETED,
+                StepState.SKIPPED,
+                StepState.BLOCKED,
+            ):
+                active = preferred
+
+        goal_state = GoalState.ACTIVE
+        if active == 0 and records:
+            if all(r.state in (StepState.COMPLETED, StepState.SKIPPED) for r in records):
+                goal_state = GoalState.COMPLETED
+            elif any(r.state is StepState.BLOCKED for r in records):
+                goal_state = GoalState.BLOCKED
+
+        stale_reason = str(getattr(snapshot, "staleness_reason", "") or "").strip()[:120]
+        return PlanContinuityState(
+            goal_title=goal_title,
+            goal_state=goal_state,
+            step_records=tuple(records),
+            active_step_index=active,
+            staleness_reason=stale_reason,
+        )
+    except Exception:
+        return None
 
 
 def recover_continuity_from_parse(

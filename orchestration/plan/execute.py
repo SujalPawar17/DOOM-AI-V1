@@ -25,9 +25,11 @@ from orchestration.plan.continuity.engine import (
     is_stale_or_replan,
     needs_continuity_anchor,
     normalize_plan_mode_for_continuity,
+    plan_result_from_registry_snapshot,
     process_progress_update,
     rebuild_continuity_preserving_states,
     recover_continuity_from_parse,
+    rehydrate_continuity_from_registry_snapshot,
     should_handle_as_progress,
     step_states_from_continuity,
 )
@@ -67,12 +69,41 @@ def _test_provider() -> Any:
         return _TEST_PROVIDER
 
 
-def _resolve_context(plan: GoalPlan, user_text: str) -> Tuple[str, str, str, str]:
+def _try_registry_recovery_snapshot(owner_id: str) -> Any:
+    """Phase 3: recover ACTIVE registry snapshot for trusted owner, or None."""
+    owner = str(owner_id or "").strip()
+    if not owner:
+        return None
+    try:
+        from orchestration.plan.goal_registry import (
+            RegistryStatus,
+            is_goal_registry_sync_enabled,
+            recover_active_goal_for_owner,
+        )
+
+        if not is_goal_registry_sync_enabled():
+            return None
+        res = recover_active_goal_for_owner(owner)
+        if res.status is RegistryStatus.OK and res.snapshot is not None:
+            return res.snapshot
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_context(
+    plan: GoalPlan, user_text: str
+) -> Tuple[str, str, str, str, Any]:
+    """Resolve continuity context: conversation anchor first, registry second.
+
+    Returns (effective, anchor_asst, anchor_user, clarify, registry_snapshot).
+    """
     owner = str(plan.owner_id or "")
     session = str(plan.session_id or "")
     effective = user_text
     anchor_asst = ""
     anchor_user = ""
+    registry_snap: Any = None
     try:
         from orchestration.conversation.thread import (
             current_anchor_turn,
@@ -82,14 +113,41 @@ def _resolve_context(plan: GoalPlan, user_text: str) -> Tuple[str, str, str, str
         continuation = needs_continuity_anchor(user_text)
         if continuation:
             thread = get_conversation_thread(owner, session, for_continuation=True)
-            if not thread:
-                return "", "", "", CLARIFY_NEED_PRIOR
-            anchor = current_anchor_turn(thread)
-            if not anchor:
-                return "", "", "", CLARIFY_NEED_PRIOR
-            anchor_asst = anchor.assistant_text or ""
-            anchor_user = anchor.user_text or ""
-            effective = user_text
+            if thread:
+                anchor = current_anchor_turn(thread)
+                if anchor and str(anchor.assistant_text or "").strip():
+                    return (
+                        user_text,
+                        anchor.assistant_text or "",
+                        anchor.user_text or "",
+                        "",
+                        None,
+                    )
+            # No usable conversation anchor — try ACTIVE registry recovery.
+            registry_snap = _try_registry_recovery_snapshot(owner)
+            if registry_snap is not None:
+                durable = str(getattr(registry_snap, "durable_view", "") or "")
+                if not durable.strip():
+                    prior = plan_result_from_registry_snapshot(registry_snap)
+                    cont = rehydrate_continuity_from_registry_snapshot(registry_snap)
+                    if prior is not None:
+                        try:
+                            from orchestration.conversation.context import MAX_CONV_MSG_CHARS
+                            from orchestration.plan.durable import serialize_plan_durable
+
+                            durable = (
+                                serialize_plan_durable(
+                                    prior,
+                                    limit=MAX_CONV_MSG_CHARS,
+                                    step_states=step_states_from_continuity(cont),
+                                    continuity_state=cont,
+                                )
+                                or ""
+                            )
+                        except Exception:
+                            durable = ""
+                return user_text, durable, "", "", registry_snap
+            return "", "", "", CLARIFY_NEED_PRIOR, None
         else:
             from orchestration.conversation.resolve import is_new_standalone_topic
             from orchestration.conversation.context import clear_conversation_thread
@@ -98,7 +156,7 @@ def _resolve_context(plan: GoalPlan, user_text: str) -> Tuple[str, str, str, str
                 clear_conversation_thread(owner, session)
     except Exception:
         pass
-    return effective, anchor_asst, anchor_user, ""
+    return effective, anchor_asst, anchor_user, "", registry_snap
 
 
 def _empty_analysis(mode: PlanMode, conf: PlanConfidence = PlanConfidence.LOW) -> PlanAnalysis:
@@ -117,11 +175,13 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
         return ExecutionStatus.LOCAL_MODEL_ERROR.value, ""
 
     mode = detect_plan_mode(user_text)
-    effective, anchor_asst, anchor_user, clarify = _resolve_context(plan, user_text)
+    effective, anchor_asst, anchor_user, clarify, registry_snap = _resolve_context(
+        plan, user_text
+    )
     continuity: Optional[PlanContinuityState] = None
     deps_for_continuity: Tuple[Any, ...] = ()
 
-    # Continuations without a valid TTL anchor — fail closed with mode-aware clarify.
+    # Continuations without a valid TTL/registry source — fail closed with mode-aware clarify.
     if clarify:
         if mode in (PlanMode.REFINE, PlanMode.NEXT, PlanMode.VALIDATE, PlanMode.DEPEND):
             text = CLARIFY_NEED_PRIOR.strip()[:2048]
@@ -141,7 +201,28 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     prior: Optional[PlanResult] = None
     had_prior = False
     parsed = None
-    if mode in (PlanMode.REFINE, PlanMode.NEXT, PlanMode.VALIDATE, PlanMode.DEPEND) or (
+
+    # Phase 3: registry snapshot is authoritative when conversation anchor was absent.
+    if registry_snap is not None:
+        prior = plan_result_from_registry_snapshot(registry_snap)
+        if prior is not None:
+            had_prior = True
+            deps_for_continuity, _ = analyze_dependencies(prior)
+            continuity = rehydrate_continuity_from_registry_snapshot(
+                registry_snap,
+                dependencies=deps_for_continuity,
+            )
+            if continuity is None:
+                continuity = build_continuity_state(
+                    prior,
+                    dependencies=deps_for_continuity,
+                )
+            mode = normalize_plan_mode_for_continuity(
+                user_text,
+                mode,
+                had_prior=True,
+            )
+    elif mode in (PlanMode.REFINE, PlanMode.NEXT, PlanMode.VALIDATE, PlanMode.DEPEND) or (
         needs_continuity_anchor(user_text) and anchor_asst
     ):
         parsed = parse_plan_from_assistant_text(anchor_asst)
@@ -157,7 +238,11 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
             prior = parsed.result
             had_prior = True
 
-    if had_prior and prior is not None:
+    if (
+        registry_snap is None
+        and had_prior
+        and prior is not None
+    ):
         deps_for_continuity, _ = analyze_dependencies(prior)
         if parsed is not None and parsed.ok:
             continuity = recover_continuity_from_parse(
