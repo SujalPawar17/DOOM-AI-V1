@@ -6,6 +6,8 @@ import re
 from typing import Any, List, Optional, Sequence, Tuple
 
 from orchestration.plan.analysis import PlanAnalysis
+from orchestration.plan.continuity.engine import continuity_blockers
+from orchestration.plan.continuity.types import PlanContinuityState
 from orchestration.plan.modes import PlanMode
 from orchestration.plan.types import (
     PlanConfidence,
@@ -84,6 +86,8 @@ def format_plan_template(result: PlanResult) -> str:
 def format_plan_with_analysis(
     result: PlanResult,
     analysis: Optional[PlanAnalysis] = None,
+    *,
+    continuity_state: Optional[PlanContinuityState] = None,
 ) -> str:
     if result.status is PlanStatus.CLARIFY or (
         result.status is PlanStatus.LOW_CONFIDENCE and result.clarification and not result.steps
@@ -120,7 +124,11 @@ def format_plan_with_analysis(
             lines.append("Issues:")
             for iss in analysis.issues:
                 lines.append(f"- {iss.message}")
-        blockers = result.blockers or ()
+        blockers = list(result.blockers or ())
+        if continuity_state is not None:
+            for b in continuity_blockers(continuity_state):
+                if b not in blockers:
+                    blockers.append(b)
         lines.append("")
         lines.append("Blockers:")
         if blockers:
@@ -423,8 +431,15 @@ def maybe_polish_with_ollama(
     *,
     analysis: Optional[PlanAnalysis] = None,
     provider: Any = None,
+    continuity_state: Optional[PlanContinuityState] = None,
 ) -> Tuple[str, int]:
-    template = format_plan_with_analysis(result, analysis) if analysis is not None else format_plan_template(result)
+    template = (
+        format_plan_with_analysis(
+            result, analysis, continuity_state=continuity_state
+        )
+        if analysis is not None
+        else format_plan_template(result)
+    )
     if result.status is not PlanStatus.OK or not result.steps:
         return template, 0
     if result.confidence in (PlanConfidence.HIGH, PlanConfidence.MEDIUM):

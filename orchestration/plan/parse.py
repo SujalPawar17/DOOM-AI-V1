@@ -1,4 +1,4 @@
-"""V8.24 bounded prior-plan parser. Untrusted text only; never executes."""
+"""V8.24 / V8.25 bounded prior-plan parser. Untrusted text only; never executes."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from orchestration.conversation.context import sanitize_context_text
+from orchestration.plan.continuity.types import StepState
+from orchestration.plan.durable import extract_state_and_clean_title, truncate_at_word
 from orchestration.plan.types import (
     MAX_STEP_DETAIL_CHARS,
     MAX_STEP_TITLE_CHARS,
@@ -31,6 +33,7 @@ class ParseOutcome:
     result: Optional[PlanResult] = None
     clarify: str = ""
     ambiguous: bool = False
+    step_states: Tuple[StepState, ...] = ()
 
 
 _PLAN_HEADER = re.compile(r"(?i)\bplan:\s*")
@@ -67,15 +70,13 @@ def _extract_steps_region(raw: str) -> str:
     return m.group(1) if m else ""
 
 
-def _parse_numbered(body: str) -> List[Tuple[str, str]]:
+def _parse_numbered(body: str) -> List[Tuple[str, str, StepState]]:
     """Parse numbered steps. Titles only — never treat flattened detail as required."""
-    from orchestration.plan.durable import truncate_at_word
-
     body = " ".join(str(body or "").split())
     if not body:
         return []
     parts = re.split(r"(?=\b\d+[.)]\s+)", body)
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[str, str, StepState]] = []
     for part in parts:
         part = part.strip()
         if not part:
@@ -88,14 +89,23 @@ def _parse_numbered(body: str) -> List[Tuple[str, str]]:
         cleaned = sanitize_context_text(rest, limit=MAX_STEP_TITLE_CHARS * 2)
         if not cleaned:
             continue
-        title = truncate_at_word(cleaned, MAX_STEP_TITLE_CHARS)
+        state, clean_title = extract_state_and_clean_title(cleaned)
+        title = truncate_at_word(clean_title, MAX_STEP_TITLE_CHARS)
         if title:
-            out.append((title, ""))
+            out.append((title, "", state))
     return out
 
 
+def parse_step_states_from_assistant_text(text: str) -> Tuple[StepState, ...]:
+    """Convenience helper to extract step states from durable plan text."""
+    outcome = parse_plan_from_assistant_text(text)
+    if outcome.ok:
+        return outcome.step_states
+    return ()
+
+
 def parse_plan_from_assistant_text(text: str) -> ParseOutcome:
-    """Parse a V8.23/V8.24 formatted plan (multiline or V8.21-flattened)."""
+    """Parse a V8.23/V8.24/V8.25 formatted plan (multiline or V8.21-flattened)."""
     raw = str(text or "").strip()
     if not raw:
         return ParseOutcome(ok=False, clarify=CLARIFY_NEED_PRIOR)
@@ -123,7 +133,8 @@ def parse_plan_from_assistant_text(text: str) -> ParseOutcome:
         )
 
     items: List[PlanStepItem] = []
-    for i, (t, d) in enumerate(steps_raw, start=1):
+    states: List[StepState] = []
+    for i, (t, d, st) in enumerate(steps_raw, start=1):
         if not t:
             continue
         items.append(
@@ -134,6 +145,7 @@ def parse_plan_from_assistant_text(text: str) -> ParseOutcome:
                 kind=_guess_kind(t),
             )
         )
+        states.append(st)
     if not items:
         return ParseOutcome(ok=False, clarify=CLARIFY_NEED_PRIOR)
 
@@ -141,6 +153,7 @@ def parse_plan_from_assistant_text(text: str) -> ParseOutcome:
         PlanStepItem(index=i, title=s.title, detail=s.detail, kind=s.kind)
         for i, s in enumerate(items[:MAX_STEPS], start=1)
     ]
+    states = states[:MAX_STEPS]
 
     conf_m = re.search(r"(?i)\bconfidence:\s*(high|medium|low)\b", raw)
     conf = PlanConfidence.MEDIUM
@@ -162,4 +175,5 @@ def parse_plan_from_assistant_text(text: str) -> ParseOutcome:
             confidence=conf,
             assumptions=(),
         ),
+        step_states=tuple(states),
     )

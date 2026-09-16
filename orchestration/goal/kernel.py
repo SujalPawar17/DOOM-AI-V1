@@ -27,11 +27,27 @@ def process_goal(raw_intent: str, context=None) -> GoalClassificationResult:
     """Classify user text into a GoalSpec and availability. Never executes."""
     ctx = sanitize_context(context)
     text = truncate_intent(raw_intent)
-    intent = normalize_intent(text)
-    cap = INTENT_TO_CAPABILITY[intent]
     owner = str(ctx.get("owner_id") or OWNER_ID)[:64]
     session = str(ctx.get("session_id") or "")[:64]
     computer_session = str(ctx.get("computer_session_id") or "")[:64]
+    intent = normalize_intent(text)
+    try:
+        from orchestration.plan.continuity.engine import (
+            should_route_natural_continuation_to_plan,
+            should_route_to_plan_with_anchor,
+        )
+
+        if intent is IntentClass.UNKNOWN and should_route_to_plan_with_anchor(
+            text, owner, session
+        ):
+            intent = IntentClass.PLAN
+        elif intent is IntentClass.CONVERSATION and should_route_natural_continuation_to_plan(
+            text, owner, session
+        ):
+            intent = IntentClass.PLAN
+    except Exception:
+        pass
+    cap = INTENT_TO_CAPABILITY[intent]
     gid = str(uuid.uuid4())
     ts = int(time.time() * 1000)
     digest = goal_hash({

@@ -16,6 +16,22 @@ from orchestration.plan.prioritize import prioritize_plan
 from orchestration.plan.refine import refine_plan
 from orchestration.plan.relevance import plan_continuation
 from orchestration.plan.synthesize import synthesize_plan
+from orchestration.plan.continuity.engine import (
+    apply_continuity_to_plan_result,
+    build_continuity_state,
+    format_progress_acknowledgement,
+    format_progress_clarify,
+    format_replan_notice,
+    is_stale_or_replan,
+    needs_continuity_anchor,
+    normalize_plan_mode_for_continuity,
+    process_progress_update,
+    rebuild_continuity_preserving_states,
+    recover_continuity_from_parse,
+    should_handle_as_progress,
+    step_states_from_continuity,
+)
+from orchestration.plan.continuity.types import PlanContinuityState, SUGGEST_CLARIFY, SUGGEST_REPLAN
 from orchestration.plan.types import PlanConfidence, PlanResult, PlanStatus
 from orchestration.plan.validate import validate_plan
 
@@ -63,7 +79,7 @@ def _resolve_context(plan: GoalPlan, user_text: str) -> Tuple[str, str, str, str
             get_conversation_thread,
         )
 
-        continuation = plan_continuation(user_text)
+        continuation = needs_continuity_anchor(user_text)
         if continuation:
             thread = get_conversation_thread(owner, session, for_continuation=True)
             if not thread:
@@ -102,6 +118,8 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
 
     mode = detect_plan_mode(user_text)
     effective, anchor_asst, anchor_user, clarify = _resolve_context(plan, user_text)
+    continuity: Optional[PlanContinuityState] = None
+    deps_for_continuity: Tuple[Any, ...] = ()
 
     # Continuations without a valid TTL anchor — fail closed with mode-aware clarify.
     if clarify:
@@ -122,8 +140,9 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
 
     prior: Optional[PlanResult] = None
     had_prior = False
+    parsed = None
     if mode in (PlanMode.REFINE, PlanMode.NEXT, PlanMode.VALIDATE, PlanMode.DEPEND) or (
-        plan_continuation(user_text) and anchor_asst
+        needs_continuity_anchor(user_text) and anchor_asst
     ):
         parsed = parse_plan_from_assistant_text(anchor_asst)
         if not parsed.ok or not parsed.result:
@@ -137,6 +156,76 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
         else:
             prior = parsed.result
             had_prior = True
+
+    if had_prior and prior is not None:
+        deps_for_continuity, _ = analyze_dependencies(prior)
+        if parsed is not None and parsed.ok:
+            continuity = recover_continuity_from_parse(
+                parsed,
+                dependencies=deps_for_continuity,
+            )
+        if continuity is None:
+            continuity = build_continuity_state(
+                prior,
+                dependencies=deps_for_continuity,
+            )
+        mode = normalize_plan_mode_for_continuity(
+            user_text,
+            mode,
+            had_prior=True,
+        )
+
+    if (
+        had_prior
+        and prior is not None
+        and continuity is not None
+        and should_handle_as_progress(
+            user_text,
+            mode=mode,
+            had_prior=had_prior,
+            continuity=continuity,
+        )
+    ):
+        progress = process_progress_update(
+            user_text,
+            continuity,
+            dependencies=deps_for_continuity,
+        )
+        if progress.suggested_action == SUGGEST_CLARIFY:
+            text = format_progress_clarify(progress).strip()[:2048]
+            _record_turn(
+                plan,
+                user_text,
+                text,
+                plan_result=prior,
+                continuity_state=continuity,
+            )
+            return ExecutionStatus.SUCCESS.value, text
+        if progress.suggested_action == SUGGEST_REPLAN or is_stale_or_replan(
+            progress.continuity_state
+        ):
+            text = format_replan_notice(progress).strip()[:2048]
+            _record_turn(
+                plan,
+                user_text,
+                text,
+                plan_result=prior,
+                continuity_state=progress.continuity_state,
+            )
+            return ExecutionStatus.SUCCESS.value, text
+        text = format_progress_acknowledgement(
+            progress,
+            prior,
+            dependencies=deps_for_continuity,
+        ).strip()[:2048]
+        _record_turn(
+            plan,
+            user_text,
+            text,
+            plan_result=prior,
+            continuity_state=progress.continuity_state,
+        )
+        return ExecutionStatus.SUCCESS.value, text
 
     analysis: PlanAnalysis
     result: PlanResult
@@ -155,6 +244,7 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
             issues=tuple(list(issues) + list(dep_issues))[:6],
             validation_status=vstatus,
             confidence=result.confidence,
+            continuity_state=continuity,
         )
     elif mode is PlanMode.REFINE:
         assert prior is not None
@@ -184,6 +274,7 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
             issues=tuple(list(issues) + list(dep_issues))[:6],
             validation_status=vstatus,
             confidence=result.confidence,
+            continuity_state=continuity,
         )
     elif mode is PlanMode.NEXT:
         assert prior is not None
@@ -199,6 +290,7 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
             issues=tuple(list(issues) + list(dep_issues))[:6],
             validation_status=vstatus,
             confidence=result.confidence,
+            continuity_state=continuity,
         )
     elif mode is PlanMode.VALIDATE:
         assert prior is not None
@@ -214,6 +306,7 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
             issues=tuple(list(issues) + list(dep_issues))[:6],
             validation_status=vstatus,
             confidence=result.confidence,
+            continuity_state=continuity,
         )
     elif mode is PlanMode.DEPEND:
         assert prior is not None
@@ -229,6 +322,7 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
             issues=tuple(list(issues) + list(dep_issues))[:6],
             validation_status=vstatus,
             confidence=result.confidence,
+            continuity_state=continuity,
         )
     else:
         # CREATE-like with prior from "next steps?" — treat as NEXT if prior exists
@@ -245,6 +339,7 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
                 issues=tuple(list(issues) + list(dep_issues))[:6],
                 validation_status=vstatus,
                 confidence=result.confidence,
+                continuity_state=continuity,
             )
         else:
             result = synthesize_plan(plan_input)
@@ -260,15 +355,32 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
                 issues=tuple(list(issues) + list(dep_issues))[:6],
                 validation_status=vstatus,
                 confidence=result.confidence,
+                continuity_state=continuity,
             )
 
+    deps_final, _ = analyze_dependencies(result)
+    continuity = rebuild_continuity_preserving_states(
+        continuity,
+        result,
+        dependencies=deps_final,
+    )
+    if mode is PlanMode.VALIDATE and continuity is not None:
+        result = apply_continuity_to_plan_result(result, continuity)
+
     provider = _test_provider()
-    text, calls = maybe_polish_with_ollama(result, analysis=analysis, provider=provider)
+    text, calls = maybe_polish_with_ollama(
+        result,
+        analysis=analysis,
+        provider=provider,
+        continuity_state=continuity,
+    )
     _LAST_OLLAMA_CALLS = calls
     if result.status is PlanStatus.CLARIFY or (
         result.status is PlanStatus.LOW_CONFIDENCE and not result.steps
     ):
-        text = format_plan_with_analysis(result, analysis)
+        text = format_plan_with_analysis(
+            result, analysis, continuity_state=continuity
+        )
 
     text = str(text or "").strip()[:2048]
     if not text:
@@ -279,7 +391,13 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
         text = scrub_internal_markers(text)
     except Exception:
         pass
-    _record_turn(plan, user_text, text, plan_result=result)
+    _record_turn(
+        plan,
+        user_text,
+        text,
+        plan_result=result,
+        continuity_state=continuity,
+    )
     return ExecutionStatus.SUCCESS.value, text
 
 
@@ -289,6 +407,7 @@ def _record_turn(
     assistant_text: str,
     *,
     plan_result: Optional[PlanResult] = None,
+    continuity_state: Optional[PlanContinuityState] = None,
 ) -> None:
     try:
         from orchestration.conversation.context import (
@@ -304,7 +423,10 @@ def _record_turn(
             and plan_result.steps
         ):
             seeded = serialize_plan_durable(
-                plan_result, limit=MAX_CONV_MSG_CHARS
+                plan_result,
+                limit=MAX_CONV_MSG_CHARS,
+                step_states=step_states_from_continuity(continuity_state),
+                continuity_state=continuity_state,
             )
             # Prefer structured seed; if it cannot fit safely, store nothing
             # plan-shaped so REFINE fail-closes instead of recovering corruption.

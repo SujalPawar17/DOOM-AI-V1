@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
+from orchestration.plan.continuity.engine import next_eligible_step_index
+from orchestration.plan.continuity.types import PlanContinuityState, StepState
 from orchestration.plan.analysis import (
     MAX_NEXT_RATIONALE,
     MAX_NEXT_TITLE,
@@ -57,6 +59,7 @@ def prioritize_plan(
     issues: Tuple[PlanIssue, ...] = (),
     validation_status: ValidationStatus = ValidationStatus.OK,
     confidence: PlanConfidence = PlanConfidence.MEDIUM,
+    continuity_state: Optional[PlanContinuityState] = None,
 ) -> PlanAnalysis:
     steps = list(result.steps or ())
     if not steps:
@@ -94,10 +97,29 @@ def prioritize_plan(
 
     next_title = ""
     rationale = ""
+    if continuity_state is not None:
+        active = next_eligible_step_index(continuity_state, dependencies=dependencies)
+        if active > 0:
+            next_idx = active
     if next_idx and next_idx in by_idx:
         s = by_idx[next_idx]
         next_title = s.title[:MAX_NEXT_TITLE]
-        if next_idx not in inbound:
+        if continuity_state is not None:
+            rec = next(
+                (r for r in continuity_state.step_records if r.index == next_idx),
+                None,
+            )
+            if rec is not None and rec.state is StepState.IN_PROGRESS:
+                rationale = "This step is already in progress."
+            elif rec is not None and rec.state is StepState.BLOCKED:
+                rationale = "This step is blocked and not eligible."
+            elif next_idx not in inbound:
+                rationale = "This step has no prerequisites and unlocks later work."
+            elif s.kind in (PlanStepKind.PREPARE, PlanStepKind.DECIDE):
+                rationale = "Preparation or decision work should come before later steps."
+            else:
+                rationale = "This is the next eligible step given current progress."
+        elif next_idx not in inbound:
             rationale = "This step has no prerequisites and unlocks later work."
         elif s.kind in (PlanStepKind.PREPARE, PlanStepKind.DECIDE):
             rationale = "Preparation or decision work should come before later steps."
