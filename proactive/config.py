@@ -199,6 +199,16 @@ def is_v8_audit_enabled() -> bool:
     return _bool_env("PROACTIVE_V8_AUDIT_ENABLED", False)
 
 
+def is_v826_goal_registry_enabled() -> bool:
+    """V8.26 Active Goal Registry. Default false. Persistence only; never executes.
+
+    Requires PROACTIVE_V8_ENABLED=true. Cross-session goal/plan snapshot store.
+    """
+    if not is_v8_enabled():
+        return False
+    return _bool_env("PROACTIVE_V826_GOAL_REGISTRY_ENABLED", False)
+
+
 COMPUTER_TIMEOUT_MS = _int_env("PROACTIVE_COMPUTER_TIMEOUT_MS", 800)
 COMPUTER_MAX_DEPTH = _int_env("PROACTIVE_COMPUTER_MAX_DEPTH", 6)
 COMPUTER_MAX_NODES = _int_env("PROACTIVE_COMPUTER_MAX_NODES", 80)

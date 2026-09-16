@@ -635,6 +635,30 @@ class PostgresManager:
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_v8_pm_owner_updated ON v8_personal_memories (owner_id, updated_at DESC);",
+            # V8.26: owner-scoped active goal registry (single ACTIVE per owner)
+            """
+            CREATE TABLE IF NOT EXISTS v8_active_goals (
+                goal_id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                lifecycle VARCHAR(16) NOT NULL
+                    CHECK (lifecycle IN ('ACTIVE','COMPLETED','STALE','ABANDONED')),
+                schema_version INTEGER NOT NULL,
+                title VARCHAR(80) NOT NULL,
+                plan_title VARCHAR(80) NOT NULL,
+                step_titles_json TEXT NOT NULL,
+                step_states_json TEXT NOT NULL,
+                active_step_index INTEGER NOT NULL DEFAULT 0,
+                blocker_summary VARCHAR(120) NOT NULL DEFAULT '',
+                staleness_reason VARCHAR(120) NOT NULL DEFAULT '',
+                durable_view VARCHAR(300) NOT NULL DEFAULT '',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at DOUBLE PRECISION NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                last_active_at DOUBLE PRECISION NOT NULL
+            );
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_v8_ag_owner_active ON v8_active_goals (owner_id) WHERE lifecycle = 'ACTIVE';",
+            "CREATE INDEX IF NOT EXISTS idx_v8_ag_owner_updated ON v8_active_goals (owner_id, updated_at DESC);",
             """
             CREATE TABLE IF NOT EXISTS world_preparations (
                 preparation_id VARCHAR(64) PRIMARY KEY,
