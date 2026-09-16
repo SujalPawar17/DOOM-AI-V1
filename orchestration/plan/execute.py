@@ -409,6 +409,7 @@ def _record_turn(
     plan_result: Optional[PlanResult] = None,
     continuity_state: Optional[PlanContinuityState] = None,
 ) -> None:
+    durable_seed = ""
     try:
         from orchestration.conversation.context import (
             MAX_CONV_MSG_CHARS,
@@ -431,11 +432,51 @@ def _record_turn(
             # Prefer structured seed; if it cannot fit safely, store nothing
             # plan-shaped so REFINE fail-closes instead of recovering corruption.
             to_store = seeded if seeded else "Plan recovery unavailable."
+            durable_seed = seeded or ""
         record_conversation_turn(
             str(plan.owner_id or ""),
             str(plan.session_id or ""),
             user_text=user_text,
             assistant_text=to_store,
+        )
+    except Exception:
+        pass
+    _maybe_sync_goal_registry(
+        plan,
+        plan_result=plan_result,
+        continuity_state=continuity_state,
+        durable_view=durable_seed,
+    )
+
+
+def _maybe_sync_goal_registry(
+    plan: GoalPlan,
+    *,
+    plan_result: Optional[PlanResult],
+    continuity_state: Optional[PlanContinuityState],
+    durable_view: str = "",
+) -> None:
+    """V8.26 Phase 2 dual-write. Secondary; never affects V8.25 response path."""
+    try:
+        from orchestration.plan.goal_registry import (
+            is_goal_registry_sync_enabled,
+            sync_active_goal_from_plan,
+        )
+
+        if not is_goal_registry_sync_enabled():
+            return
+        if plan_result is None:
+            return
+        if plan_result.status is not PlanStatus.OK or not plan_result.steps:
+            return
+        owner = str(getattr(plan, "owner_id", "") or "").strip()
+        if not owner:
+            return
+        sync_active_goal_from_plan(
+            owner_id=owner,
+            plan_result=plan_result,
+            continuity_state=continuity_state,
+            durable_view=durable_view,
         )
     except Exception:
         pass

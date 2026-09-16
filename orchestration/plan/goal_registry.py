@@ -171,6 +171,14 @@ def _clip(text: str, limit: int) -> str:
     return " ".join(str(text or "").strip().split())[:limit]
 
 
+def _clip_len(text: str, limit: int) -> str:
+    """Length-only clip — preserves newlines for durable_view fidelity."""
+    s = str(text or "")
+    if len(s) <= limit:
+        return s
+    return s[:limit]
+
+
 def validate_snapshot(snapshot: GoalSnapshot, *, expected_owner: str = "") -> RegistryStatus:
     """Validate snapshot bounds and invariants. Returns OK or error status."""
     if snapshot is None:
@@ -276,7 +284,7 @@ def build_snapshot(
         active_step_index=int(active_step_index),
         blocker_summary=_clip(blocker_summary, MAX_BLOCKER_CHARS),
         staleness_reason=_clip(staleness_reason, MAX_STALENESS_CHARS),
-        durable_view=_clip(durable_view, MAX_DURABLE_VIEW_CHARS),
+        durable_view=_clip_len(durable_view, MAX_DURABLE_VIEW_CHARS),
         version=max(1, int(version)),
         created_at=float(created_at if created_at is not None else now),
         updated_at=float(updated_at if updated_at is not None else now),
@@ -1071,3 +1079,257 @@ def mark_stale(
 def recover_goal(owner_id: str) -> RegistryResult:
     """Load ACTIVE goal and validate snapshot integrity (Phase 1: no TTL side effects)."""
     return get_active_goal(owner_id)
+
+
+# ---------------------------------------------------------------------------
+# V8.26 Phase 2 — dual-write synchronization (persistence only)
+# ---------------------------------------------------------------------------
+
+_SYNC_STATS: Dict[str, Any] = {
+    "attempts": 0,
+    "persists": 0,
+    "last_status": None,
+}
+
+
+def reset_goal_registry_sync_stats_for_tests() -> None:
+    with _LOCK:
+        _SYNC_STATS["attempts"] = 0
+        _SYNC_STATS["persists"] = 0
+        _SYNC_STATS["last_status"] = None
+
+
+def goal_registry_sync_stats() -> Dict[str, Any]:
+    with _LOCK:
+        return {
+            "attempts": int(_SYNC_STATS["attempts"]),
+            "persists": int(_SYNC_STATS["persists"]),
+            "last_status": _SYNC_STATS["last_status"],
+        }
+
+
+def is_goal_registry_sync_enabled() -> bool:
+    """Public flag check for plan dual-write (does not import proactive package)."""
+    return bool(_is_v826_goal_registry_enabled())
+
+
+def to_registry_step_state(state: Any) -> StepState:
+    """Convert continuity or registry StepState (or wire string) by value."""
+    if isinstance(state, StepState):
+        return state
+    val = getattr(state, "value", None)
+    if val is not None:
+        return StepState(str(val))
+    return StepState(str(state))
+
+
+def _same_active_goal(existing: GoalSnapshot, title: str, plan_title: str) -> bool:
+    """True when the new plan continues the same ACTIVE registry goal (no pivot)."""
+    et = str(existing.title or "").casefold().strip()
+    ep = str(existing.plan_title or "").casefold().strip()
+    nt = str(title or "").casefold().strip()
+    np = str(plan_title or "").casefold().strip()
+    if et and nt and et == nt:
+        return True
+    if ep and np and ep == np:
+        return True
+    if et and np and et == np:
+        return True
+    if ep and nt and ep == nt:
+        return True
+    return False
+
+
+def _blocker_summary_from_sources(continuity_state: Any, plan_result: Any) -> str:
+    parts: List[str] = []
+    if continuity_state is not None:
+        for rec in tuple(getattr(continuity_state, "step_records", ()) or ()):
+            st = getattr(getattr(rec, "state", None), "value", None)
+            if st is None:
+                st = str(getattr(rec, "state", "") or "")
+            if str(st) == StepState.BLOCKED.value:
+                detail = str(getattr(rec, "detail", "") or "").strip()
+                idx = int(getattr(rec, "index", 0) or 0)
+                parts.append(detail or f"step {idx} blocked")
+    if not parts and plan_result is not None:
+        for b in tuple(getattr(plan_result, "blockers", ()) or ())[:3]:
+            text = str(b or "").strip()
+            if text:
+                parts.append(text)
+    return _clip("; ".join(parts), MAX_BLOCKER_CHARS)
+
+
+def _step_states_for_sync(continuity_state: Any, step_count: int) -> Tuple[StepState, ...]:
+    if step_count <= 0:
+        return ()
+    records = tuple(getattr(continuity_state, "step_records", ()) or ()) if continuity_state else ()
+    if records and len(records) == step_count:
+        return tuple(to_registry_step_state(r.state) for r in records)
+    if records:
+        by_idx = {int(getattr(r, "index", 0) or 0): r.state for r in records}
+        out: List[StepState] = []
+        for i in range(1, step_count + 1):
+            if i in by_idx:
+                out.append(to_registry_step_state(by_idx[i]))
+            else:
+                out.append(StepState.PENDING)
+        return tuple(out)
+    return tuple(StepState.PENDING for _ in range(step_count))
+
+
+def _sanitize_active_step_index(
+    step_states: Tuple[StepState, ...],
+    active_idx: int,
+) -> int:
+    """Ensure active index satisfies registry validation (not terminal/blocked)."""
+    n = len(step_states)
+    if n == 0:
+        return 0
+    act = int(active_idx or 0)
+    if 1 <= act <= n:
+        st = step_states[act - 1]
+        if st not in (StepState.COMPLETED, StepState.SKIPPED, StepState.BLOCKED):
+            return act
+    for i, st in enumerate(step_states, 1):
+        if st not in (StepState.COMPLETED, StepState.SKIPPED, StepState.BLOCKED):
+            return i
+    return 0
+
+
+def sync_active_goal_from_plan(
+    *,
+    owner_id: str,
+    plan_result: Any,
+    continuity_state: Any = None,
+    durable_view: str = "",
+) -> RegistryResult:
+    """Synchronize ACTIVE registry snapshot from a successful V8.25 plan result.
+
+    Secondary persistence only. Never raises. Never replaces a different ACTIVE goal.
+    """
+    with _LOCK:
+        _SYNC_STATS["attempts"] = int(_SYNC_STATS["attempts"]) + 1
+
+    if not _enabled():
+        with _LOCK:
+            _SYNC_STATS["last_status"] = RegistryStatus.UNAVAILABLE.value
+        return RegistryResult(RegistryStatus.UNAVAILABLE)
+
+    owner = _normalize_owner(owner_id)
+    if not owner:
+        with _LOCK:
+            _SYNC_STATS["last_status"] = RegistryStatus.REJECTED.value
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    if plan_result is None:
+        with _LOCK:
+            _SYNC_STATS["last_status"] = RegistryStatus.REJECTED.value
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    status_obj = getattr(plan_result, "status", None)
+    status_val = getattr(status_obj, "value", str(status_obj or ""))
+    if status_val != "OK":
+        with _LOCK:
+            _SYNC_STATS["last_status"] = RegistryStatus.REJECTED.value
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    steps = tuple(getattr(plan_result, "steps", ()) or ())
+    if not steps:
+        with _LOCK:
+            _SYNC_STATS["last_status"] = RegistryStatus.REJECTED.value
+        return RegistryResult(RegistryStatus.REJECTED)
+
+    with _LOCK:
+        _SYNC_STATS["persists"] = int(_SYNC_STATS["persists"]) + 1
+
+    plan_title = _clip(str(getattr(plan_result, "title", "") or ""), MAX_PLAN_TITLE_CHARS)
+    title = plan_title
+    if continuity_state is not None:
+        gt = str(getattr(continuity_state, "goal_title", "") or "").strip()
+        if gt:
+            title = _clip(gt, MAX_TITLE_CHARS)
+
+    step_titles = tuple(
+        _clip(str(getattr(s, "title", "") or ""), MAX_STEP_TITLE_CHARS) for s in steps
+    )
+    step_states = _step_states_for_sync(continuity_state, len(steps))
+    active_idx = 1
+    if continuity_state is not None:
+        active_idx = int(getattr(continuity_state, "active_step_index", 1) or 1)
+    active_idx = _sanitize_active_step_index(step_states, active_idx)
+
+    blocker_summary = _blocker_summary_from_sources(continuity_state, plan_result)
+    staleness_reason = ""
+    if continuity_state is not None:
+        staleness_reason = _clip(
+            str(getattr(continuity_state, "staleness_reason", "") or ""),
+            MAX_STALENESS_CHARS,
+        )
+    durable = _clip_len(str(durable_view or ""), MAX_DURABLE_VIEW_CHARS)
+
+    existing = get_active_goal(owner)
+    if existing.status is RegistryStatus.OK and existing.snapshot is not None:
+        if not _same_active_goal(existing.snapshot, title, plan_title):
+            with _LOCK:
+                _SYNC_STATS["last_status"] = RegistryStatus.CONFLICT.value
+            return RegistryResult(RegistryStatus.CONFLICT)
+        snap, st = build_snapshot(
+            owner_id=owner,
+            title=title,
+            plan_title=plan_title,
+            step_titles=step_titles,
+            step_states=step_states,
+            goal_id=existing.snapshot.goal_id,
+            lifecycle=GoalLifecycle.ACTIVE,
+            active_step_index=active_idx,
+            blocker_summary=blocker_summary,
+            staleness_reason=staleness_reason,
+            durable_view=durable,
+            version=int(existing.snapshot.version),
+            created_at=existing.snapshot.created_at,
+            updated_at=existing.snapshot.updated_at,
+            last_active_at=existing.snapshot.last_active_at,
+        )
+        if st is not RegistryStatus.OK or snap is None:
+            with _LOCK:
+                _SYNC_STATS["last_status"] = st.value
+            return RegistryResult(st)
+        result = update_active_goal(
+            owner,
+            existing.snapshot.goal_id,
+            snap,
+            expected_version=int(existing.snapshot.version),
+        )
+        with _LOCK:
+            _SYNC_STATS["last_status"] = result.status.value
+        return result
+
+    if existing.status not in (RegistryStatus.NOT_FOUND, RegistryStatus.OK):
+        # UNAVAILABLE / other — fail closed for registry; caller ignores.
+        with _LOCK:
+            _SYNC_STATS["last_status"] = existing.status.value
+        return existing
+
+    snap, st = build_snapshot(
+        owner_id=owner,
+        title=title,
+        plan_title=plan_title,
+        step_titles=step_titles,
+        step_states=step_states,
+        lifecycle=GoalLifecycle.ACTIVE,
+        active_step_index=active_idx,
+        blocker_summary=blocker_summary,
+        staleness_reason=staleness_reason,
+        durable_view=durable,
+        version=1,
+    )
+    if st is not RegistryStatus.OK or snap is None:
+        with _LOCK:
+            _SYNC_STATS["last_status"] = st.value
+        return RegistryResult(st)
+
+    result = create_active_goal(owner, snap)
+    with _LOCK:
+        _SYNC_STATS["last_status"] = result.status.value
+    return result
+
