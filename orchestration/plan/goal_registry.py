@@ -7,6 +7,7 @@ Informational only. Zero execution authority. No routing integration.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -14,9 +15,6 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
-
-from orchestration.plan.continuity.types import StepState
-from proactive.config import is_v826_goal_registry_enabled
 
 SCHEMA_VERSION = 1
 MAX_TITLE_CHARS = 80
@@ -48,6 +46,16 @@ _SQLISH = re.compile(r"(?i)\b(select|insert|update|delete)\b.+\bfrom\b|\bcreate 
 _LOCK = threading.Lock()
 _USE_TEST_STORE = False
 _TEST_ROWS: Dict[str, Dict[str, Any]] = {}  # goal_id -> row dict
+
+
+class StepState(str, Enum):
+    """Registry-owned wire values — identical strings to V8.25 continuity StepState."""
+
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    BLOCKED = "BLOCKED"
+    SKIPPED = "SKIPPED"
 
 
 class GoalLifecycle(str, Enum):
@@ -135,8 +143,24 @@ def is_sensitive_goal_content(text: str) -> bool:
     return False
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_v826_goal_registry_enabled() -> bool:
+    """Mirror proactive.config.is_v826_goal_registry_enabled without importing
+    the proactive package (proactive/__init__.py eagerly loads worker → DB).
+    """
+    if not _bool_env("PROACTIVE_V8_ENABLED", False):
+        return False
+    return _bool_env("PROACTIVE_V826_GOAL_REGISTRY_ENABLED", False)
+
+
 def _enabled() -> bool:
-    return bool(is_v826_goal_registry_enabled())
+    return bool(_is_v826_goal_registry_enabled())
 
 
 def _normalize_owner(owner_id: str) -> str:

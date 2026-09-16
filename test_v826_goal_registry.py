@@ -10,8 +10,8 @@ from unittest.mock import patch
 os.environ.setdefault("PROACTIVE_V8_ENABLED", "true")
 os.environ["PROACTIVE_V826_GOAL_REGISTRY_ENABLED"] = "true"
 
-from orchestration.plan.continuity.types import StepState
 from orchestration.plan.goal_registry import (
+    StepState,
     ARCHIVE_RETENTION,
     MAX_BLOCKER_CHARS,
     MAX_DURABLE_VIEW_CHARS,
@@ -96,7 +96,7 @@ class TestV826GoalRegistry(unittest.TestCase):
 
     def test_02b_disabled_returns_unavailable(self):
         with patch(
-            "orchestration.plan.goal_registry.is_v826_goal_registry_enabled",
+            "orchestration.plan.goal_registry._is_v826_goal_registry_enabled",
             return_value=False,
         ):
             res = create_active_goal("alice", _snap())
