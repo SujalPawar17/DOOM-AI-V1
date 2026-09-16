@@ -33,6 +33,7 @@ def process_goal(raw_intent: str, context=None) -> GoalClassificationResult:
     intent = normalize_intent(text)
     try:
         from orchestration.plan.continuity.engine import (
+            should_route_lifecycle_to_plan,
             should_route_natural_continuation_to_plan,
             should_route_to_plan_with_anchor,
         )
@@ -43,6 +44,10 @@ def process_goal(raw_intent: str, context=None) -> GoalClassificationResult:
             intent = IntentClass.PLAN
         elif intent is IntentClass.CONVERSATION and should_route_natural_continuation_to_plan(
             text, owner, session
+        ):
+            intent = IntentClass.PLAN
+        elif intent in (IntentClass.UNKNOWN, IntentClass.CONVERSATION) and (
+            should_route_lifecycle_to_plan(text, owner, session)
         ):
             intent = IntentClass.PLAN
     except Exception:

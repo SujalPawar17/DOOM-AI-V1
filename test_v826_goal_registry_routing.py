@@ -203,6 +203,119 @@ class TestV826GoalRegistryRouting(unittest.TestCase):
         prep, _ = self._run("Continue", owner="eve", session="sess-eve")
         self.assertNotEqual(prep.intent, IntentClass.PLAN.value)
 
+    # --- V8.26 Phase 4 lifecycle routing ---
+    def _seed_stale(self, owner="alice", title="Python"):
+        from orchestration.plan.goal_registry import mark_stale
+
+        snap = _seed_registry(owner=owner, title=title, plan_title=f"Plan for: {title}")
+        res = mark_stale(owner, snap.goal_id, "inactive", snap.version)
+        self.assertEqual(res.status, RegistryStatus.OK)
+        return res.snapshot
+
+    def test_18_resume_my_plan_routes_plan(self):
+        self._seed_stale()
+        prep, _ = self._run("Resume my plan")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_19_resume_python_plan_routes_plan(self):
+        self._seed_stale(title="Python")
+        prep, _ = self._run("Resume the Python plan")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_20_resume_bare_routes_plan_with_stale(self):
+        self._seed_stale()
+        prep, _ = self._run("Resume")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_21_where_was_i_with_stale_routes_plan(self):
+        self._seed_stale()
+        prep, _ = self._run("Where was I?")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_22_abandon_this_plan_routes_plan(self):
+        _seed_registry()
+        prep, _ = self._run("Abandon this plan")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_23_forget_this_plan_routes_plan(self):
+        _seed_registry()
+        prep, _ = self._run("Forget this plan")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_24_replace_this_goal_routes_plan(self):
+        _seed_registry()
+        prep, _ = self._run("Replace this goal")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_25_restart_python_plan_routes_plan(self):
+        prep, _ = self._run("Restart my Python plan")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_26_previous_goal_routes_plan(self):
+        prep, _ = self._run("What was my previous goal?")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_27_what_did_i_finish_routes_plan(self):
+        prep, _ = self._run("What did I finish?")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_28_show_abandoned_routes_plan(self):
+        prep, _ = self._run("Show what I abandoned")
+        self.assertEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_29_completed_cannot_resume_silently(self):
+        from orchestration.plan.goal_registry import StepState, archive_goal
+
+        snap = _seed_registry(
+            states=(StepState.COMPLETED, StepState.COMPLETED, StepState.COMPLETED),
+            active=0,
+        )
+        archive_goal("alice", snap.goal_id, snap.version)
+        out = self._exec("Resume my completed plan")
+        low = out.lower()
+        self.assertTrue("cannot" in low or "can't" in low or "new plan" in low)
+        self.assertEqual(get_active_goal("alice").status, RegistryStatus.NOT_FOUND)
+
+    def test_30_abandoned_cannot_resume_silently(self):
+        from orchestration.plan.goal_registry import abandon_goal
+
+        snap = _seed_registry()
+        abandon_goal("alice", snap.goal_id, snap.version)
+        out = self._exec("Resume my abandoned plan")
+        low = out.lower()
+        self.assertTrue("cannot" in low or "can't" in low or "reactiv" in low or "new plan" in low)
+        self.assertEqual(get_active_goal("alice").status, RegistryStatus.NOT_FOUND)
+
+    def test_31_click_save_still_computer_boundary(self):
+        self._seed_stale()
+        prep, _ = self._run("Click Save")
+        self.assertNotEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_32_decision_still_decision(self):
+        self._seed_stale()
+        prep, _ = self._run("Python or Node.js?")
+        self.assertEqual(prep.intent, IntentClass.DECISION.value)
+
+    def test_33_unrelated_conversation(self):
+        self._seed_stale()
+        prep, _ = self._run("Tell me a joke")
+        self.assertNotEqual(prep.intent, IntentClass.PLAN.value)
+
+    def test_34_flag_off_preserves_v825(self):
+        self._seed_stale(owner="dana", title="DanaPlan")
+        os.environ["PROACTIVE_V826_GOAL_REGISTRY_ENABLED"] = "false"
+        prep, _ = self._run("Resume my plan", owner="dana", session="sess-dana")
+        self.assertNotEqual(prep.intent, IntentClass.PLAN.value)
+        os.environ["PROACTIVE_V826_GOAL_REGISTRY_ENABLED"] = "true"
+
+    def test_35_no_registry_no_invented_plan(self):
+        prep, _ = self._run("Resume my plan")
+        # May route to PLAN for lifecycle, but must not invent ACTIVE
+        if prep.intent == IntentClass.PLAN.value:
+            out = self._exec("Resume my plan")
+            self.assertTrue(len(out.strip()) > 0)
+        self.assertEqual(get_active_goal("alice").status, RegistryStatus.NOT_FOUND)
+
 
 if __name__ == "__main__":
     unittest.main()

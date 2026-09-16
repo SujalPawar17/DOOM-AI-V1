@@ -551,3 +551,779 @@ def format_progress_acknowledgement(
         lines.append("No eligible next step until blockers are resolved.")
 
     return "\n".join(lines).strip()[:2048]
+
+
+# ---------------------------------------------------------------------------
+# V8.26 Phase 4 — lifecycle UX (thin orchestration; ephemeral confirmation)
+# ---------------------------------------------------------------------------
+
+from enum import Enum
+
+
+class LifecycleIntent(str, Enum):
+    NONE = "NONE"
+    CONFIRM_YES = "CONFIRM_YES"
+    CONFIRM_NO = "CONFIRM_NO"
+    CONFIRM_AMBIGUOUS = "CONFIRM_AMBIGUOUS"
+    RESUME = "RESUME"
+    RESUME_NAMED = "RESUME_NAMED"
+    ABANDON = "ABANDON"
+    REPLACE = "REPLACE"
+    QUERY_PREVIOUS = "QUERY_PREVIOUS"
+    QUERY_COMPLETED = "QUERY_COMPLETED"
+    QUERY_ABANDONED = "QUERY_ABANDONED"
+    RESTART = "RESTART"
+    RESUME_COMPLETED = "RESUME_COMPLETED"
+    RESUME_ABANDONED = "RESUME_ABANDONED"
+
+
+_LIFECYCLE_YES = re.compile(
+    r"(?i)^(yes|y|yeah|yep|confirm|do it|please do|ok|okay|sure)[\s?.!]*$"
+)
+_LIFECYCLE_NO = re.compile(
+    r"(?i)^(no|n|nope|cancel|never mind|nevermind|don'?t|do not)[\s?.!]*$"
+)
+_LIFECYCLE_ABANDON = re.compile(
+    r"(?i)^(?:please\s+)?(?:abandon|forget)\s+"
+    r"(?:this|my|the|that)?\s*(?:current\s+)?(?:plan|goal)[\s?.!]*$"
+)
+_LIFECYCLE_REPLACE = re.compile(
+    r"(?i)^(?:please\s+)?(?:replace\s+(?:this|my|the|that)\s+(?:plan|goal)|"
+    r"start a new plan instead)[\s?.!]*$"
+)
+_LIFECYCLE_PREVIOUS = re.compile(
+    r"(?i)^(?:what was my previous goal|show (?:me )?(?:my )?previous goal|"
+    r"previous goal)[\s?.!]*$"
+)
+_LIFECYCLE_FINISHED = re.compile(
+    r"(?i)^(?:what did i finish|what have i (?:finished|completed)|"
+    r"show (?:me )?completed (?:plans|goals))[\s?.!]*$"
+)
+_LIFECYCLE_ABANDONED_Q = re.compile(
+    r"(?i)^(?:show (?:me )?(?:what i )?abandoned|what did i abandon|"
+    r"show abandoned (?:plans|goals))[\s?.!]*$"
+)
+_LIFECYCLE_RESUME_COMPLETED = re.compile(
+    r"(?i)^(?:please\s+)?resume\s+(?:my\s+)?(?:the\s+)?completed\s+(?:plan|goal)[\s?.!]*$"
+)
+_LIFECYCLE_RESUME_ABANDONED = re.compile(
+    r"(?i)^(?:please\s+)?resume\s+(?:my\s+)?(?:the\s+)?abandoned\s+(?:plan|goal)[\s?.!]*$"
+)
+_LIFECYCLE_RESTART = re.compile(
+    r"(?i)^(?:please\s+)?(?:restart|start again|start over)\s+"
+    r"(?:my\s+)?(?:the\s+)?(.+?)(?:\s+plan)?[\s?.!]*$"
+    r"|^start that plan again[\s?.!]*$"
+)
+_LIFECYCLE_RESUME_NAMED = re.compile(
+    r"(?i)^(?:please\s+)?resume\s+(?:the\s+)?(.+?)(?:\s+plan)?[\s?.!]*$"
+)
+_LIFECYCLE_RESUME_GENERIC = re.compile(
+    r"(?i)^(?:please\s+)?resume(?:\s+(?:my|the|that)\s+plan)?[\s?.!]*$"
+)
+
+
+def _lifecycle_enabled() -> bool:
+    try:
+        from orchestration.plan.goal_registry import is_goal_registry_sync_enabled
+
+        return bool(is_goal_registry_sync_enabled())
+    except Exception:
+        return False
+
+
+def detect_lifecycle_intent(query: str) -> Tuple[LifecycleIntent, str]:
+    """Bounded lifecycle intent. Returns (intent, optional title/topic)."""
+    q = " ".join(str(query or "").strip().split())
+    if not q:
+        return LifecycleIntent.NONE, ""
+    if _LIFECYCLE_YES.match(q):
+        return LifecycleIntent.CONFIRM_YES, ""
+    if _LIFECYCLE_NO.match(q):
+        return LifecycleIntent.CONFIRM_NO, ""
+    if _LIFECYCLE_RESUME_COMPLETED.match(q):
+        return LifecycleIntent.RESUME_COMPLETED, ""
+    if _LIFECYCLE_RESUME_ABANDONED.match(q):
+        return LifecycleIntent.RESUME_ABANDONED, ""
+    if _LIFECYCLE_ABANDON.match(q):
+        return LifecycleIntent.ABANDON, ""
+    if _LIFECYCLE_REPLACE.match(q):
+        return LifecycleIntent.REPLACE, ""
+    if _LIFECYCLE_PREVIOUS.match(q):
+        return LifecycleIntent.QUERY_PREVIOUS, ""
+    if _LIFECYCLE_FINISHED.match(q):
+        return LifecycleIntent.QUERY_COMPLETED, ""
+    if _LIFECYCLE_ABANDONED_Q.match(q):
+        return LifecycleIntent.QUERY_ABANDONED, ""
+    m = _LIFECYCLE_RESTART.match(q)
+    if m:
+        topic = (m.group(1) or "").strip() if m.lastindex else ""
+        topic = re.sub(r"(?i)\bplan\b", "", topic).strip(" .!?")
+        return LifecycleIntent.RESTART, topic[:80]
+    # Named resume before generic so "Resume the Python plan" is not lost.
+    m3 = _LIFECYCLE_RESUME_NAMED.match(q)
+    if m3 and q.casefold().startswith("resume"):
+        title = (m3.group(1) or "").strip()
+        title = re.sub(r"(?i)^(my|the|that)\s+", "", title).strip()
+        title = re.sub(r"(?i)\bplan\b", "", title).strip(" .!?")
+        if title and title.casefold() not in (
+            "my",
+            "the",
+            "that",
+            "completed",
+            "abandoned",
+            "",
+        ):
+            return LifecycleIntent.RESUME_NAMED, title[:80]
+    if _LIFECYCLE_RESUME_GENERIC.match(q):
+        return LifecycleIntent.RESUME, ""
+    if is_explicit_resume(q) and not is_natural_continuation(q):
+        return LifecycleIntent.RESUME, ""
+    if len(q) <= 24 and re.match(
+        r"(?i)^(maybe|not sure|idk|i don't know)[\s?.!]*$", q
+    ):
+        return LifecycleIntent.CONFIRM_AMBIGUOUS, ""
+    return LifecycleIntent.NONE, ""
+
+
+def is_lifecycle_utterance(query: str) -> bool:
+    intent, _ = detect_lifecycle_intent(query)
+    return intent not in (
+        LifecycleIntent.NONE,
+        LifecycleIntent.CONFIRM_YES,
+        LifecycleIntent.CONFIRM_NO,
+        LifecycleIntent.CONFIRM_AMBIGUOUS,
+    )
+
+
+def should_route_lifecycle_to_plan(
+    query: str,
+    owner_id: str,
+    session_id: str,
+) -> bool:
+    """Route lifecycle / pending-confirmation utterances to PLAN when flag on."""
+    if not _lifecycle_enabled():
+        return False
+    owner = str(owner_id or "").strip()
+    session = str(session_id or "").strip()
+    if not owner or not session:
+        return False
+    try:
+        from orchestration.plan.goal_registry import get_lifecycle_confirm
+
+        pending = get_lifecycle_confirm(owner, session)
+        intent, _ = detect_lifecycle_intent(query)
+        if pending is not None and intent in (
+            LifecycleIntent.CONFIRM_YES,
+            LifecycleIntent.CONFIRM_NO,
+            LifecycleIntent.CONFIRM_AMBIGUOUS,
+        ):
+            return True
+        if is_lifecycle_utterance(query):
+            return True
+        if is_explicit_resume(query) or is_natural_continuation(query):
+            if has_continuity_context(owner, session):
+                return False
+            from orchestration.plan.goal_registry import (
+                GoalLifecycle,
+                RegistryStatus,
+                list_recent_goals,
+            )
+
+            st, snaps = list_recent_goals(
+                owner, lifecycles=(GoalLifecycle.STALE,), limit=5
+            )
+            return st is RegistryStatus.OK and len(snaps) > 0
+    except Exception:
+        return False
+    return False
+
+
+def _safe_title(snap: Any) -> str:
+    title = str(getattr(snap, "title", "") or getattr(snap, "plan_title", "") or "plan")
+    title = title.strip()[:80] or "plan"
+    try:
+        from orchestration.plan.goal_registry import is_sensitive_goal_content
+
+        if is_sensitive_goal_content(title):
+            return "plan"
+    except Exception:
+        pass
+    return title
+
+
+def _format_history_lines(snaps: Sequence[Any], *, label: str) -> str:
+    if not snaps:
+        return f"No recent {label} goals found."[:2048]
+    lines = [f"Recent {label} goals (up to 5):", ""]
+    for i, snap in enumerate(snaps[:5], 1):
+        lc = getattr(getattr(snap, "lifecycle", None), "value", "") or ""
+        lines.append(f"{i}. {_safe_title(snap)} ({lc})")
+    return "\n".join(lines).strip()[:2048]
+
+
+def _match_title(snaps: Sequence[Any], title: str) -> Tuple[Any, ...]:
+    needle = " ".join(str(title or "").strip().split()).casefold()
+    if not needle:
+        return ()
+    hits = []
+    for snap in snaps:
+        t = " ".join(_safe_title(snap).split()).casefold()
+        pt = " ".join(str(getattr(snap, "plan_title", "") or "").split()).casefold()
+        pt_stripped = re.sub(r"(?i)^plan for:\s*", "", pt).strip()
+        if needle in (t, pt, pt_stripped) or t == needle or pt_stripped == needle:
+            hits.append(snap)
+    return tuple(hits)
+
+
+def _next_step_text_from_snapshot(snap: Any) -> str:
+    prior = plan_result_from_registry_snapshot(snap)
+    cont = rehydrate_continuity_from_registry_snapshot(snap)
+    if prior is None or cont is None:
+        return f"Resumed plan: {_safe_title(snap)}."[:2048]
+    active = cont.active_step_index
+    if active > 0:
+        title = step_title_for_index(prior, active)
+        return (
+            f"Resumed plan: {_safe_title(snap)}.\n\n"
+            f"Next step: {active}. {title}"
+        ).strip()[:2048]
+    return f"Resumed plan: {_safe_title(snap)}."[:2048]
+
+
+def begin_pivot_replacement_confirm(
+    owner_id: str,
+    session_id: str,
+    *,
+    active_snap: Any,
+    proposed_topic: str,
+) -> str:
+    """Start explicit abandon+replace confirmation for GOAL_PIVOT. No mutation yet."""
+    from orchestration.plan.goal_registry import (
+        CONFIRM_REPLACE_ACTIVE,
+        make_lifecycle_confirm,
+        set_lifecycle_confirm,
+    )
+
+    topic = " ".join(str(proposed_topic or "").strip().split())[:80]
+    conf = make_lifecycle_confirm(
+        owner_id=owner_id,
+        session_id=session_id,
+        action=CONFIRM_REPLACE_ACTIVE,
+        goal_id=str(getattr(active_snap, "goal_id", "")),
+        expected_version=int(getattr(active_snap, "version", 0)),
+        title=_safe_title(active_snap),
+        secondary_title=topic,
+    )
+    if conf is None:
+        return (
+            f"Your active goal may have changed to: {topic}. "
+            "If you want to replan, ask me for a new plan explicitly."
+        )[:2048]
+    set_lifecycle_confirm(conf)
+    return (
+        f"\"{_safe_title(active_snap)}\" is currently active. "
+        f"To start a new plan for \"{topic or 'the new goal'}\", "
+        "I need to abandon the current goal first. Reply YES to abandon it, "
+        "or NO to keep it."
+    )[:2048]
+
+
+def handle_lifecycle_request(
+    owner_id: str,
+    session_id: str,
+    user_text: str,
+) -> Optional[Tuple[str, Optional[Any], Optional[PlanContinuityState]]]:
+    """Handle Phase 4 lifecycle UX.
+
+    Returns (response_text, plan_result_or_None, continuity_or_None) when handled,
+    or None when the normal V8.25/Phase 3 path should continue.
+    """
+    if not _lifecycle_enabled():
+        return None
+    owner = str(owner_id or "").strip()
+    session = str(session_id or "").strip()
+    if not owner or not session:
+        return None
+
+    from orchestration.plan.goal_registry import (
+        CONFIRM_ABANDON_ACTIVE,
+        CONFIRM_ABANDON_THEN_RESUME,
+        CONFIRM_REPLACE_ACTIVE,
+        CONFIRM_RESUME_STALE,
+        GoalLifecycle,
+        RegistryStatus,
+        clear_lifecycle_confirm,
+        get_active_goal,
+        get_lifecycle_confirm,
+        list_recent_goals,
+        make_lifecycle_confirm,
+        set_lifecycle_confirm,
+    )
+
+    intent, topic = detect_lifecycle_intent(user_text)
+    pending = get_lifecycle_confirm(owner, session)
+
+    if pending is not None and intent in (
+        LifecycleIntent.CONFIRM_YES,
+        LifecycleIntent.CONFIRM_NO,
+        LifecycleIntent.CONFIRM_AMBIGUOUS,
+    ):
+        if intent is LifecycleIntent.CONFIRM_AMBIGUOUS:
+            return (
+                "Please reply YES to confirm or NO to cancel.",
+                None,
+                None,
+            )
+        if intent is LifecycleIntent.CONFIRM_NO:
+            clear_lifecycle_confirm(owner, session)
+            return ("Okay — cancelled. No goals were changed.", None, None)
+        return _apply_lifecycle_confirm(owner, session, pending)
+
+    if pending is not None and intent is LifecycleIntent.NONE:
+        if len(" ".join(str(user_text or "").split())) <= 40:
+            return (
+                "I still need a clear YES or NO for the pending goal change.",
+                None,
+                None,
+            )
+
+    if intent is LifecycleIntent.QUERY_PREVIOUS:
+        st, snaps = list_recent_goals(owner, limit=5)
+        if st is not RegistryStatus.OK or not snaps:
+            return ("I don't have a previous goal on record.", None, None)
+        prev = snaps[0]
+        return (
+            (
+                f"Your previous goal was \"{_safe_title(prev)}\" "
+                f"({getattr(prev.lifecycle, 'value', '')})."
+            )[:2048],
+            None,
+            None,
+        )
+
+    if intent is LifecycleIntent.QUERY_COMPLETED:
+        st, snaps = list_recent_goals(
+            owner, lifecycles=(GoalLifecycle.COMPLETED,), limit=5
+        )
+        return (
+            _format_history_lines(
+                snaps if st is RegistryStatus.OK else (), label="completed"
+            ),
+            None,
+            None,
+        )
+
+    if intent is LifecycleIntent.QUERY_ABANDONED:
+        st, snaps = list_recent_goals(
+            owner, lifecycles=(GoalLifecycle.ABANDONED,), limit=5
+        )
+        return (
+            _format_history_lines(
+                snaps if st is RegistryStatus.OK else (), label="abandoned"
+            ),
+            None,
+            None,
+        )
+
+    if intent is LifecycleIntent.RESUME_COMPLETED:
+        return (
+            "Completed goals cannot be resumed. "
+            "Ask me to start a new plan for that topic instead.",
+            None,
+            None,
+        )
+
+    if intent is LifecycleIntent.RESUME_ABANDONED:
+        return (
+            "Abandoned goals cannot be reactivated. "
+            "Ask me to start a new plan for that topic instead.",
+            None,
+            None,
+        )
+
+    if intent in (LifecycleIntent.ABANDON, LifecycleIntent.REPLACE):
+        active = get_active_goal(owner)
+        if active.status is not RegistryStatus.OK or active.snapshot is None:
+            return ("There is no active plan to abandon.", None, None)
+        snap = active.snapshot
+        action = (
+            CONFIRM_REPLACE_ACTIVE
+            if intent is LifecycleIntent.REPLACE
+            else CONFIRM_ABANDON_ACTIVE
+        )
+        conf = make_lifecycle_confirm(
+            owner_id=owner,
+            session_id=session,
+            action=action,
+            goal_id=snap.goal_id,
+            expected_version=int(snap.version),
+            title=_safe_title(snap),
+        )
+        if conf is None:
+            return ("I couldn't start confirmation for that change.", None, None)
+        set_lifecycle_confirm(conf)
+        verb = "replace" if intent is LifecycleIntent.REPLACE else "abandon"
+        return (
+            (
+                f"\"{_safe_title(snap)}\" is currently active. "
+                f"Reply YES to {verb} it, or NO to keep it."
+            ),
+            None,
+            None,
+        )
+
+    if intent is LifecycleIntent.RESTART:
+        return _handle_restart(owner, session, topic)
+
+    if intent in (LifecycleIntent.RESUME, LifecycleIntent.RESUME_NAMED):
+        active = get_active_goal(owner)
+        if (
+            intent is LifecycleIntent.RESUME
+            and active.status is RegistryStatus.OK
+            and active.snapshot is not None
+        ):
+            return None
+        st, stale_snaps = list_recent_goals(
+            owner, lifecycles=(GoalLifecycle.STALE,), limit=5
+        )
+        if st is not RegistryStatus.OK:
+            return ("I couldn't look up saved plans right now.", None, None)
+        candidates: Tuple[Any, ...] = stale_snaps
+        if intent is LifecycleIntent.RESUME_NAMED and topic:
+            matched = _match_title(stale_snaps, topic)
+            if len(matched) == 1:
+                candidates = matched
+            elif len(matched) > 1:
+                return (
+                    (
+                        "Several stale plans match that title:\n"
+                        + "\n".join(f"- {_safe_title(s)}" for s in matched[:5])
+                        + "\nPlease name the exact plan to resume."
+                    ),
+                    None,
+                    None,
+                )
+            else:
+                return (
+                    f"I couldn't find a stale plan matching \"{topic[:80]}\".",
+                    None,
+                    None,
+                )
+        else:
+            if len(stale_snaps) == 0:
+                return (
+                    "There is no stale plan to resume. "
+                    "Ask me to make a new plan if you want to start fresh.",
+                    None,
+                    None,
+                )
+            if len(stale_snaps) > 1:
+                return (
+                    (
+                        "You have more than one stale plan:\n"
+                        + "\n".join(f"- {_safe_title(s)}" for s in stale_snaps[:5])
+                        + "\nName the plan to resume "
+                        "(for example: Resume the Python plan)."
+                    ),
+                    None,
+                    None,
+                )
+            candidates = (stale_snaps[0],)
+
+        target = candidates[0]
+        if active.status is RegistryStatus.OK and active.snapshot is not None:
+            a = active.snapshot
+            conf = make_lifecycle_confirm(
+                owner_id=owner,
+                session_id=session,
+                action=CONFIRM_ABANDON_THEN_RESUME,
+                goal_id=a.goal_id,
+                expected_version=int(a.version),
+                title=_safe_title(a),
+                secondary_goal_id=target.goal_id,
+                secondary_version=int(target.version),
+                secondary_title=_safe_title(target),
+            )
+            if conf is None:
+                return ("I couldn't start confirmation for that change.", None, None)
+            set_lifecycle_confirm(conf)
+            return (
+                (
+                    f"\"{_safe_title(a)}\" is currently active. "
+                    f"To resume stale \"{_safe_title(target)}\", do you want to "
+                    f"abandon \"{_safe_title(a)}\" first? Reply YES or NO."
+                ),
+                None,
+                None,
+            )
+        conf = make_lifecycle_confirm(
+            owner_id=owner,
+            session_id=session,
+            action=CONFIRM_RESUME_STALE,
+            goal_id=target.goal_id,
+            expected_version=int(target.version),
+            title=_safe_title(target),
+        )
+        if conf is None:
+            return ("I couldn't start confirmation for that change.", None, None)
+        set_lifecycle_confirm(conf)
+        return (
+            f"Resume stale plan \"{_safe_title(target)}\"? Reply YES or NO.",
+            None,
+            None,
+        )
+
+    if (
+        intent is LifecycleIntent.NONE
+        and (is_explicit_resume(user_text) or is_natural_continuation(user_text))
+        and not has_continuity_context(owner, session)
+    ):
+        return handle_lifecycle_request(owner, session, "Resume my plan")
+
+    return None
+
+
+def _apply_lifecycle_confirm(
+    owner: str,
+    session: str,
+    pending: Any,
+) -> Tuple[str, Optional[Any], Optional[PlanContinuityState]]:
+    from orchestration.plan.goal_registry import (
+        CONFIRM_ABANDON_ACTIVE,
+        CONFIRM_ABANDON_THEN_RESUME,
+        CONFIRM_REPLACE_ACTIVE,
+        CONFIRM_RESUME_STALE,
+        RegistryStatus,
+        abandon_goal,
+        clear_lifecycle_confirm,
+        make_lifecycle_confirm,
+        resume_stale_goal,
+        set_lifecycle_confirm,
+    )
+
+    if pending.owner_id != owner or pending.session_id != session:
+        clear_lifecycle_confirm(owner, session)
+        return (
+            "Confirmation does not match this session. Please request again.",
+            None,
+            None,
+        )
+
+    action = str(pending.action or "")
+
+    if action == CONFIRM_RESUME_STALE:
+        res = resume_stale_goal(owner, pending.goal_id, int(pending.expected_version))
+        clear_lifecycle_confirm(owner, session)
+        if res.status is RegistryStatus.CONFLICT:
+            return (
+                "That plan changed since confirmation. Please ask to resume again.",
+                None,
+                None,
+            )
+        if res.status is not RegistryStatus.OK or res.snapshot is None:
+            return ("I couldn't resume that plan.", None, None)
+        snap = res.snapshot
+        prior = plan_result_from_registry_snapshot(snap)
+        cont = rehydrate_continuity_from_registry_snapshot(snap)
+        text = _next_step_text_from_snapshot(snap)
+        return text, prior, cont
+
+    if action in (CONFIRM_ABANDON_ACTIVE, CONFIRM_REPLACE_ACTIVE):
+        res = abandon_goal(owner, pending.goal_id, int(pending.expected_version))
+        clear_lifecycle_confirm(owner, session)
+        if res.status is RegistryStatus.CONFLICT:
+            return (
+                "The active goal changed since confirmation. Please try again.",
+                None,
+                None,
+            )
+        if res.status is not RegistryStatus.OK:
+            return ("I couldn't abandon that plan.", None, None)
+        if action == CONFIRM_REPLACE_ACTIVE and pending.secondary_title:
+            topic = pending.secondary_title
+            return (
+                (
+                    f"Abandoned \"{pending.title or 'the active plan'}\". "
+                    f"Ask me to make a plan for: {topic}"
+                ),
+                None,
+                None,
+            )
+        return (f"Abandoned \"{pending.title or 'the active plan'}\".", None, None)
+
+    if action == CONFIRM_ABANDON_THEN_RESUME:
+        res = abandon_goal(owner, pending.goal_id, int(pending.expected_version))
+        if res.status is RegistryStatus.CONFLICT:
+            clear_lifecycle_confirm(owner, session)
+            return (
+                "The active goal changed since confirmation. Please try again.",
+                None,
+                None,
+            )
+        if res.status is not RegistryStatus.OK:
+            clear_lifecycle_confirm(owner, session)
+            return ("I couldn't abandon the active plan.", None, None)
+        conf2 = make_lifecycle_confirm(
+            owner_id=owner,
+            session_id=session,
+            action=CONFIRM_RESUME_STALE,
+            goal_id=pending.secondary_goal_id,
+            expected_version=int(pending.secondary_version),
+            title=pending.secondary_title,
+        )
+        if conf2 is None:
+            clear_lifecycle_confirm(owner, session)
+            return (
+                (
+                    f"Abandoned \"{pending.title}\". "
+                    "Ask me again to resume the stale plan."
+                ),
+                None,
+                None,
+            )
+        set_lifecycle_confirm(conf2)
+        return (
+            (
+                f"Abandoned \"{pending.title}\". "
+                f"Resume stale \"{pending.secondary_title}\"? Reply YES or NO."
+            ),
+            None,
+            None,
+        )
+
+    clear_lifecycle_confirm(owner, session)
+    return ("That confirmation is no longer valid.", None, None)
+
+
+def _handle_restart(
+    owner: str,
+    session: str,
+    topic: str,
+) -> Tuple[str, Optional[Any], Optional[PlanContinuityState]]:
+    from orchestration.plan.goal_registry import (
+        CONFIRM_REPLACE_ACTIVE,
+        GoalLifecycle,
+        RegistryStatus,
+        get_active_goal,
+        list_recent_goals,
+        make_lifecycle_confirm,
+        set_lifecycle_confirm,
+    )
+
+    topic_c = " ".join(str(topic or "").strip().split())[:80]
+    st, snaps = list_recent_goals(
+        owner,
+        lifecycles=(GoalLifecycle.COMPLETED, GoalLifecycle.ABANDONED),
+        limit=5,
+    )
+    source = None
+    if st is RegistryStatus.OK and topic_c:
+        matched = _match_title(snaps, topic_c)
+        if len(matched) == 1:
+            source = matched[0]
+        elif len(matched) > 1:
+            return (
+                (
+                    "Several past plans match that title:\n"
+                    + "\n".join(f"- {_safe_title(s)}" for s in matched[:5])
+                    + "\nName the exact plan to restart."
+                ),
+                None,
+                None,
+            )
+    label = _safe_title(source) if source is not None else (topic_c or "that plan")
+    active = get_active_goal(owner)
+    if active.status is RegistryStatus.OK and active.snapshot is not None:
+        a = active.snapshot
+        conf = make_lifecycle_confirm(
+            owner_id=owner,
+            session_id=session,
+            action=CONFIRM_REPLACE_ACTIVE,
+            goal_id=a.goal_id,
+            expected_version=int(a.version),
+            title=_safe_title(a),
+            secondary_title=label,
+        )
+        if conf is None:
+            return ("I couldn't start confirmation for that change.", None, None)
+        set_lifecycle_confirm(conf)
+        return (
+            (
+                f"\"{_safe_title(a)}\" is currently active. "
+                f"To restart \"{label}\" as a new plan, abandon the current goal "
+                "first? Reply YES or NO."
+            ),
+            None,
+            None,
+        )
+    # No ACTIVE: create a NEW goal_id (never revive COMPLETED/ABANDONED).
+    if source is None and not topic_c:
+        return (
+            "Name the completed or abandoned plan to restart "
+            "(for example: Restart my Python plan).",
+            None,
+            None,
+        )
+    try:
+        from orchestration.plan.goal_registry import (
+            StepState as RegStepState,
+            build_snapshot,
+            create_active_goal,
+            is_sensitive_goal_content,
+        )
+
+        title = label[:80]
+        if is_sensitive_goal_content(title):
+            return ("That plan title isn't safe to restart.", None, None)
+        if source is not None:
+            titles = tuple(str(t)[:80] for t in (source.step_titles or ()))[:6]
+            if not titles:
+                titles = ("Clarify the goal", "Take the first step", "Review progress")
+            plan_title = str(source.plan_title or f"Plan for: {title}")[:80]
+            durable = str(source.durable_view or "")[:300]
+        else:
+            titles = ("Clarify the goal", "Take the first step", "Review progress")
+            plan_title = f"Plan for: {title}"[:80]
+            durable = (
+                f"Plan: {plan_title}\n\nSteps:\n"
+                + "\n".join(f"{i}. [ ] {t}" for i, t in enumerate(titles, 1))
+                + "\n"
+            )[:300]
+        states = tuple(RegStepState.PENDING for _ in titles)
+        snap, st = build_snapshot(
+            owner_id=owner,
+            title=title,
+            plan_title=plan_title,
+            step_titles=titles,
+            step_states=states,
+            active_step_index=1,
+            durable_view=durable,
+        )
+        if st is not RegistryStatus.OK or snap is None:
+            return ("I couldn't start a new plan from that archive.", None, None)
+        old_id = getattr(source, "goal_id", "") if source is not None else ""
+        res = create_active_goal(owner, snap)
+        if res.status is not RegistryStatus.OK or res.snapshot is None:
+            return ("I couldn't create a new plan right now.", None, None)
+        new_snap = res.snapshot
+        if old_id and new_snap.goal_id == old_id:
+            return ("Restart failed to allocate a new goal.", None, None)
+        prior = plan_result_from_registry_snapshot(new_snap)
+        cont = rehydrate_continuity_from_registry_snapshot(new_snap)
+        return (
+            (
+                f"Started a new plan for \"{_safe_title(new_snap)}\" "
+                "(previous archive left unchanged)."
+            ),
+            prior,
+            cont,
+        )
+    except Exception:
+        return (
+            (
+                f"Completed and abandoned goals stay archived. "
+                f"Ask me to make a new plan for \"{label}\"."
+            ),
+            None,
+            None,
+        )

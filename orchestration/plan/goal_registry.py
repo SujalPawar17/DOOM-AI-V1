@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = 1
 MAX_TITLE_CHARS = 80
@@ -124,6 +124,7 @@ def use_test_goal_registry_store(enabled: bool = True) -> None:
 def reset_goal_registry_for_tests() -> None:
     with _LOCK:
         _TEST_ROWS.clear()
+        _PENDING_CONFIRMS.clear()
 
 
 def new_registry_goal_id() -> str:
@@ -996,7 +997,11 @@ def _load_goal(owner: str, gid: str) -> RegistryResult:
 
 
 def archive_goal(owner_id: str, goal_id: str, expected_version: int) -> RegistryResult:
-    """ACTIVE|STALE → COMPLETED (requires terminal steps). Idempotent if already COMPLETED."""
+    """ACTIVE → COMPLETED (requires terminal steps). Idempotent if already COMPLETED.
+
+    STALE goals cannot be archived to COMPLETED (not in _VALID_TRANSITIONS);
+    resume or abandon them instead.
+    """
     if not _enabled():
         return RegistryResult(RegistryStatus.UNAVAILABLE)
     owner = _normalize_owner(owner_id)
@@ -1014,6 +1019,8 @@ def archive_goal(owner_id: str, goal_id: str, expected_version: int) -> Registry
             return RegistryResult(RegistryStatus.OK, snap)
         return RegistryResult(RegistryStatus.OK, snap)
     if snap.lifecycle is GoalLifecycle.ABANDONED:
+        return RegistryResult(RegistryStatus.REJECTED)
+    if snap.lifecycle is GoalLifecycle.STALE:
         return RegistryResult(RegistryStatus.REJECTED)
     if int(snap.version) != int(expected_version):
         return RegistryResult(RegistryStatus.CONFLICT)
@@ -1381,4 +1388,216 @@ def sync_active_goal_from_plan(
     with _LOCK:
         _SYNC_STATS["last_status"] = result.status.value
     return result
+
+
+# ---------------------------------------------------------------------------
+# V8.26 Phase 4 — lifecycle helpers (thin orchestration over transition_goal)
+# ---------------------------------------------------------------------------
+
+CONFIRM_TTL_SEC = 180
+HISTORY_LIMIT = 5
+
+# Confirmation actions
+CONFIRM_RESUME_STALE = "RESUME_STALE"
+CONFIRM_ABANDON_ACTIVE = "ABANDON_ACTIVE"
+CONFIRM_ABANDON_THEN_RESUME = "ABANDON_THEN_RESUME"
+CONFIRM_REPLACE_ACTIVE = "REPLACE_ACTIVE"
+
+
+@dataclass(frozen=True)
+class LifecycleConfirm:
+    owner_id: str
+    session_id: str
+    action: str
+    goal_id: str
+    expected_version: int
+    title: str = ""
+    secondary_goal_id: str = ""
+    secondary_version: int = 0
+    secondary_title: str = ""
+    expires_at: float = 0.0
+    nonce: str = ""
+
+
+_PENDING_CONFIRMS: Dict[Tuple[str, str], LifecycleConfirm] = {}
+
+
+def reset_lifecycle_confirms_for_tests() -> None:
+    with _LOCK:
+        _PENDING_CONFIRMS.clear()
+
+
+def list_recent_goals(
+    owner_id: str,
+    *,
+    lifecycles: Optional[Sequence[GoalLifecycle]] = None,
+    limit: int = HISTORY_LIMIT,
+) -> Tuple[RegistryStatus, Tuple[GoalSnapshot, ...]]:
+    """Bounded recent non-ACTIVE goals for trusted owner. Max 5. Fail closed."""
+    if not _enabled():
+        return RegistryStatus.UNAVAILABLE, ()
+    owner = _normalize_owner(owner_id)
+    if not owner:
+        return RegistryStatus.REJECTED, ()
+    lim = max(1, min(int(limit or HISTORY_LIMIT), HISTORY_LIMIT))
+    wanted = tuple(lifecycles) if lifecycles is not None else (
+        GoalLifecycle.STALE,
+        GoalLifecycle.COMPLETED,
+        GoalLifecycle.ABANDONED,
+    )
+    wanted_vals = {lc.value if isinstance(lc, GoalLifecycle) else str(lc) for lc in wanted}
+    # Historical listing excludes ACTIVE unless explicitly requested.
+    include_active = GoalLifecycle.ACTIVE.value in wanted_vals
+
+    out: List[GoalSnapshot] = []
+    try:
+        if _USE_TEST_STORE:
+            with _LOCK:
+                rows = [
+                    dict(r)
+                    for r in _TEST_ROWS.values()
+                    if str(r.get("owner_id")) == owner
+                    and str(r.get("lifecycle") or "") in wanted_vals
+                    and (include_active or str(r.get("lifecycle")) != GoalLifecycle.ACTIVE.value)
+                ]
+                rows.sort(key=lambda r: float(r.get("updated_at") or 0.0), reverse=True)
+                for row in rows[:lim]:
+                    snap, st = _snapshot_from_row(row)
+                    if st is RegistryStatus.OK and snap is not None:
+                        if validate_snapshot(snap, expected_owner=owner) is RegistryStatus.OK:
+                            out.append(snap)
+            return RegistryStatus.OK, tuple(out)
+
+        if not ensure_goal_registry_schema():
+            return RegistryStatus.UNAVAILABLE, ()
+        from database.postgres_db import postgres_manager
+
+        conn = postgres_manager.get_connection()
+        if not conn:
+            return RegistryStatus.UNAVAILABLE, ()
+        try:
+            lifecycle_list = sorted(wanted_vals)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT goal_id, owner_id, lifecycle, schema_version, title, plan_title,
+                           step_titles_json, step_states_json, active_step_index, blocker_summary,
+                           staleness_reason, durable_view, version, created_at, updated_at, last_active_at
+                    FROM v8_active_goals
+                    WHERE owner_id = %s AND lifecycle = ANY(%s)
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (owner, lifecycle_list, lim),
+                )
+                for fetched in cur.fetchall() or ():
+                    mapped = _pg_row_to_dict(fetched)
+                    if not include_active and str(mapped.get("lifecycle")) == GoalLifecycle.ACTIVE.value:
+                        continue
+                    snap, st = _snapshot_from_row(mapped)
+                    if st is RegistryStatus.OK and snap is not None:
+                        if validate_snapshot(snap, expected_owner=owner) is RegistryStatus.OK:
+                            out.append(snap)
+            return RegistryStatus.OK, tuple(out[:lim])
+        except Exception:
+            return RegistryStatus.UNAVAILABLE, ()
+        finally:
+            postgres_manager.release_connection(conn)
+    except Exception:
+        return RegistryStatus.UNAVAILABLE, ()
+
+
+def resume_stale_goal(
+    owner_id: str,
+    goal_id: str,
+    expected_version: int,
+) -> RegistryResult:
+    """Explicit STALE → ACTIVE. Retains goal_id. Thin wrapper over transition_goal."""
+    if not _enabled():
+        return RegistryResult(RegistryStatus.UNAVAILABLE)
+    owner = _normalize_owner(owner_id)
+    gid = str(goal_id or "").strip()[:MAX_GOAL_ID_CHARS]
+    if not owner or not gid:
+        return RegistryResult(RegistryStatus.REJECTED)
+    loaded = _load_goal(owner, gid)
+    if loaded.status is not RegistryStatus.OK or loaded.snapshot is None:
+        return loaded
+    snap = loaded.snapshot
+    if snap.lifecycle is not GoalLifecycle.STALE:
+        return RegistryResult(RegistryStatus.REJECTED)
+    if int(snap.version) != int(expected_version):
+        return RegistryResult(RegistryStatus.CONFLICT)
+    return transition_goal(
+        owner,
+        gid,
+        GoalLifecycle.STALE,
+        GoalLifecycle.ACTIVE,
+        "resume",
+        expected_version,
+    )
+
+
+def set_lifecycle_confirm(confirm: LifecycleConfirm) -> None:
+    key = (_normalize_owner(confirm.owner_id), str(confirm.session_id or "").strip()[:64])
+    if not key[0] or not key[1]:
+        return
+    with _LOCK:
+        _PENDING_CONFIRMS[key] = confirm
+
+
+def get_lifecycle_confirm(owner_id: str, session_id: str) -> Optional[LifecycleConfirm]:
+    owner = _normalize_owner(owner_id)
+    session = str(session_id or "").strip()[:64]
+    if not owner or not session:
+        return None
+    with _LOCK:
+        conf = _PENDING_CONFIRMS.get((owner, session))
+        if conf is None:
+            return None
+        if float(conf.expires_at) < time.time():
+            _PENDING_CONFIRMS.pop((owner, session), None)
+            return None
+        if conf.owner_id != owner or conf.session_id != session:
+            return None
+        return conf
+
+
+def clear_lifecycle_confirm(owner_id: str, session_id: str) -> None:
+    owner = _normalize_owner(owner_id)
+    session = str(session_id or "").strip()[:64]
+    with _LOCK:
+        _PENDING_CONFIRMS.pop((owner, session), None)
+
+
+def make_lifecycle_confirm(
+    *,
+    owner_id: str,
+    session_id: str,
+    action: str,
+    goal_id: str,
+    expected_version: int,
+    title: str = "",
+    secondary_goal_id: str = "",
+    secondary_version: int = 0,
+    secondary_title: str = "",
+    ttl_sec: int = CONFIRM_TTL_SEC,
+) -> Optional[LifecycleConfirm]:
+    owner = _normalize_owner(owner_id)
+    session = str(session_id or "").strip()[:64]
+    gid = str(goal_id or "").strip()[:MAX_GOAL_ID_CHARS]
+    if not owner or not session or not gid:
+        return None
+    return LifecycleConfirm(
+        owner_id=owner,
+        session_id=session,
+        action=str(action or ""),
+        goal_id=gid,
+        expected_version=int(expected_version),
+        title=_clip(title, MAX_TITLE_CHARS),
+        secondary_goal_id=str(secondary_goal_id or "").strip()[:MAX_GOAL_ID_CHARS],
+        secondary_version=int(secondary_version or 0),
+        secondary_title=_clip(secondary_title, MAX_TITLE_CHARS),
+        expires_at=time.time() + max(30, int(ttl_sec)),
+        nonce=uuid.uuid4().hex[:16],
+    )
 

@@ -18,10 +18,12 @@ from orchestration.plan.relevance import plan_continuation
 from orchestration.plan.synthesize import synthesize_plan
 from orchestration.plan.continuity.engine import (
     apply_continuity_to_plan_result,
+    begin_pivot_replacement_confirm,
     build_continuity_state,
     format_progress_acknowledgement,
     format_progress_clarify,
     format_replan_notice,
+    handle_lifecycle_request,
     is_stale_or_replan,
     needs_continuity_anchor,
     normalize_plan_mode_for_continuity,
@@ -174,6 +176,28 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     if not user_text.strip():
         return ExecutionStatus.LOCAL_MODEL_ERROR.value, ""
 
+    # V8.26 Phase 4: lifecycle UX (confirmations, stale resume, history).
+    # Fail closed into normal plan path on any handler error.
+    try:
+        life = handle_lifecycle_request(
+            str(plan.owner_id or ""),
+            str(plan.session_id or ""),
+            user_text,
+        )
+        if life is not None:
+            text, life_result, life_cont = life
+            text = str(text or "").strip()[:2048]
+            _record_turn(
+                plan,
+                user_text,
+                text,
+                plan_result=life_result,
+                continuity_state=life_cont,
+            )
+            return ExecutionStatus.SUCCESS.value, text
+    except Exception:
+        pass
+
     mode = detect_plan_mode(user_text)
     effective, anchor_asst, anchor_user, clarify, registry_snap = _resolve_context(
         plan, user_text
@@ -289,7 +313,35 @@ def execute_plan_steps(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
         if progress.suggested_action == SUGGEST_REPLAN or is_stale_or_replan(
             progress.continuity_state
         ):
+            # Phase 4: pivot requires explicit confirmation — never silent replace.
             text = format_replan_notice(progress).strip()[:2048]
+            try:
+                from orchestration.plan.goal_registry import (
+                    RegistryStatus,
+                    get_active_goal,
+                    is_goal_registry_sync_enabled,
+                )
+
+                if is_goal_registry_sync_enabled():
+                    active = get_active_goal(str(plan.owner_id or ""))
+                    if (
+                        active.status is RegistryStatus.OK
+                        and active.snapshot is not None
+                    ):
+                        reason = (
+                            progress.continuity_state.staleness_reason
+                            or progress.detected_event.raw_evidence
+                            or ""
+                        )
+                        topic = str(reason).replace("Goal pivoted:", "").strip()[:80]
+                        text = begin_pivot_replacement_confirm(
+                            str(plan.owner_id or ""),
+                            str(plan.session_id or ""),
+                            active_snap=active.snapshot,
+                            proposed_topic=topic,
+                        ).strip()[:2048]
+            except Exception:
+                pass
             _record_turn(
                 plan,
                 user_text,
