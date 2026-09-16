@@ -204,6 +204,21 @@ def execute_respond(step: PlanStep, plan: GoalPlan) -> Tuple[str, str]:
     if not user_text.strip():
         return ExecutionStatus.LOCAL_MODEL_ERROR.value, ""
 
+    # V8.28 Phase 4: explicit Goal Experience UX (query / why / forget).
+    try:
+        from orchestration.experience.intent import handle_experience_request
+
+        ex = handle_experience_request(
+            str(plan.owner_id or ""),
+            str(plan.session_id or ""),
+            user_text,
+        )
+        if ex is not None:
+            text = str(ex or "").strip()[:MAX_OUTPUT_CHARS]
+            return _finish_respond(plan, user_text, text)
+    except Exception:
+        pass
+
     # V8.27 Phase 2: explicit User Model UX (confirm / forget / transparency).
     try:
         from orchestration.user_model.intent import handle_user_model_request

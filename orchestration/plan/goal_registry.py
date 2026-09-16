@@ -872,7 +872,21 @@ def transition_goal(
             if to_state is not GoalLifecycle.ACTIVE:
                 _purge_archive_test(owner)
             out, st = _snapshot_from_row(existing)
-            return RegistryResult(st if out is None else RegistryStatus.OK, out)
+            result = RegistryResult(st if out is None else RegistryStatus.OK, out)
+            if to_state in (
+                GoalLifecycle.COMPLETED,
+                GoalLifecycle.ABANDONED,
+                GoalLifecycle.STALE,
+            ):
+                try:
+                    from orchestration.experience.capture import (
+                        maybe_capture_after_registry_result,
+                    )
+
+                    maybe_capture_after_registry_result(result)
+                except Exception:
+                    pass
+            return result
 
     try:
         if not ensure_goal_registry_schema():
@@ -942,7 +956,21 @@ def transition_goal(
                     _purge_archive_pg(cur, owner)
             conn.commit()
             # Reload
-            return _load_goal(owner, gid)
+            result = _load_goal(owner, gid)
+            if to_state in (
+                GoalLifecycle.COMPLETED,
+                GoalLifecycle.ABANDONED,
+                GoalLifecycle.STALE,
+            ):
+                try:
+                    from orchestration.experience.capture import (
+                        maybe_capture_after_registry_result,
+                    )
+
+                    maybe_capture_after_registry_result(result)
+                except Exception:
+                    pass
+            return result
         except Exception:
             try:
                 conn.rollback()
@@ -1016,8 +1044,16 @@ def archive_goal(owner_id: str, goal_id: str, expected_version: int) -> Registry
     if snap.lifecycle is GoalLifecycle.COMPLETED:
         if int(snap.version) != int(expected_version):
             # Idempotent OK if already completed regardless of version mismatch? Spec: idempotent
-            return RegistryResult(RegistryStatus.OK, snap)
-        return RegistryResult(RegistryStatus.OK, snap)
+            result = RegistryResult(RegistryStatus.OK, snap)
+        else:
+            result = RegistryResult(RegistryStatus.OK, snap)
+        try:
+            from orchestration.experience.capture import maybe_capture_after_registry_result
+
+            maybe_capture_after_registry_result(result)
+        except Exception:
+            pass
+        return result
     if snap.lifecycle is GoalLifecycle.ABANDONED:
         return RegistryResult(RegistryStatus.REJECTED)
     if snap.lifecycle is GoalLifecycle.STALE:
@@ -1046,7 +1082,14 @@ def abandon_goal(owner_id: str, goal_id: str, expected_version: int) -> Registry
         return loaded
     snap = loaded.snapshot
     if snap.lifecycle is GoalLifecycle.ABANDONED:
-        return RegistryResult(RegistryStatus.OK, snap)
+        result = RegistryResult(RegistryStatus.OK, snap)
+        try:
+            from orchestration.experience.capture import maybe_capture_after_registry_result
+
+            maybe_capture_after_registry_result(result)
+        except Exception:
+            pass
+        return result
     if snap.lifecycle is GoalLifecycle.COMPLETED:
         return RegistryResult(RegistryStatus.REJECTED)
     if int(snap.version) != int(expected_version):

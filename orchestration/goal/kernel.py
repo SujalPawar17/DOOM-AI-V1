@@ -63,6 +63,16 @@ def process_goal(raw_intent: str, context=None) -> GoalClassificationResult:
             intent = IntentClass.MEMORY_READ
     except Exception:
         pass
+    try:
+        from orchestration.experience.intent import should_route_experience
+
+        # Experience UX mirrors User Model: UNKNOWN/CONVERSATION only.
+        if intent in (IntentClass.UNKNOWN, IntentClass.CONVERSATION) and (
+            should_route_experience(text, owner, session)
+        ):
+            intent = IntentClass.MEMORY_READ
+    except Exception:
+        pass
     cap = INTENT_TO_CAPABILITY[intent]
     gid = str(uuid.uuid4())
     ts = int(time.time() * 1000)

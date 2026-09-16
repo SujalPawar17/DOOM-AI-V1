@@ -166,6 +166,20 @@ def _memory_preferences(owner_id: str, query: str) -> Tuple[List[str], bool]:
         except Exception:
             profile_texts = []
 
+        exp_texts: List[str] = []
+        try:
+            from orchestration.experience.config import is_v828_goal_experience_enabled
+            from orchestration.experience.resolve import experience_strings_for_consumer
+
+            if is_v828_goal_experience_enabled():
+                exp_texts = list(
+                    experience_strings_for_consumer(
+                        owner_id, "DECISION", query=query, limit=MAX_PREFERENCES
+                    )
+                )
+        except Exception:
+            exp_texts = []
+
         mem_texts: List[str] = []
         from orchestration.conversation.personal_memory import (
             list_personal_memories,
@@ -182,11 +196,11 @@ def _memory_preferences(owner_id: str, query: str) -> Tuple[List[str], bool]:
             if text:
                 mem_texts.append(text[:MAX_PREFERENCE_CHARS])
 
-        if profile_texts:
-            from orchestration.user_model.resolve import merge_profile_then_memory
+        if profile_texts or exp_texts:
+            from orchestration.experience.resolve import merge_profile_experience_memory
 
-            prefs = merge_profile_then_memory(
-                profile_texts, mem_texts, limit=MAX_PREFERENCES
+            prefs = merge_profile_experience_memory(
+                profile_texts, exp_texts, mem_texts, limit=MAX_PREFERENCES
             )
             used = bool(prefs)
         else:
