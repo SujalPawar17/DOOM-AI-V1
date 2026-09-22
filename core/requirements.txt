@@ -12,6 +12,9 @@ colorama==0.4.6
 edge-tts>=6.1.9
 # elevenlabs (optional)
 
+# Local Neural TTS (Kokoro ONNX - 100% FREE)
+kokoro-onnx>=0.6.1
+
 # Fast Cloud AI & Tool Calling (Optional)
 groq>=0.4.0
 openai>=1.0.0
@@ -38,6 +41,9 @@ scikit-learn
 
 # Audio & Acoustic Sensors
 pyaudio
+sounddevice>=0.5.0
+# Optional local STT runtime. Weights are never auto-downloaded.
+# faster-whisper>=1.0.0
 
 # Global hotkey for stop button
 keyboard

@@ -54,6 +54,8 @@ def build_default_registry() -> Dict[Tuple[str, str], ResourceAttestation]:
         _att(ResourceType.LLM, "groq", CostClass.UNKNOWN),
         _att(ResourceType.LLM, "nim", CostClass.UNKNOWN),
         _att(ResourceType.TTS, "pyttsx3", CostClass.LOCAL_FREE),
+        _att(ResourceType.TTS, "kokoro", CostClass.LOCAL_FREE),
+        _att(ResourceType.TTS, "piper", CostClass.LOCAL_FREE),
         _att(ResourceType.TTS, "elevenlabs", CostClass.PAID),
         _att(ResourceType.TTS, "edge_tts", CostClass.UNKNOWN),
         _att(ResourceType.TTS, "gtts", CostClass.UNKNOWN),

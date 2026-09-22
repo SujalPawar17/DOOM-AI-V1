@@ -2,31 +2,8 @@ import time
 import random
 import threading
 import os
-import tempfile
-import asyncio
 from typing import Optional
 from enum import Enum
-
-# Try imports for various high-tech voice backends
-try:
-    import edge_tts
-    import pygame
-    EDGE_TTS_AVAILABLE = True
-except ImportError:
-    EDGE_TTS_AVAILABLE = False
-
-try:
-    from gtts import gTTS
-    import pygame
-    GTTS_AVAILABLE = True
-except ImportError:
-    GTTS_AVAILABLE = False
-
-try:
-    import pyttsx3
-    PYTTSX3_AVAILABLE = True
-except ImportError:
-    PYTTSX3_AVAILABLE = False
 
 from core.language_manager import get_language_manager
 
@@ -38,19 +15,18 @@ class AudioStatus(str, Enum):
 
 
 class DOOMCinematicVoice:
+    """
+    DOOM Cinematic Voice — JARVIS-style voice with personality.
+    
+    Delegates TTS backend management to VoiceEngine.
+    Preserves personality responses and legacy ElevenLabs/gTTS paths.
+    """
+
     def __init__(self):
-        self.engine = None
-        self.is_speaking = False
-        self.speech_lock = threading.Lock()
-        self.stop_event = threading.Event()
-        self.current_mixer = None
-        self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
-        self.elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "")
-        self._preferred_backend = self._detect_preferred_backend()
-        self._audio_status = AudioStatus.AVAILABLE
-        
-        # Language manager for multilingual support
         self.lang_manager = get_language_manager()
+        # Lazy import to avoid circular dependency
+        from core.voice import VoiceEngine
+        self._voice_engine = VoiceEngine(language_manager=self.lang_manager)
         
         # JARVIS personality responses for Sujal (multilingual)
         self.personality_responses = {
@@ -59,14 +35,14 @@ class DOOMCinematicVoice:
                 'hi': ["जरूर, सुजल।", "तुरंत, सुजल।", "मैं कर रहा हूँ, सुजल।", "फौरन, सुजल।", "बिल्कुल, सुजल।"],
                 'mr': ["नक्की, सुजल।", "लवकर, सुजल।", "मी करत आहे, सुजल।", "तात्काळ, सुजल।", "खरंच, सुजल।"],
                 'ta': ["நிச்சயமாக, சூஜல்.", "உடனே, சூஜல்.", "நான் செய்கிறேன், சூஜல்.", "உடனடி, சூஜல்.", "நிச்சயமாக, சூஜல்."],
-                'te': ["అవశ్యం, సుజల్.", "త్వరితంగా, సుజల్.", "నేను చేయుతున్నాను, సుజల్.", "क्षण 안으로, సుజల్.", "ఖచ్చితంగా, సుజల్."],
+                'te': ["అవశ్యం, సుజల్.", "త్వరితంగా, సుజల్.", "నేను చేయుతున్నాను, సుజల్.", "క్షణ అంతరం, సుజల్.", "ఖచ్చితంగా, సుజల్."],
             },
             'thinking': {
                 'en': ["Let me analyze that...", "Running calculations...", "Accessing mainframe...", "One moment, Sujal...", "Processing parameters..."],
                 'hi': ["मैं इसका विश्लेषण करता हूँ...", "गणना चल रही है...", "मेनफ्रेम एक्सेस कर रहा हूँ...", "एक पल, सुजल...", "पैरामीटर्स प्रोसेस हो रहे हैं..."],
                 'mr': ["मी याचे विश्लेषण करतो...", "गणना चालू आहे...", "मेनफ्रेम एक्सेस करत आहे...", "एक क्षण, सुजल...", "पॅरामीटर्स प्रोसेस होत आहेत..."],
-                'ta': ["இதை বিশ்லேஷிக்கிறேன்...", "கணக்கீடுகள் நடக்கின்றன...", "மெயின் ஃப்ரேம் அணுகப்படுகிறது...", "ஒரு கணம், சூஜல்...", "அம்சங்கள் செயலாக்கப்படுகின்றன..."],
-                'te': ["నేను విశ్లేషిస్తున్నాను...", "లెక్కింపులు நடిస్తున్నాయి...", "మెయిన్ ఫ్రేమ్ యాక్సెస్ చేస్తుంది...", "ఒక నిమిషం, సుజల్...", "ప్యారామೀటర్లు ప్రాసెస్ అవుతున్నాయి..."],
+                'ta': ["இதை বিশ్లேஷிக்கிறேன்...", "கணக்கீடுகள் நடக்கின்றன...", "மெயின் ஃப்ரேம் அணுகப்படுகிறது...", "ஒரு கணம், சூஜல்...", "அம்சங்கள் செயலாக்கப்படுகின்றன..."],
+                'te': ["నేను విశ్లేషిస్తున్నాను...", "లెక్కింపులు நடిస్తున్నాయి...", "మెయిన్ ఫ్రేమ్ యాక్సెస్ చేస్తుంది...", "ఒక నిమిషం, సుజల్...", "ప్యారామీటర్లు ప్రాసెస్ అవుతున్నాయి..."],
             },
             'completion': {
                 'en': ["Task completed, Sujal.", "Done, Sujal.", "Mission accomplished, Sujal.", "All systems nominal, Sujal.", "Execution finished, Sujal."],
@@ -79,8 +55,8 @@ class DOOMCinematicVoice:
                 'en': ["I apologize, Sujal, but", "I encountered an anomaly:", "Unfortunately,", "System alert:"],
                 'hi': ["मुझे खेद है, सुजल, लेकिन", "मुझे एक विसंगति मिली:", "दुर्भाग्य से,", "सिस्टम अलर्ट:"],
                 'mr': ["मला खेद आहे, सुजल, परंतु", "मला एक विसंगती आढळली:", "दुर्दैवाने,", "सिस्टम सावध:"],
-                'ta': ["மன்னிக்கவும், சூஜல், ஆனால்", "ஒரு விதிமேற்றம் கண்டுபிடிக்கப்பட்டது:", "துரococcமாக,", "நிலையத்திரவ அறிவிப்பு:"],
-                'te': ["క్షమాపణాలు, సుజల్, కానీ", "ఒక अनొమలి ఎదురాయి:", "దురద్యోగంగా,", "సిస్టమ్ అలెర్ట్:"],
+                'ta': ["மன்னிக்கவும், சூஜல், ஆனால்", "ஒரு விதிமேற்றம் கண்டுபிடிக்கப்பட்டது:", "துர<tool_call>상에,", "நிலையத்திரவ அறிவிப்பு:"],
+                'te': ["క్షమాపణాలు, సుజల్, కానీ", "ఒక అనొమలి ఎదురాయి:", "దురద్యోగంగా,", "సిస్టమ్ అలెర్ట్:"],
             },
             'greeting': {
                 'en': ["Good day, Sujal. Systems are online and ready.", "At your service, Sujal. What are our objectives today?", "DOOM online. How may I assist you, Sujal?", "Standing by for your command, Sujal."],
@@ -90,290 +66,45 @@ class DOOMCinematicVoice:
                 'te': ["శుభోదయం, సుజల్. సిస్టమ్స్ ఆన్లైన్లో ఉన్నాయి మరియు సిద్ధంగా ఉన్నాయి.", "మీ సేవలో, సుజల్. ఈరోజు మా లక్ష్యాలు ఏమిటి?", "డూమ్ ఆన్లైన్. నేను మీకు ఎలా సహాయపడగలను, సుజల్?", "మీ ఆదేశానికి వేలుస్తున్నాను, సుజల్."],
             }
         }
-        
-        # Initialize voice system
-        self._init_voice()
-    
-    def _detect_preferred_backend(self) -> str:
-        """Detect and return the preferred TTS backend (only ONE active at a time)"""
-        if self.elevenlabs_key and self.elevenlabs_voice_id:
-            return "elevenlabs"
-        if EDGE_TTS_AVAILABLE:
-            return "edge_tts"
-        if PYTTSX3_AVAILABLE:
-            return "pyttsx3"
-        if GTTS_AVAILABLE:
-            return "gtts"
-        return "none"
 
-    def _init_voice(self):
-        """Initialize pyttsx3 engine safely for offline fallback"""
-        if PYTTSX3_AVAILABLE and self.engine is None:
-            try:
-                self.engine = pyttsx3.init()
-                self.setup_jarvis_voice()
-            except Exception as e:
-                self.engine = None
-
-    def setup_jarvis_voice(self):
-        """Configure offline JARVIS-like voice settings"""
-        if not self.engine:
-            return
-        try:
-            self.engine.setProperty('rate', 180)
-            self.engine.setProperty('volume', 0.9)
-            voices = self.engine.getProperty('voices')
-            if voices:
-                male_voice_found = False
-                for voice in voices:
-                    voice_name_lower = voice.name.lower()
-                    if any(male_name in voice_name_lower for male_name in ['david', 'mark', 'george', 'ryan', 'male', 'zira']):
-                        self.engine.setProperty('voice', voice.id)
-                        male_voice_found = True
-                        break
-                if not male_voice_found:
-                    for voice in voices:
-                        if 'desktop' in voice.name.lower() and 'english' in voice.name.lower():
-                            self.engine.setProperty('voice', voice.id)
-                            break
-        except Exception:
-            pass
+    # ─── Public API (delegates to VoiceEngine) ───
 
     def stop_speaking(self):
         """Immediately stop ALL ongoing speech across ALL backends"""
-        self.stop_event.set()
-        
-        # Stop pygame mixer (used by Edge-TTS, ElevenLabs, gTTS)
-        try:
-            import pygame
-            if pygame.mixer.get_init():
-                pygame.mixer.music.stop()
-        except Exception:
-            pass
-        
-        # Stop pyttsx3 engine
-        if self.engine:
-            try:
-                self.engine.stop()
-            except Exception:
-                pass
-        
-        self.is_speaking = False
-        self.stop_event.clear()
-        print("[VOICE] Stopped all ongoing speech")
+        self._voice_engine.stop()
 
     def speak(self, text: str, context: str = "", lang: Optional[str] = None):
         """Main speaking function with JARVIS personality - interrupts previous speech"""
         if not text:
             return
-        self.stop_speaking()  # Stop any ongoing speech before starting new
+        self.stop_speaking()
         processed_text = self.add_personality_to_text(text, context, lang)
-        self.speak_immediate(processed_text, lang)
+        # Use delivery-aware speaking for context-aware prosody
+        self._voice_engine.speak_with_delivery(processed_text, context, lang)
 
     def get_audio_status(self) -> AudioStatus:
         """Returns current audio system status."""
-        return self._audio_status
+        return self._voice_engine.get_status()
 
-    def speak_immediate(self, text: str, lang: Optional[str] = None) -> AudioStatus:
-        """Speak using preferred backend with automatic graceful fallback on device error.
-        Returns AudioStatus indicating the result."""
-        if not text:
-            return AudioStatus.UNAVAILABLE
+    def speak_immediate(self, text: str, lang: Optional[str] = None, context: str = "") -> AudioStatus:
+        """Speak immediately using VoiceEngine. Returns AudioStatus."""
+        return self._voice_engine.speak_immediate(text, lang, context)
 
-        try:
-            print(f"\n[DOOM]: {text}")
-        except UnicodeEncodeError:
-            print(f"\n[DOOM]: {text.encode('ascii', 'replace').decode('ascii')}")
+    def setup_jarvis_voice(self):
+        """Configure offline JARVIS-like voice settings (delegates to pyttsx3 backend)."""
+        self._voice_engine.setup_voice()
 
-        if os.getenv("DOOM_HEADLESS") == "1":
-            return AudioStatus.UNAVAILABLE
+    def set_language(self, lang_code: str) -> bool:
+        """Change the active language"""
+        return self._voice_engine.set_language(lang_code)
 
-        with self.speech_lock:
-            self.is_speaking = True
-            try:
-                spoken = False
-                if self._preferred_backend == "elevenlabs":
-                    spoken = self._speak_with_elevenlabs(text, lang)
-                elif self._preferred_backend == "edge_tts":
-                    spoken = self._speak_with_edge_tts(text, lang)
+    def get_current_language(self) -> str:
+        return self._voice_engine.get_current_language()
 
-                # Fallback to pyttsx3 if preferred backend or audio device failed
-                if not spoken and PYTTSX3_AVAILABLE and not self.stop_event.is_set():
-                    try:
-                        self._speak_with_pyttsx3(text, lang)
-                        spoken = True
-                    except Exception as fb_err:
-                        # Non-fatal: text output is already displayed to user
-                        pass
-                elif not spoken and self._preferred_backend == "gtts":
-                    self._speak_with_gtts(text, lang)
-                    spoken = True
-                
-                if spoken:
-                    self._audio_status = AudioStatus.AVAILABLE
-                    return AudioStatus.AVAILABLE
-                else:
-                    self._audio_status = AudioStatus.FAILED
-                    return AudioStatus.FAILED
-            except Exception as e:
-                # Absolute safety isolation: voice failure must NEVER fail the task
-                self._audio_status = AudioStatus.FAILED
-                print(f"[VOICE NOTICE] Speech output deferred ({e})")
-                return AudioStatus.FAILED
-            finally:
-                self.is_speaking = False
+    def get_current_language_name(self) -> str:
+        return self._voice_engine.get_current_language_name()
 
-    def _get_edge_voice(self, lang: Optional[str] = None) -> str:
-        """Get Edge-TTS voice for language"""
-        return self.lang_manager.get_tts_voice(lang)
-
-    def _get_gtts_lang(self, lang: Optional[str] = None) -> str:
-        """Get gTTS language code"""
-        lang = lang or self.lang_manager.get_tts_language()
-        gtts_map = {
-            "en": "en",
-            "hi": "hi",
-            "mr": "mr",
-            "ta": "ta",
-            "te": "te",
-            "kn": "kn",
-            "ml": "ml",
-            "gu": "gu",
-            "bn": "bn",
-            "pa": "pa",
-            "ur": "ur",
-        }
-        return gtts_map.get(lang, "en")
-
-    def _speak_with_edge_tts(self, text: str, lang: Optional[str] = None) -> bool:
-        """Speak using Microsoft Edge Neural TTS with multilingual support and device error isolation"""
-        if self.stop_event.is_set():
-            return False
-
-        voice = self._get_edge_voice(lang)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-            temp_path = tmp_file.name
-
-        try:
-            async def _generate_audio():
-                communicate = edge_tts.Communicate(text, voice, rate="+5%", pitch="+0Hz")
-                await communicate.save(temp_path)
-
-            asyncio.run(_generate_audio())
-
-            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                import pygame
-                try:
-                    if not pygame.mixer.get_init():
-                        pygame.mixer.init(frequency=24000, size=-16, channels=2, buffer=2048)
-                except Exception as mix_err:
-                    print(f"[VOICE] Audio hardware unavailable ({mix_err}). Switching to fallback.")
-                    return False
-
-                self.current_mixer = pygame.mixer
-                pygame.mixer.music.load(temp_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy() and not self.stop_event.is_set():
-                    time.sleep(0.05)
-                pygame.mixer.music.stop()
-                return True
-        except Exception as e:
-            # Cleanly catch and isolate any audio device/playback errors
-            print(f"[VOICE] Audio playback notice: {e}")
-            return False
-        finally:
-            try:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-            except Exception:
-                pass
-        return False
-
-    def _speak_with_elevenlabs(self, text: str, lang: Optional[str] = None) -> bool:
-        """Speak using ElevenLabs API (multilingual v2 model)"""
-        if self.stop_event.is_set():
-            return False
-            
-        import requests
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.elevenlabs_voice_id}"
-        headers = {
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": self.elevenlabs_key
-        }
-        # Use multilingual model for non-English
-        model_id = "eleven_multilingual_v2" if lang and lang != "en" else "eleven_monolingual_v1"
-        data = {
-            "text": text,
-            "model_id": model_id,
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}
-        }
-        response = requests.post(url, json=data, headers=headers, timeout=10)
-        if response.status_code == 200:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-                temp_path = tmp_file.name
-                tmp_file.write(response.content)
-
-            try:
-                import pygame
-                pygame.mixer.init()
-                self.current_mixer = pygame.mixer
-                pygame.mixer.music.load(temp_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy() and not self.stop_event.is_set():
-                    time.sleep(0.05)
-                pygame.mixer.music.stop()
-                pygame.mixer.quit()
-                return True
-            finally:
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-        return False
-
-    def _speak_with_gtts(self, text: str, lang: Optional[str] = None) -> bool:
-        """Speak using gTTS with multilingual support"""
-        if self.stop_event.is_set():
-            return False
-            
-        gtts_lang = self._get_gtts_lang(lang)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-            temp_path = tmp_file.name
-        try:
-            tts = gTTS(text=text, lang=gtts_lang, slow=False)
-            tts.save(temp_path)
-            import pygame
-            pygame.mixer.init()
-            self.current_mixer = pygame.mixer
-            pygame.mixer.music.load(temp_path)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy() and not self.stop_event.is_set():
-                time.sleep(0.05)
-            pygame.mixer.music.stop()
-            pygame.mixer.quit()
-            return True
-        finally:
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
-        return False
-
-    def _speak_with_pyttsx3(self, text: str, lang: Optional[str] = None) -> bool:
-        """Offline pyttsx3 speak (limited multilingual support)"""
-        if not self.engine:
-            self._init_voice()
-        if not self.engine:
-            return False
-        try:
-            self.engine.say(text)
-            self.engine.runAndWait()
-            return True
-        except Exception:
-            return False
+    # ─── Personality ───
 
     def add_personality_to_text(self, text: str, context: str = "", lang: Optional[str] = None) -> str:
         """Add JARVIS personality to responses in the appropriate language"""
@@ -385,18 +116,125 @@ class DOOMCinematicVoice:
                 return f"{prefix} {text}"
         return text
 
-    def set_language(self, lang_code: str) -> bool:
-        """Change the active language"""
-        return self.lang_manager.set_language(lang_code)
+    # ─── Legacy backend implementations (kept for backward compatibility) ───
+    # These are NOT used by the default VoiceEngine flow but remain callable
+    # if external code directly invokes them.
 
-    def get_current_language(self) -> str:
-        return self.lang_manager.get_tts_language()
+    def _speak_with_elevenlabs(self, text: str, lang: Optional[str] = None) -> bool:
+        """Legacy: Speak using ElevenLabs API (multilingual v2 model)"""
+        if not text:
+            return False
+        try:
+            import requests
+            from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+            
+            elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
+            elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "")
+            if not elevenlabs_key or not elevenlabs_voice_id:
+                return False
 
-    def get_current_language_name(self) -> str:
-        return self.lang_manager.get_language_name()
+            decision = cost_guard.authorize(ResourceRequest(
+                resource_type=ResourceType.TTS,
+                provider="elevenlabs",
+                capability="tts",
+                endpoint="https://api.elevenlabs.io",
+                host="api.elevenlabs.io",
+            ))
+            if not decision.is_allow:
+                return False
+
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{elevenlabs_voice_id}"
+            headers = {
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+                "xi-api-key": elevenlabs_key
+            }
+            model_id = "eleven_multilingual_v2" if lang and lang != "en" else "eleven_monolingual_v1"
+            data = {
+                "text": text,
+                "model_id": model_id,
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}
+            }
+            response = requests.post(url, json=data, headers=headers, timeout=10)
+            if response.status_code == 200:
+                import tempfile
+                import pygame
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                    temp_path = tmp_file.name
+                    tmp_file.write(response.content)
+
+                try:
+                    pygame.mixer.init()
+                    pygame.mixer.music.load(temp_path)
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        time.sleep(0.05)
+                    pygame.mixer.music.stop()
+                    pygame.mixer.quit()
+                    return True
+                finally:
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return False
+
+    def _speak_with_gtts(self, text: str, lang: Optional[str] = None) -> bool:
+        """Legacy: Speak using gTTS with multilingual support"""
+        if not text:
+            return False
+        try:
+            from gtts import gTTS
+            from core.cost_guard import ResourceRequest, ResourceType, cost_guard
+
+            decision = cost_guard.authorize(ResourceRequest(
+                resource_type=ResourceType.TTS,
+                provider="gtts",
+                capability="tts",
+            ))
+            if not decision.is_allow:
+                return False
+
+            gtts_lang = self._get_gtts_lang(lang)
+            
+            import tempfile
+            import pygame
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                temp_path = tmp_file.name
+            try:
+                tts = gTTS(text=text, lang=gtts_lang, slow=False)
+                tts.save(temp_path)
+                pygame.mixer.init()
+                pygame.mixer.music.load(temp_path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.05)
+                pygame.mixer.music.stop()
+                pygame.mixer.quit()
+                return True
+            finally:
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return False
+
+    def _get_gtts_lang(self, lang: Optional[str] = None) -> str:
+        """Get gTTS language code"""
+        lang = lang or self.lang_manager.get_tts_language()
+        gtts_map = {
+            "en": "en", "hi": "hi", "mr": "mr", "ta": "ta", "te": "te",
+            "kn": "kn", "ml": "ml", "gu": "gu", "bn": "bn", "pa": "pa", "ur": "ur",
+        }
+        return gtts_map.get(lang, "en")
 
 
-# Global voice instance
+# ─── Global instance and functions (backward compatible) ───
+
 _voice_instance = None
 
 def get_voice_instance() -> DOOMCinematicVoice:
@@ -409,9 +247,9 @@ def speak(text: str, context: str = "", lang: Optional[str] = None):
     voice = get_voice_instance()
     voice.speak(text, context, lang)
 
-def speak_immediate(text: str, lang: Optional[str] = None) -> AudioStatus:
+def speak_immediate(text: str, lang: Optional[str] = None, context: str = "") -> AudioStatus:
     voice = get_voice_instance()
-    return voice.speak_immediate(text, lang)
+    return voice.speak_immediate(text, lang, context)
 
 def stop_speaking():
     """Global stop function - call this to immediately halt all speech"""
@@ -444,7 +282,8 @@ def get_audio_status() -> AudioStatus:
     return voice.get_audio_status()
 
 
-# Global hotkey for stop speaking
+# ─── Global hotkey for stop speaking ───
+
 _hotkey_listener_started = False
 _hotkey_thread = None
 
