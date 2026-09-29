@@ -197,6 +197,13 @@ def normalize_intent(raw_intent: str) -> IntentClass:
         return IntentClass.UNKNOWN
     if _any(text, _AMBIGUOUS):
         return IntentClass.AMBIGUOUS
+    # Special case: help me build/create website should be COMPUTER
+    if _any(text, [
+        re.compile(r"\bhelp\s+me\s+build\s+.*\bwebsite\b", re.I),
+        re.compile(r"\bhelp\s+me\s+create\s+.*\bwebsite\b", re.I),
+        re.compile(r"\bhelp\s+me\s+make\s+.*\bwebsite\b", re.I),
+    ]):
+        return IntentClass.COMPUTER
     if _CONVERSATION.match(text):
         return IntentClass.CONVERSATION
 

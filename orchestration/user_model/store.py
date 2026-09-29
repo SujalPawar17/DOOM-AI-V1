@@ -22,6 +22,7 @@ from orchestration.user_model.policy import (
     parse_status,
     validate_entry_fields,
 )
+from orchestration.conversation.personal_memory import score_memory
 from orchestration.user_model.types import (
     ENTRY_ID_PREFIX,
     MAX_ENTRIES_PER_CATEGORY,
@@ -370,6 +371,7 @@ def list_profile_entries(
     categories: Optional[Sequence[Any]] = None,
     include_expired: bool = False,
     limit: int = MAX_LIST_RESULTS,
+    query: str = "",
 ) -> ProfileResult:
     if not _enabled():
         return ProfileResult(ProfileResultStatus.UNAVAILABLE)
@@ -386,12 +388,26 @@ def list_profile_entries(
                 return ProfileResult(ProfileResultStatus.REJECTED)
             wanted.add(cat.value)
     now = time.time()
+    
+    
 
     if _USE_TEST_STORE:
+        
         with _LOCK:
             rows = list(_TEST_ROWS.get(owner, []))
             _materialize_expired_test_rows(rows, now)
-        rows.sort(key=lambda r: float(r.get("updated_at") or 0.0), reverse=True)
+        if query:
+            # Score each row by relevance to the query
+            scored_rows = []
+            for row in rows:
+                content = str(row.get("value") or "")
+                relevance = score_memory(query, content)
+                scored_rows.append((relevance, row))
+            # Sort by relevance descending, then by updated_at descending for tie-breaking
+            scored_rows.sort(key=lambda x: (-x[0], float(x[1].get("updated_at") or 0.0)), reverse=True)
+            rows = [row for _, row in scored_rows]
+        else:
+            rows.sort(key=lambda r: float(r.get("updated_at") or 0.0), reverse=True)
         out: List[ProfileEntry] = []
         for row in rows:
             st = str(row.get("status") or "")
@@ -414,6 +430,7 @@ def list_profile_entries(
         return ProfileResult(ProfileResultStatus.OK, entries=tuple(out))
 
     try:
+        
         if not ensure_user_profile_schema():
             return ProfileResult(ProfileResultStatus.UNAVAILABLE)
         from database.postgres_db import postgres_manager
@@ -428,41 +445,51 @@ def list_profile_entries(
                     conn.commit()
                 except Exception:
                     pass
-                cur.execute(
-                    """
-                    SELECT entry_id, owner_id, schema_version, category, key, value,
-                           confidence, provenance, source_memory_id, version, status,
-                           created_at, updated_at, confirmed_at, expires_at
-                    FROM v8_user_profile_entries
-                    WHERE owner_id = %s
-                    ORDER BY updated_at DESC
-                    LIMIT %s
-                    """,
-                    (owner, max(lim * 4, lim)),
-                )
-                out2: List[ProfileEntry] = []
-                for fetched in cur.fetchall() or ():
-                    row = _pg_row_to_dict(fetched)
-                    st = str(row.get("status") or "")
-                    expired = _is_expired(row, now)
-                    if wanted is not None and str(row.get("category")) not in wanted:
+            cur.execute(
+                """
+                SELECT entry_id, owner_id, schema_version, category, key, value,
+                        confidence, provenance, source_memory_id, version, status,
+                        created_at, updated_at, confirmed_at, expires_at
+                FROM v8_user_profile_entries
+                WHERE owner_id = %s
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (owner, max(lim * 4, lim)),
+            )
+            out2: List[ProfileEntry] = []
+            for fetched in cur.fetchall() or ():
+                row = _pg_row_to_dict(fetched)
+                st = str(row.get("status") or "")
+                expired = _is_expired(row, now)
+                if wanted is not None and str(row.get("category")) not in wanted:
+                    continue
+                if st == ProfileStatus.SUPERSEDED.value:
+                    continue
+                if expired and not include_expired:
+                    continue
+                if not expired and st != ProfileStatus.ACTIVE.value and not (
+                    include_expired and st == ProfileStatus.EXPIRED.value
+                ):
+                    if not (expired and include_expired):
                         continue
-                    if st == ProfileStatus.SUPERSEDED.value:
-                        continue
-                    if expired and not include_expired:
-                        continue
-                    if not expired and st != ProfileStatus.ACTIVE.value and not (
-                        include_expired and st == ProfileStatus.EXPIRED.value
-                    ):
-                        if not (expired and include_expired):
-                            continue
-                    entry = _row_to_entry(row, now=now)
-                    if entry is None:
-                        continue
-                    out2.append(entry)
-                    if len(out2) >= lim:
-                        break
-                return ProfileResult(ProfileResultStatus.OK, entries=tuple(out2))
+                entry = _row_to_entry(row, now=now)
+                if entry is None:
+                    continue
+                out2.append(entry)
+            # Apply query-based sorting and sorting if query is provided
+            if query:
+                scored_out2 = []
+                for entry in out2:
+                    content = str(entry.value) or ""
+                    relevance = score_memory(query, content)
+                    scored_out2.append((relevance, entry))
+                scored_out2.sort(key=lambda x: (-x[0], entry.updated_at), reverse=True)
+                out2 = [entry for _, entry in scored_out2]
+            # Apply limit
+            if len(out2) > lim:
+                out2 = out2[:lim]
+            return ProfileResult(ProfileResultStatus.OK, entries=tuple(out2))
         except Exception:
             return ProfileResult(ProfileResultStatus.UNAVAILABLE)
         finally:
