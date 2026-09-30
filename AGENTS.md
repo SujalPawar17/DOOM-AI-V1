@@ -1,4 +1,4 @@
-# DOOM — Agent Instructions
+# DOOM ï¿½ Agent Instructions
 
 ## Current Verified Git/Version State
 The official version lineage is:
@@ -26,13 +26,13 @@ Current frozen/published state:
 - Commit message: V9 final voice architecture and acceptance
 - V9 is officially FROZEN.
 
-DOOM-V10 — ACTIVE DEVELOPMENT
+DOOM-V10 ï¿½ ACTIVE DEVELOPMENT
 
 V10.0:
 - Cognitive Core Architecture is complete.
 - Architecture/design phase is complete.
 
-- Current phase: V10.4 Readiness (next phase after V10.3 completion)
+- Current phase: V10.10 Readiness (next phase after V10.9 completion)
 - V10.1 Context Fusion.
 - V10.1 is complete / accepted.
 - V10.1 must be fully implemented and accepted before V10.2.
@@ -137,7 +137,7 @@ Before modifying an existing subsystem, inspect how it currently works.
 
 
 
-## V9 Status — FROZEN
+## V9 Status ï¿½ FROZEN
 V9 is COMPLETE and FROZEN.
 
 V9 focused on the DOOM voice architecture and conversational voice delivery.
@@ -324,7 +324,7 @@ Never bypass Cost Guard simply to make a feature work.
 
 
 
-## STT — FROZEN
+## STT ï¿½ FROZEN
 Speech-to-text uses local Whisper/faster-whisper infrastructure.
 
 STT is FROZEN unless explicitly included in a future version scope.
@@ -461,7 +461,7 @@ When future versions are completed, update AGENTS.md only with stable architectu
 
 
 
-## DOOM-V10 — ACTIVE DEVELOPMENT
+## DOOM-V10 ï¿½ ACTIVE DEVELOPMENT
 
 - Branch: DOOM-V10
 - Current development baseline: V9 frozen architecture plus approved V10 architecture work.
@@ -469,6 +469,12 @@ When future versions are completed, update AGENTS.md only with stable architectu
 - V10.1 Context Fusion is COMPLETE / ACCEPTED
 - V10.2 Memory + User Model Integration is COMPLETE / ACCEPTED
 - V10.3 Goal Understanding + Continuity is COMPLETE / ACCEPTED
+- V10.4 Reasoning + Decision Integration is COMPLETE / ACCEPTED
+- V10.5 Planning Integration is COMPLETE / ACCEPTED
+- V10.6 Cognitive Orchestrator is COMPLETE / ACCEPTED
+- V10.7 Safety / Verification / Cost Hardening is COMPLETE / ACCEPTED
+- V10.8 End-to-End Cognitive Integration is COMPLETE / ACCEPTED
+- V10.9 Performance / Reliability / Long-Session is COMPLETE / ACCEPTED
 - Approved V10 sequence:
   V10.1 Context Fusion
   V10.2 Memory + User Model Integration
@@ -515,9 +521,18 @@ When V10 feature development is active, the following rules apply:
 IMPORTANT:
 The existing repository has a deliberately preserved dirty work tree containing earlier DOOM work and local artifacts. Do not clean, reset, revert, or delete those files.
 
-# The V10.1 implementation was completed and accepted as part of V10.1 Context Fusion.
-- core/v10/context_fusion.py
-- test_v10_1_context_fusion.py
+# The V10.9 implementation was completed and accepted as part of V10.9 Performance / Reliability / Long-Session.
+- core/v10/context_fusion.py (V10.1)
+- test_v10_1_context_fusion.py (V10.1)
+- test_v10_2_memory_user_model_integration.py (V10.2)
+- test_v10_3_goal_understanding_continuity.py (V10.3)
+- test_v10_4_reasoning_decision_integration.py (V10.4)
+- test_v10_5_planning_integration.py (V10.5)
+- test_v10_6_cognitive_orchestrator.py (V10.6)
+- test_v10_6_planning.py (V10.6)
+- test_v10_7_safety_verification_cost_hardening.py (V10.7)
+- test_v10_8_end_to_end_integration.py (V10.8)
+- test_v10_9_performance_reliability_long_session.py (V10.9)
 
-# The V10.1 Context Fusion implementation is complete and accepted.
-# No further action needed on V10.1 Context Fusion - proceed to V10.4.
+# The V10.9 Performance / Reliability / Long-Session implementation is complete and accepted.
+# Proceed to V10.10 Final Acceptance / Freeze.

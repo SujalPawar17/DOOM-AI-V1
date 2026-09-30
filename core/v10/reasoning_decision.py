@@ -12,6 +12,7 @@ from core.v10.context_fusion import FusedContext
 from core.v10.goal_understanding import GoalUnderstandingResult, GoalSpec
 from core.cognition.schemas import CognitiveIntent, CognitiveDecisionType
 from core.cognition import reasoning_engine, cognitive_decision_engine
+from orchestration.goal.types import IntentClass
 
 # Mapping from V8 goal types IntentClass to V8 cognition CognitiveIntent
 GOAL_INTENT_TO_COGNITIVE_INTENT = {
@@ -276,11 +277,12 @@ class ReasoningDecisionIntegration:
             constraints = constraints_from_understanding
             required_capabilities = required_capabilities_from_understanding
             needs_clarification = needs_clarification_from_understanding
-        else:
-            # Override intent with the one from the understood goal (mapped to CognitiveIntent)
+        # For cognitive decision making, prefer the understanding engine's intent as it's more accurate
+        # for complex requests. Only use goal understanding's intent if it's a valid classified intent.
+        if understood_goal is not None and understood_goal.normalized_intent not in (IntentClass.UNKNOWN, IntentClass.AMBIGUOUS):
             intent_cognitive = _map_goal_intent_to_cognitive(understood_goal.normalized_intent.value)
-            # Use the normalized goal from the understood goal's raw_intent (or we could use the one from understanding)
-            # We'll use the understood goal's raw_intent as the normalized goal for reasoning
+            # Always use the understood goal's raw_intent as the normalized goal for reasoning
+            # as it contains the specific goal details from the request
             normalized_goal = understood_goal.raw_intent
             # For entities, we start with the understanding engine's output and then
             # add or override with goal-specific entities
@@ -301,15 +303,25 @@ class ReasoningDecisionIntegration:
                 constraints.append("read_only")
             elif cap_val == "memory_read":
                 constraints.append("read_only")  # Memory read is read-only
+            
             # For required_capabilities, we derive from the goal's capability class
             # We map the V8 goal CapabilityClass to a list of strings that the reasoning engine expects
             required_capabilities = self._map_goal_capability_to_required_capabilities(understood_goal.capability_class)
-            # For needs_clarification, we use the understanding engine's output but
-            # we might override if the goal is very clear (e.g., a specific system command)
-            needs_clarification = needs_clarification_from_understanding
-            # If the goal is a clear action with no ambiguity, we might reduce need for clarification
-            # but we keep the understanding engine's judgment for safety.
-        
+        else:
+            # Fall back to understanding engine's output when goal understanding fails to classify
+            # or when no goal was understood
+            intent_cognitive = intent_from_understanding
+            normalized_goal = normalized_goal_from_understanding
+            entities = entities_from_understanding.copy()
+            constraints = constraints_from_understanding.copy()
+            required_capabilities = required_capabilities_from_understanding.copy()
+    
+        # For needs_clarification, we use the understanding engine's output but
+        # If the goal is a clear action with no ambiguity, we might reduce need for clarification
+        # but we keep the understanding engine's judgment for safety.
+        needs_clarification = needs_clarification_from_understanding
+    # If the goal is a clear action with no ambiguity, we might reduce need for clarification
+    # but we keep the understanding engine's judgment for safety.
         # Step 4: Enhance entities, constraints, required_capabilities with FusedContext data
         # Extract additional entities from fused context
         fused_entities = _extract_entities_from_fused_context(fused_context)
