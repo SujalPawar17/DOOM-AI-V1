@@ -175,6 +175,71 @@ class V11CognitiveOrchestrator:
         except Exception:
             return "UNAVAILABLE"
 
+    def _compose_response(self, facts: Dict[str, Any]) -> Dict[str, Any]:
+        """Stage 12 response text from cycle facts. Returns {"text": ...}; extra keys are
+        recorded as response_generation stage metadata. Subclasses (V12) may override."""
+        user_input = facts["user_input"]
+        planning_result = facts["planning_result"]
+        planning_failed = facts["planning_failed"]
+        skip_execution = facts["skip_execution"]
+        cost_guard_error = facts["cost_guard_error"]
+        execution_result = facts["execution_result"]
+        pending_id = facts["pending_id"]
+        stash_error = facts["stash_error"]
+        reasoning_result = facts["reasoning_result"]
+        if not planning_result.planning_required:
+            # Conversational / Informational response (do not fabricate plan execution)
+            if execution_result.response_text:
+                response_text = execution_result.response_text
+            elif reasoning_result and getattr(reasoning_result, "reasoning_summary", None):
+                response_text = reasoning_result.reasoning_summary
+            else:
+                response_text = f"I have processed your request: '{user_input}'."
+        elif planning_failed:
+            # Planning was required but no plan was produced: never claim execution.
+            response_text = (
+                "I could not form an executable plan for your request, so nothing was executed."
+            )
+        elif skip_execution:
+            response_text = (
+                f"Execution was blocked by cost guard: {cost_guard_error or 'insufficient resources or non-free provider'}. "
+                f"Nothing was executed."
+            )
+        else:
+            # Planned execution response
+            if execution_result.status == ExecutionStatus.SUCCESS:
+                if execution_result.response_text:
+                    response_text = execution_result.response_text
+                else:
+                    response_text = (
+                        f"I have successfully executed the plan for your request. "
+                        f"Execution ID: {execution_result.execution_id}"
+                    )
+            elif execution_result.status == ExecutionStatus.APPROVAL_REQUIRED:
+                plan_ref = execution_result.plan_hash[:8] if execution_result.plan_hash else 'unknown'
+                if pending_id:
+                    pend_info = f" (Pending ID: {pending_id})"
+                else:
+                    pend_info = f" The plan could not be held for approval ({stash_error or 'unavailable'})."
+                response_text = (
+                    f"I have created a plan for your request, but it requires authorization before execution can proceed. "
+                    f"Plan ID: {plan_ref}{pend_info}"
+                )
+            elif execution_result.status == ExecutionStatus.BLOCKED:
+                response_text = (
+                    "Execution was blocked by a safety policy before the plan could complete."
+                )
+            elif execution_result.status == ExecutionStatus.VERIFICATION_FAILED:
+                response_text = (
+                    f"I executed the plan for your request, but verification failed: {execution_result.verification_state}"
+                )
+            else:
+                response_text = (
+                    f"I was unable to execute your request due to: {execution_result.status.value}. "
+                    f"If you believe this is in error, please check the system logs."
+                )
+        return {"text": response_text}
+
     def process_cognitive_cycle(
         self,
         user_input: str,
@@ -535,64 +600,34 @@ class V11CognitiveOrchestrator:
 
             # Stage 12: Response Generation
             response_start = time.time()
-            if not planning_result.planning_required:
-                # Conversational / Informational response (do not fabricate plan execution)
-                if execution_result.response_text:
-                    response_text = execution_result.response_text
-                elif reasoning_result and getattr(reasoning_result, "reasoning_summary", None):
-                    response_text = reasoning_result.reasoning_summary
-                else:
-                    response_text = f"I have processed your request: '{user_input}'."
-            elif planning_failed:
-                # Planning was required but no plan was produced: never claim execution.
-                response_text = (
-                    "I could not form an executable plan for your request, so nothing was executed."
-                )
-            elif skip_execution:
-                response_text = (
-                    f"Execution was blocked by cost guard: {cost_guard_error or 'insufficient resources or non-free provider'}. "
-                    f"Nothing was executed."
-                )
-            else:
-                # Planned execution response
-                if execution_result.status == ExecutionStatus.SUCCESS:
-                    if execution_result.response_text:
-                        response_text = execution_result.response_text
-                    else:
-                        response_text = (
-                            f"I have successfully executed the plan for your request. "
-                            f"Execution ID: {execution_result.execution_id}"
-                        )
-                elif execution_result.status == ExecutionStatus.APPROVAL_REQUIRED:
-                    plan_ref = execution_result.plan_hash[:8] if execution_result.plan_hash else 'unknown'
-                    if pending_id:
-                        pend_info = f" (Pending ID: {pending_id})"
-                    else:
-                        pend_info = f" The plan could not be held for approval ({stash_error or 'unavailable'})."
-                    response_text = (
-                        f"I have created a plan for your request, but it requires authorization before execution can proceed. "
-                        f"Plan ID: {plan_ref}{pend_info}"
-                    )
-                elif execution_result.status == ExecutionStatus.BLOCKED:
-                    response_text = (
-                        "Execution was blocked by a safety policy before the plan could complete."
-                    )
-                elif execution_result.status == ExecutionStatus.VERIFICATION_FAILED:
-                    response_text = (
-                        f"I executed the plan for your request, but verification failed: {execution_result.verification_state}"
-                    )
-                else:
-                    response_text = (
-                        f"I was unable to execute your request due to: {execution_result.status.value}. "
-                        f"If you believe this is in error, please check the system logs."
-                    )
-
+            response_facts = {
+                "user_input": user_input,
+                "owner_id": owner_id,
+                "session_id": session_id,
+                "planning_result": planning_result,
+                "planning_failed": planning_failed,
+                "skip_execution": skip_execution,
+                "cost_guard_error": cost_guard_error,
+                "execution_result": execution_result,
+                "executed": executed,
+                "pending_id": pending_id,
+                "stash_error": stash_error,
+                "awaiting_approval": auth_required and not auth_granted,
+                "verification_result": verification_result,
+                "reasoning_result": reasoning_result,
+                "overall_success": overall_success,
+            }
+            composed = self._compose_response(response_facts)
+            response_text = composed["text"]
             response_time = (time.time() - response_start) * 1000
             result["stages"]["response_generation"] = {
                 "completed": True,
                 "response_text": response_text,
                 "time_ms": response_time
             }
+            for meta_key, meta_value in composed.items():
+                if meta_key != "text":
+                    result["stages"]["response_generation"][meta_key] = meta_value
 
             # Stage 13: V9 Voice / Delivery Metadata
             # Deterministic metadata only, mirroring VoiceEngine._compute_delivery_style
