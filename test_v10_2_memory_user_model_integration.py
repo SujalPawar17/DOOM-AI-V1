@@ -31,8 +31,8 @@ class TestV10_2MemoryUserModelIntegration(unittest.TestCase):
             session_id="test_session"
         )
         self.assertIsInstance(result, FusedContext)
-        # Check for memory entries: personal_memory_* and general_memory_*
-        memory_keys = [k for k in result.context.keys() if k.startswith("personal_memory_") or k.startswith("general_memory_")]
+        # Check for memory entries: advanced_memory_*
+        memory_keys = [k for k in result.context.keys() if k.startswith("advanced_memory_")]
         self.assertGreater(len(memory_keys), 0, "Expected at least one memory entry in the context")
         # Check that the values are strings (as stored)
         for key in memory_keys:
@@ -97,7 +97,7 @@ class TestV10_2MemoryUserModelIntegration(unittest.TestCase):
         # We expect at least one memory entry that contains "apple" in the content
         found = False
         for key, value in result.context.items():
-            if key.startswith("personal_memory_") or key.startswith("general_memory_"):
+            if key.startswith("advanced_memory_"):
                 if "apple" in value.lower():
                     found = True
                     break
@@ -172,10 +172,10 @@ class TestV10_2MemoryUserModelIntegration(unittest.TestCase):
         )
         
         # For owner A
-        memory_keys_a = [k for k in result_a.context.keys() if k.startswith("personal_memory_") or k.startswith("general_memory_")]
+        memory_keys_a = [k for k in result_a.context.keys() if k.startswith("advanced_memory_")]
         memory_dict_a = {k: result_a.context[k] for k in memory_keys_a}
         # For owner B
-        memory_keys_b = [k for k in result_b.context.keys() if k.startswith("personal_memory_") or k.startswith("general_memory_")]
+        memory_keys_b = [k for k in result_b.context.keys() if k.startswith("advanced_memory_")]
         memory_dict_b = {k: result_b.context[k] for k in memory_keys_b}
         
         # Owner A's context should contain owner A's memory, not owner B's

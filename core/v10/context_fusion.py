@@ -36,10 +36,12 @@ from orchestration.context.user_model_adapter import (
     UserModelAdapter,
     bind_v8_user_model_retrieve,
 )
+from core.v11.advanced_memory import retrieve_advanced_memories
 
 # Constants
 MAX_CONTEXT_KEYS = 50
 MAX_VALUE_LENGTH = 1000
+MAX_CALLER_CONTEXT_KEYS = 16  # V11.8: bound on caller-supplied (e.g. monitoring) keys
 DEFAULT_LANGUAGE = "en"
 
 # Keys that should always be preserved regardless of relevance to request
@@ -164,7 +166,8 @@ class ContextFusion:
         request: str,
         owner_id: str,
         session_id: str = "",
-        language_hint: Optional[str] = None
+        language_hint: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> FusedContext:
         with self._lock:
             if not owner_id or not isinstance(owner_id, str):
@@ -178,17 +181,18 @@ class ContextFusion:
             provenance = {}
             privacy_levels = {}
             now_ms = int(time.time() * 1000)
+            _cache = {}
             
 # Process each source in precedence order
             for source in self._precedence:
-                 print(f'DEBUG: Processing source: {source}')
-                 try:
-                     source_data = self._fetch_source(
-                         source, request, owner_id, session_id, language_hint, now_ms
-                     )
-                     print(f'DEBUG: source_data for {source}: {source_data}')
-                     
-                     if source_data:
+                print(f'DEBUG: Processing source: {source}')
+                try:
+                    source_data = self._fetch_source(
+                        source, request, owner_id, session_id, language_hint, now_ms, _cache
+                    )
+                    print(f'DEBUG: source_data for {source}: {source_data}')
+                    
+                    if source_data:
                          # Apply filtering and bounding
                          filtered_data = self._apply_relevance_filtering(source_data, request)
                          bounded_data = self._apply_size_bounding(filtered_data)
@@ -199,7 +203,7 @@ class ContextFusion:
                              private_data, source, owner_id, now_ms,
                              fused_context, provenance, privacy_levels
                          )
-                 except Exception as e:
+                except Exception as e:
                      # Handle source failure gracefully
                      print(f'DEBUG: Exception in source {source}: {e}')
                      self._handle_source_failure(
@@ -207,6 +211,46 @@ class ContextFusion:
                          fused_context, provenance, privacy_levels
                      )
             
+            # Safely merge caller context (e.g. proactive monitor metadata).
+            # Caller context is lowest precedence: it never overrides source-derived
+            # keys, never injects identity/authorization/cost keys, never carries
+            # secrets, and only JSON-safe scalars are accepted (keeps hashing stable).
+            if context and isinstance(context, dict):
+                caller_keys_added = 0
+                for k, v in sorted(context.items(), key=lambda kv: str(kv[0])):
+                    if caller_keys_added >= MAX_CALLER_CONTEXT_KEYS:
+                        break
+                    k_str = str(k)
+                    if k_str in fused_context:
+                        continue
+                    k_lower = k_str.lower()
+                    # Protect authoritative identity / authorization / cost fields
+                    if k_lower in ("owner_id", "session_id", "request_raw") or k_lower.startswith(
+                        ("auth", "approval", "authorized", "cost", "owner", "session", "pending")
+                    ):
+                        continue
+                    # Secret / credential check
+                    if any(secret_term in k_lower for secret_term in (
+                        "secret", "password", "token", "cookie", "csrf", "credential", "api_key", "unlock"
+                    )):
+                        continue
+                    if v is not None and not isinstance(v, (str, int, float, bool)):
+                        continue
+                    # Safely bound string value length
+                    if isinstance(v, str) and len(v) > MAX_VALUE_LENGTH:
+                        v = v[:MAX_VALUE_LENGTH]
+                    # Same V10 secret masking / privacy levels as source data
+                    protected, levels = self._apply_privacy_protection({k_str: v})
+                    fused_context[k_str] = protected[k_str]
+                    provenance[k_str] = ContextProvenance(
+                        source="caller_context",
+                        owner_id=owner_id,
+                        timestamp_ms=now_ms,
+                        metadata={"caller_provided": True}
+                    )
+                    privacy_levels[k_str] = levels[k_str]
+                    caller_keys_added += 1
+
             # Generate hash (excluding timestamp for determinism in testing)
             context_hash = self._generate_hash(fused_context)
             
@@ -226,9 +270,10 @@ class ContextFusion:
         owner_id: str,
         session_id: str,
         language_hint: Optional[str],
-        now_ms: int
+        now_ms: int,
+        _cache: Dict[str, Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """Fetch data from a specific source."""
+        """Fetch data from a specific source with caching."""
         if source == ContextSource.REQUEST:
             return {
                 "request_raw": request[:200],
@@ -247,81 +292,84 @@ class ContextFusion:
                 return {
                     "conversation_history": history[:300],
                     "conversation_session_id": session_id
-}
+                }
             except ImportError:
                 return {
                     "conversation_history": "",
                     "conversation_session_id": session_id
                 }
         elif source == ContextSource.ACTIVE_GOAL:
+            cache_key = f"active_goal:{request}:{owner_id}:{session_id}"
+            if cache_key in _cache:
+                return _cache[cache_key]
             try:
                 goal_result = process_goal(request, {"owner_id": owner_id, "session_id": session_id})
                 if goal_result.status.name == "CAPABILITY_AVAILABLE":
                     goal = goal_result.goal
-                    return {
+                    result = {
                         "active_goal_id": goal.goal_id,
                         "active_goal_intent": goal.normalized_intent.value,
                         "active_goal_capability": goal.capability_class.value
                     }
+                else:
+                    result = {
+                        "active_goal_id": "",
+                        "active_goal_intent": "",
+                        "active_goal_capability": ""
+                    }
             except Exception:
-                pass
-            return {
-                "active_goal_id": "",
-                "active_goal_intent": "",
-                "active_goal_capability": ""
-            }
+                result = {
+                    "active_goal_id": "",
+                    "active_goal_intent": "",
+                    "active_goal_capability": ""
+                }
+            _cache[cache_key] = result
+            return result
         elif source == ContextSource.USER_MODEL:
-                 try:
-                     # Use user model adapter to get relevant user model entries
-                     user_model_adapter = bind_v8_user_model_retrieve(list_profile_entries)
-                     user_model_hits = user_model_adapter.read(
-                query=request,
-                owner_id=owner_id,
-                session_id=session_id,
-                goal_id="",
-                limit=10,
-            )
-                     # Format user model hits as individual context entries
-                     user_model_dict = {}
-                     for hit in user_model_hits:
-                         ref, content, relevance, ts, provenance, owner_id_hit, category, key = hit
-                         # Use a key that includes the category and the original key to avoid collisions
-                         context_key = f"user_model_{category}_{key}"
-                         user_model_dict[context_key] = content
-                     return user_model_dict
-                 except Exception:
-                     return {}
-    
+                  try:
+                      # Use user model adapter to get relevant user model entries
+                      user_model_adapter = bind_v8_user_model_retrieve(list_profile_entries)
+                      user_model_hits = user_model_adapter.read(
+                  query=request,
+                  owner_id=owner_id,
+                  session_id=session_id,
+                  goal_id="",
+                  limit=10,
+              )
+                      # Format user model hits as individual context entries
+                      user_model_dict = {}
+                      for hit in user_model_hits:
+                          ref, content, relevance, ts, provenance, owner_id_hit, category, key = hit
+                          # Use a key that includes the category and the original key to avoid collisions
+                          context_key = f"user_model_{category}_{key}"
+                          user_model_dict[context_key] = content
+                      return user_model_dict
+                  except Exception:
+                      return {}
+         
         elif source == ContextSource.MEMORY:
-            try:
-                # Use personal memory adapter to get relevant personal memories
-                personal_adapter = bind_v8_personal_memory_retrieve(search_personal_memories)
-                personal_hits = personal_adapter.read(
-                query=request,
-                owner_id=owner_id,
-                session_id=session_id,
-                goal_id="",
-                limit=5,
-            )
-                # Format personal memories as individual context entries
-                memory_dict = {}
-                for hit in personal_hits:
-                    ref, content, relevance, ts, provenance, owner_id_hit = hit
-                    context_key = f"personal_memory_{ref}"
-                    memory_dict[context_key] = content
-                # For general memory, we still use load_memory
-                general_memory = load_memory()
-                print(f'DEBUG: general_memory={general_memory}')
-                if general_memory:
-                    # Take up to 5 items from general memory, sorted by key for determinism
-                    for key, value in sorted(general_memory.items())[:5]:
-                        context_key = f"general_memory_{key}"
-                        memory_dict[context_key] = value
-                return memory_dict
-            except Exception as e:
-                print(f'DEBUG: Exception in MEMORY source: {e}')
-                return {}
+             try:
+                 # Use V11.4 advanced memory system for enhanced memory retrieval
+                 advanced_memories = retrieve_advanced_memories(
+                     query=request,
+                     owner_id=owner_id,
+                     session_id=session_id
+                 )
+                 
+                 # Format advanced memories as individual context entries
+                 memory_dict = {}
+                 for i, record in enumerate(advanced_memories):
+                     # Create context keys based on memory type and index
+                     context_key = "advanced_memory_" + record.memory_type.name + "_" + str(i)
+                     memory_dict[context_key] = record.content
+                 return memory_dict
+             except Exception as e:
+                 print(f'DEBUG: Exception in MEMORY source: {e}')
+                 return {}
         elif source == ContextSource.GOAL_STATE:
+            cache_key = f"goal_state:{owner_id}"
+            if cache_key in _cache:
+                return _cache[cache_key]
             try:
                 # Get active goal snapshot
                 active_goal_result = get_active_goal(owner_id)
@@ -376,11 +424,15 @@ class ContextFusion:
                             f"recent_experience_{i}_created_at": float(exp.created_at or 0),
                         })
                 
+                _cache[cache_key] = goal_state_data
                 return goal_state_data
             except Exception:
                 # Return empty dict on failure to allow graceful degradation
                 return {}
         elif source == ContextSource.OUTCOME:
+            cache_key = f"outcome:{owner_id}"
+            if cache_key in _cache:
+                return _cache[cache_key]
             try:
                 # Get recent goal experiences to compute outcome statistics
                 experiences_result = list_experiences(owner_id, limit=10, include_inactive=False)  # Get more for better stats
@@ -414,11 +466,11 @@ class ContextFusion:
                             error_signatures.append("timeout_error")
                         elif "permission" in blocker_text or "permission" in user_note_text or "access" in blocker_text or "access" in user_note_text:
                             error_signatures.append("permission_error")
-                        elif "not found" in blocker_text or "not found" in user_note_text or "missing" in blocker_text or "missing" in user_note_text:
+                        elif "not found" in blocker_text or "not found" in user_note_text or "missing" in blocker_text or "missing" in victim_text:
                             error_signatures.append("not_found_error")
-                        elif "invalid" in blocker_text or "invalid" in user_note_text or "validation" in blocker_text or "validation" in user_note_text:
+                        elif "invalid" in blocker_text or "invalid" in victim_text or "validation" in blocker_text or "validation" in victim_text:
                             error_signatures.append("validation_error")
-                        elif "network" in blocker_text or "network" in user_note_text or "connection" in blocker_text or "connection" in user_note_text:
+                        elif "network" in blocker_text or "network" in victim_text or "connection" in blocker_text or "connection" in victim_text:
                             error_signatures.append("network_error")
                         else:
                             # Generic error signature based on first blocker or note
@@ -435,11 +487,15 @@ class ContextFusion:
                     top_errors = [error for error, _ in error_counts.most_common(2)]
                     outcome_data["outcome_frequent_error_signatures"] = top_errors
                 
+                _cache[cache_key] = outcome_data
                 return outcome_data
             except Exception:
                 # Return empty dict on failure
                 return {}
         elif source == ContextSource.PLAN:
+            cache_key = f"plan:{owner_id}"
+            if cache_key in _cache:
+                return _cache[cache_key]
             try:
                 # First get active goal to plan for
                 active_goal_result = get_active_goal(owner_id)
@@ -500,6 +556,7 @@ class ContextFusion:
                                     f"step_{i}_retry_count": int(step.retry_count or 0),
                                     f"step_{i}_timeout_ms": int(step.timeout_ms or 0),
                                 })
+                _cache[cache_key] = plan_data
                 return plan_data
             except Exception:
                 # Return empty dict on failure
@@ -538,7 +595,6 @@ class ContextFusion:
         else:
             # This should not happen with the current precedence order, but just in case
             return {}
-    
     def _detect_language(self, text: str) -> Optional[str]:
         """Simple language detection."""
         if not text:
@@ -748,9 +804,11 @@ def fuse_context(
     request: str,
     owner_id: str,
     session_id: str = "",
-    language_hint: Optional[str] = None
+    language_hint: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None
 ) -> FusedContext:
     """Convenience function."""
-    return context_fusion.fuse_context(request, owner_id, session_id, language_hint)
+    return context_fusion.fuse_context(request, owner_id, session_id, language_hint, context)
+
 
 

@@ -3,7 +3,7 @@
 from orchestration.audit.codes import AuditEventCode, AuditPhase, AuditReasonCode
 from orchestration.audit.errors import AuditNotFound, AuditUnavailable, AuditValidationError
 from orchestration.audit.query import get_event, list_events
-from orchestration.audit.recorder import record_event, reset_audit_for_tests
+from orchestration.audit.recorder import record_event, reset_audit_for_tests, try_record_event
 from orchestration.audit.types import (
     MAX_AUDIT_EVENTS,
     MAX_QUERY_RESULTS,
@@ -24,4 +24,5 @@ __all__ = [
     "list_events",
     "record_event",
     "reset_audit_for_tests",
+    "try_record_event",
 ]

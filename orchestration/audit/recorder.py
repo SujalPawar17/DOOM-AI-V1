@@ -129,6 +129,14 @@ def record_event(
         return event
 
 
+def try_record_event(**kwargs: Any) -> Optional[AuditEvent]:
+    """Best-effort record. Never raises. Never authorizes or changes execution."""
+    try:
+        return record_event(**kwargs)
+    except Exception:
+        return None
+
+
 def _bound_id(value: str, name: str) -> str:
     text = str(value or "").replace("\x00", "")
     if len(text) > MAX_ID_CHARS:
