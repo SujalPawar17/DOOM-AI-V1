@@ -12,6 +12,10 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# V11.10: the V8.27 user model is flag-gated; these tests exercise it, so enable it
+# explicitly (as test_v10_8 does) instead of depending on the local .env.
+os.environ.setdefault("PROACTIVE_V827_USER_MODEL_ENABLED", "1")
+
 from core.v10.context_fusion import fuse_context, FusedContext
 
 class TestV10_2MemoryUserModelIntegration(unittest.TestCase):

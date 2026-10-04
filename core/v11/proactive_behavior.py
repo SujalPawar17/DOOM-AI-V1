@@ -529,7 +529,7 @@ class ContinuousMonitoringEnhancement:
             if current_state.get("progress", 1.0) < 0.1 and previous_state:
                 if previous_state.get("progress", 0.0) > 0.5:
                     priority = MonitoringPriority.HIGH
-            elif current_state.get("no_active_goal", False) and not previous_state.get("no_active_goal", True):
+            elif current_state.get("no_active_goal", False) and previous_state and not previous_state.get("no_active_goal", True):  # V11.10: no previous state on first poll
                 priority = MonitoringPriority.LOW  # Goal completed
                 
         elif state_type == "experience_state":

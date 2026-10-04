@@ -32,7 +32,7 @@ V10.0:
 - Cognitive Core Architecture is complete.
 - Architecture/design phase is complete.
 
-- Current phase: V10.10 Readiness (next phase after V10.9 completion)
+- Current phase: V10 and V11 are FROZEN (see "V11 — FROZEN" at the end). Active work: DOOM completion program (V12.x).
 - V10.1 Context Fusion.
 - V10.1 is complete / accepted.
 - V10.1 must be fully implemented and accepted before V10.2.
@@ -536,3 +536,55 @@ The existing repository has a deliberately preserved dirty work tree containing 
 
 # The V10.9 Performance / Reliability / Long-Session implementation is complete and accepted.
 # Proceed to V10.10 Final Acceptance / Freeze.
+
+## V11 — FROZEN
+
+V11 extends V10 with execution, experience, proactive behaviour, advanced memory,
+continuous monitoring, caching, safety hardening, end-to-end integration and reliability.
+
+Lineage on branch DOOM-V10 (local checkpoints; not pushed unless explicitly authorized):
+- 1c738a4  V11.8 final acceptance and cognitive integration freeze (V11.1-V11.8)
+- 581e845  V11.9 performance, reliability and long-session hardening
+- V11.10   final V11 audit / freeze (tag V11-FINAL-FREEZE)
+
+Key components:
+- core/v11/cognitive_orchestrator.py  (V11CognitiveOrchestrator, process_v11_cognitive_cycle)
+- core/v11/execution_layer.py, experience_integration.py, advanced_memory.py, proactive_behavior.py
+- core/v10/context_fusion.py (V10.1 + V11.4 advanced memory + V11.6 cache + V11.8 caller context)
+
+Durable invariants (do not weaken):
+- Pipeline order: Cost Guard runs BEFORE the V8 executor; one request per plan step
+  capability mapped onto EXISTING attestations; unattested capabilities (browser,
+  world_act) are blocked fail-closed. Do not add Cost Guard entries to make tests pass.
+- Non-plan / planning-failure / cost-blocked cycles never carry execution IDs,
+  never claim execution, never create experience records.
+- APPROVAL_REQUIRED stashes via orchestration.authorization (reusing a live pending
+  entry for the identical plan+identity); authorized_plan_hash + computer_session_id
+  must reach the V8 executor.
+- Caller context (e.g. monitoring metadata) is lowest precedence, scalar-only,
+  privacy-filtered, bounded, and can never inject identity/auth/approval/cost keys.
+- Goal lifecycle is never auto-completed by V11 (V8 lifecycle confirmation owns it).
+- V11 derives V9 delivery/prosody metadata with V9 pure functions only; it never
+  constructs VoiceEngine or audio outputs.
+- Context Fusion diagnostics are opt-in (DOOM_CONTEXT_FUSION_DEBUG) and print no values.
+
+Known facts for future sessions:
+- Production entry points (doom.py, dashboard) still route through
+  core.commands.submit_user_input (V8 pipeline); the V10/V11 orchestrator is not yet
+  wired into them.
+- orchestration.audit.try_record_event was referenced by the V8 executor since V8.27
+  but only committed in the V11.8 freeze; clean checkouts of DOOM-V8/V9 lack it.
+- Feature flags live in the local .env (never commit it). Tests that exercise flag-gated
+  features must set the flag themselves (e.g. PROACTIVE_V827_USER_MODEL_ENABLED).
+- Several V8 tests fail on the current tree for pre-existing reasons (frozen-V8 drift
+  and uncommitted proactive/computer/browser changes importing a missing factory module);
+  see V11.10_FINAL_ACCEPTANCE_REPORT.md. Do not "fix" V8 to hide them.
+
+Regression commands (V11):
+  python test_v11_10_final_audit.py
+  python test_v11_9_reliability_long_session.py
+  python test_v11_8_end_to_end_integration.py
+  python test_v11_7_safety.py
+  python -m unittest test_v11_6_cache_verification -v
+  python test_v11_5_continuous_monitoring.py
+  python -m pytest core/v11/test_v11_1_execution_layer.py core/v11/test_v11_2_experience_integration.py core/v11/test_v11_cognitive_orchestrator.py
