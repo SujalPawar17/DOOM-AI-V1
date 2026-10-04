@@ -157,12 +157,20 @@ class DoomOS:
                                    {"success": bool(cycle.get("success")), "intent": stage.get("intent"),
                                     "pending_id": pending_id, "cycle_id": cycle.get("cycle_id")}), lang)
 
-    def approve(self, pending_id: str, lang: Optional[str] = None, *, computer_session_id: str = "") -> DoomReply:
-        """The user's explicit approval of a pending request (connector or plan)."""
+    def approve(self, pending_id: str, lang: Optional[str] = None, *, computer_session_id: str = "",
+                owner_id: Optional[str] = None, session_id: Optional[str] = None) -> DoomReply:
+        """The user's explicit approval of a pending request (connector or plan). Only the
+        owner + session that created the request can approve it."""
+        approver = self.identity(owner_id, session_id)
         with self._lock:
-            route = self._pending.pop(str(pending_id or ""), None)
-        if route is None:
-            return self._out(DoomReply("I don't have a pending request with that reference.", "rejected"), lang)
+            route = self._pending.get(str(pending_id or ""))
+            if route is None:
+                return self._out(DoomReply("I don't have a pending request with that reference.", "rejected"), lang)
+            route_owner = route["request"].owner_id if route["kind"] == "connector" else route["owner"]
+            route_session = route["request"].session_id if route["kind"] == "connector" else route["session"]
+            if (approver.owner_id, approver.session_id) != (route_owner, route_session):
+                return self._out(DoomReply("That approval belongs to someone else.", "rejected"), lang)
+            del self._pending[str(pending_id)]
         if route["kind"] == "connector":
             request: ConnectorRequest = route["request"]
             identity = self.identity(request.owner_id, request.session_id)
