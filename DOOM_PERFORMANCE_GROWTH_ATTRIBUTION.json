@@ -1,0 +1,353 @@
+{
+  "cycles": 1000,
+  "wall_s": 647.1,
+  "cycles_per_s": 1.55,
+  "cpu_user_s": 634.5,
+  "cpu_system_s": 5.3,
+  "cpu_utilization_pct": 98.9,
+  "rss_start_mb": 156.6,
+  "rss_end_mb": 187.9,
+  "latency": {
+    "approval": {
+      "n": 50,
+      "p50_ms": 557.2,
+      "p95_ms": 1456.2,
+      "max_ms": 1577.0
+    },
+    "connector": {
+      "n": 100,
+      "p50_ms": 112.4,
+      "p95_ms": 188.8,
+      "max_ms": 196.9
+    },
+    "cost_blocked": {
+      "n": 50,
+      "p50_ms": 612.7,
+      "p95_ms": 695.5,
+      "max_ms": 740.5
+    },
+    "informational": {
+      "n": 400,
+      "p50_ms": 536.4,
+      "p95_ms": 636.7,
+      "max_ms": 2949.1
+    },
+    "learning": {
+      "n": 150,
+      "p50_ms": 658.5,
+      "p95_ms": 740.5,
+      "max_ms": 864.3
+    },
+    "plan_failure": {
+      "n": 50,
+      "p50_ms": 845.7,
+      "p95_ms": 1002.4,
+      "max_ms": 1156.4
+    },
+    "plan_success": {
+      "n": 200,
+      "p50_ms": 802.6,
+      "p95_ms": 969.3,
+      "max_ms": 1108.2
+    }
+  },
+  "errors": 0,
+  "approvals_executed": 10,
+  "computer_actions_executed": 10,
+  "duplicate_actions": 0,
+  "steady_state_traced_growth_kb": 657.8,
+  "threads": {
+    "baseline": 2,
+    "max_seen": 3,
+    "end": 2
+  },
+  "windows": [
+    {
+      "cycle": 100,
+      "traced_kb": 1805.2,
+      "growth_kb_vs_prev_window": 0.0,
+      "rss_mb": 172.5,
+      "threads": 3,
+      "memory_cache": 6,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 2,
+      "runtime_outbox": 13,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 1,
+      "orchestrator_pending_refs": 1,
+      "v8_pending_store": 2,
+      "experience_rows_active": 36,
+      "experience_rows_total": 36
+    },
+    {
+      "cycle": 200,
+      "traced_kb": 2094.6,
+      "growth_kb_vs_prev_window": 77.1,
+      "rss_mb": 176.2,
+      "threads": 3,
+      "memory_cache": 6,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 4,
+      "runtime_outbox": 27,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 2,
+      "orchestrator_pending_refs": 2,
+      "v8_pending_store": 4,
+      "experience_rows_active": 64,
+      "experience_rows_total": 72
+    },
+    {
+      "cycle": 300,
+      "traced_kb": 2159.4,
+      "growth_kb_vs_prev_window": 64.0,
+      "rss_mb": 176.8,
+      "threads": 3,
+      "memory_cache": 6,
+      "perception_items": 25,
+      "learning_items": 14,
+      "runtime_queue": 0,
+      "runtime_outbox": 10,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 1,
+      "orchestrator_pending_refs": 1,
+      "v8_pending_store": 7,
+      "experience_rows_active": 64,
+      "experience_rows_total": 108
+    },
+    {
+      "cycle": 400,
+      "traced_kb": 2247.3,
+      "growth_kb_vs_prev_window": 89.0,
+      "rss_mb": 181.2,
+      "threads": 3,
+      "memory_cache": 6,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 5,
+      "runtime_outbox": 24,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 2,
+      "orchestrator_pending_refs": 2,
+      "v8_pending_store": 9,
+      "experience_rows_active": 64,
+      "experience_rows_total": 144
+    },
+    {
+      "cycle": 500,
+      "traced_kb": 2315.4,
+      "growth_kb_vs_prev_window": 67.5,
+      "rss_mb": 182.3,
+      "threads": 3,
+      "memory_cache": 5,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 5,
+      "runtime_outbox": 36,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 3,
+      "orchestrator_pending_refs": 3,
+      "v8_pending_store": 11,
+      "experience_rows_active": 64,
+      "experience_rows_total": 180
+    },
+    {
+      "cycle": 600,
+      "traced_kb": 2386.1,
+      "growth_kb_vs_prev_window": 70.5,
+      "rss_mb": 184.2,
+      "threads": 3,
+      "memory_cache": 6,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 5,
+      "runtime_outbox": 15,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 1,
+      "orchestrator_pending_refs": 1,
+      "v8_pending_store": 13,
+      "experience_rows_active": 64,
+      "experience_rows_total": 216
+    },
+    {
+      "cycle": 700,
+      "traced_kb": 2622.5,
+      "growth_kb_vs_prev_window": 237.0,
+      "rss_mb": 185.1,
+      "threads": 3,
+      "memory_cache": 7,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 6,
+      "runtime_outbox": 34,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 2,
+      "orchestrator_pending_refs": 2,
+      "v8_pending_store": 15,
+      "experience_rows_active": 64,
+      "experience_rows_total": 252
+    },
+    {
+      "cycle": 800,
+      "traced_kb": 2652.5,
+      "growth_kb_vs_prev_window": 30.3,
+      "rss_mb": 186.1,
+      "threads": 3,
+      "memory_cache": 5,
+      "perception_items": 26,
+      "learning_items": 14,
+      "runtime_queue": 0,
+      "runtime_outbox": 9,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 1,
+      "orchestrator_pending_refs": 1,
+      "v8_pending_store": 18,
+      "experience_rows_active": 64,
+      "experience_rows_total": 288
+    },
+    {
+      "cycle": 900,
+      "traced_kb": 2738.6,
+      "growth_kb_vs_prev_window": 86.2,
+      "rss_mb": 187.6,
+      "threads": 3,
+      "memory_cache": 5,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 6,
+      "runtime_outbox": 12,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 2,
+      "orchestrator_pending_refs": 2,
+      "v8_pending_store": 20,
+      "experience_rows_active": 64,
+      "experience_rows_total": 324
+    },
+    {
+      "cycle": 1000,
+      "traced_kb": 2816.2,
+      "growth_kb_vs_prev_window": 77.3,
+      "rss_mb": 187.9,
+      "threads": 3,
+      "memory_cache": 5,
+      "perception_items": 32,
+      "learning_items": 16,
+      "runtime_queue": 6,
+      "runtime_outbox": 21,
+      "assistant_inbox": 9,
+      "gateway_pending": 0,
+      "facade_pending_routes": 3,
+      "orchestrator_pending_refs": 3,
+      "v8_pending_store": 22,
+      "experience_rows_active": 64,
+      "experience_rows_total": 360
+    }
+  ],
+  "growth_sites": [
+    {
+      "kb": 144.0,
+      "count": 1,
+      "where": [
+        "core\\v11\\execution_layer.py:63",
+        "core\\v11\\execution_layer.py:111",
+        "orchestration\\executor.py:680",
+        "orchestration\\goal\\plan_validator.py:278"
+      ]
+    },
+    {
+      "kb": 72.5,
+      "count": 320,
+      "where": [
+        "core\\v11\\cognitive_orchestrator.py:742",
+        "core\\v11\\experience_integration.py:98",
+        "orchestration\\experience\\store.py:301",
+        "orchestration\\experience\\store.py:627"
+      ]
+    },
+    {
+      "kb": 50.9,
+      "count": 800,
+      "where": [
+        "orchestration\\experience\\store.py:278",
+        "orchestration\\experience\\policy.py:253",
+        "orchestration\\experience\\policy.py:187",
+        "orchestration\\experience\\policy.py:121"
+      ]
+    },
+    {
+      "kb": 36.2,
+      "count": 160,
+      "where": [
+        "core\\v12\\integrations\\framework.py:364",
+        "core\\v12\\integrations\\framework.py:438",
+        "orchestration\\experience\\store.py:301",
+        "orchestration\\experience\\store.py:627"
+      ]
+    },
+    {
+      "kb": 35.4,
+      "count": 336,
+      "where": [
+        "orchestration\\executor.py:242",
+        "orchestration\\executor.py:276",
+        "orchestration\\audit\\recorder.py:135",
+        "orchestration\\audit\\recorder.py:106"
+      ]
+    },
+    {
+      "kb": 23.4,
+      "count": 200,
+      "where": [
+        "orchestration\\experience\\store.py:278",
+        "orchestration\\experience\\policy.py:237",
+        "orchestration\\experience\\policy.py:109",
+        "orchestration\\experience\\policy.py:94"
+      ]
+    },
+    {
+      "kb": 21.7,
+      "count": 160,
+      "where": [
+        "core\\v11\\execution_layer.py:63",
+        "core\\v11\\execution_layer.py:111",
+        "orchestration\\executor.py:727",
+        "orchestration\\executor.py:208"
+      ]
+    },
+    {
+      "kb": 18.1,
+      "count": 80,
+      "where": [
+        "core\\v11\\cognitive_orchestrator.py:742",
+        "core\\v11\\experience_integration.py:98",
+        "orchestration\\experience\\store.py:301",
+        "orchestration\\experience\\store.py:627"
+      ]
+    }
+  ],
+  "checks": {
+    "no_cycle_errors": true,
+    "no_duplicate_actions": true,
+    "approved_actions_ran_exactly": true,
+    "memory_cache_bounded": true,
+    "perception_bounded": true,
+    "learning_bounded": true,
+    "runtime_queue_bounded": true,
+    "outbox_bounded": true,
+    "inbox_bounded": true,
+    "approval_stores_bounded": true,
+    "experience_active_bounded": true,
+    "no_thread_growth": true,
+    "steady_state_growth_under_8mb": true
+  }
+}
