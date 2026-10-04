@@ -5,6 +5,11 @@ from core.memory import remember, recall
 from core.language_manager import get_language_manager
 
 
+def _cognitive_os_enabled() -> bool:
+    import os
+    return os.getenv("DOOM_COGNITIVE_OS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def submit_user_input(command: str, lang: str = None, *, source: str = "text"):
     """Canonical user-text entry for typed input and voice STT transcripts.
 
@@ -23,9 +28,14 @@ def submit_user_input(command: str, lang: str = None, *, source: str = "text"):
         lm = get_language_manager()
         lang = lm.detect_language_from_text(text)
     try:
-        response = doom_core.process_request(
-            text, lang, context={"input_source": source}
-        )
+        if _cognitive_os_enabled():
+            # Opt-in unified V12 cognitive OS (DOOM_COGNITIVE_OS=1). Default: V8 core.
+            from core.v12.doom_os import get_doom_os
+            response = get_doom_os().handle_text(text, lang, source=source).text
+        else:
+            response = doom_core.process_request(
+                text, lang, context={"input_source": source}
+            )
         speak(response, lang=lang)
         return response
     except Exception as e:
