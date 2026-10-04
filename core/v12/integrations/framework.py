@@ -94,6 +94,7 @@ class ActionSpec:
     mutates: bool = False
     idempotent: bool = True
     verification: str = "result_present"
+    reversible: bool = True  # V12.7: False marks actions that cannot be undone
 
 
 @dataclass(frozen=True)

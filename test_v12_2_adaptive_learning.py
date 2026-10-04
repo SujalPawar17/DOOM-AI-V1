@@ -69,6 +69,10 @@ class TestExperienceLearning(LearningBase):
         wf = self.items()[("WORKFLOW", "workflow_filesystem_write_file")]
         self.assertEqual(wf["value"], "unreliable")
         self.assertIn("failed_step:s1", wf["explanation"])
+        # Regression (found by V12.7): a consistent failure pattern must be promoted.
+        self.assertEqual(wf["status"], "PROMOTED")
+        self.assertEqual(self.learning.retrieve(OWNER)["learned_workflow_workflow_filesystem_write_file"],
+                         "unreliable")
 
     def test_mixed_outcomes_learn_no_workflow_claim(self):
         outcomes = ["COMPLETED", "ABANDONED", "COMPLETED", "ABANDONED"]

@@ -387,8 +387,11 @@ class AdaptiveLearning:
                 detail = f"{g['ok']}/{n} succeeded"
                 if unreliable and g["blockers"]:
                     detail += f"; usual blocker: {max(set(g['blockers']), key=g['blockers'].count)[:40]}"
+                # Consistency is how reliably the observed pattern holds: the success rate
+                # for reliable workflows, the failure rate for unreliable ones.
+                consistency = rate if reliable else 1.0 - rate
                 inferred.append(self._inferred(owner_id, KnowledgeKind.WORKFLOW, _key("workflow", sig), value,
-                                               n, rate, refs, first, last, f"Workflow '{sig}': {detail}."))
+                                               n, consistency, refs, first, last, f"Workflow '{sig}': {detail}."))
             goal_key = sorted(g["goal"])[0] if g["goal"] else sig
             inferred.append(self._inferred(owner_id, KnowledgeKind.GOAL_PATTERN, _key("recurring", goal_key),
                                            "recurring", n, 1.0, refs, first, last,
