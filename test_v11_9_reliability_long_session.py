@@ -200,13 +200,13 @@ class TestContextFusionReliability(V118TestBase):
         def no_blocking_sample(*args, **kwargs):
             raise AssertionError("context fusion must not take a blocking CPU sample")
 
-        with patch.object(psutil, "cpu_percent", side_effect=no_blocking_sample):
-            t0 = time.perf_counter()
+        # Assert the property itself (no blocking sample), not wall-clock time, which
+        # varies with machine load.
+        with patch.object(psutil, "cpu_percent", side_effect=no_blocking_sample) as sample:
             fused = fuse_context(request="status", owner_id=OWNER, session_id=SESSION)
-            elapsed_ms = (time.perf_counter() - t0) * 1000
+        self.assertEqual(sample.call_count, 0)
         self.assertIs(fused.context.get("system_available"), True)
         self.assertEqual(fused.context.get("system_cpu"), 0)
-        self.assertLess(elapsed_ms, 900, f"fusion took {elapsed_ms:.0f} ms")
 
     def test_debug_opt_in_never_prints_values(self):
         buf = io.StringIO()

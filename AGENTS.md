@@ -32,7 +32,7 @@ V10.0:
 - Cognitive Core Architecture is complete.
 - Architecture/design phase is complete.
 
-- Current phase: V10 and V11 are FROZEN (see "V11 — FROZEN" at the end). Active work: DOOM completion program (V12.x).
+- Current phase: V10, V11 and the V12 completion program are FROZEN (see "V11 — FROZEN" and "V12 — COMPLETION PROGRAM (FROZEN)" at the end). Any new work needs an explicitly scoped new version.
 - V10.1 Context Fusion.
 - V10.1 is complete / accepted.
 - V10.1 must be fully implemented and accepted before V10.2.
@@ -588,3 +588,43 @@ Regression commands (V11):
   python -m unittest test_v11_6_cache_verification -v
   python test_v11_5_continuous_monitoring.py
   python -m pytest core/v11/test_v11_1_execution_layer.py core/v11/test_v11_2_experience_integration.py core/v11/test_v11_cognitive_orchestrator.py
+
+## V12 — COMPLETION PROGRAM (FROZEN)
+
+Built on frozen V8/V9/V10/V11 (branch DOOM-V10, local tags V12.1-FREEZE … V12.7-FREEZE,
+DOOM-UNIFIED-OS, DOOM-SECURITY-AUDIT, DOOM-PERFORMANCE-AUDIT, DOOM-FINAL). Architecture map:
+DOOM_ARCHITECTURE.md. Final status: DOOM_FINAL_ACCEPTANCE_REPORT.md.
+
+Layers (core/v12/): response_intelligence (12.1), adaptive_learning (12.2), integrations/
+(12.3 gateway + connectors + sandbox), multimodal (12.4), computer_interaction (12.5),
+runtime (12.6), proactive_assistant (12.7), cognitive_orchestrator (V12 orchestrator),
+doom_os (DoomOS facade).
+
+Durable rules:
+- V12 extends V11 only through V11CognitiveOrchestrator._compose_response and
+  process_cognitive_cycle overrides; V10/V11 never import V12 (tested).
+- Every action runs through Cost Guard -> claimed single-use approval (MEDIUM+ / mutating)
+  -> bounded execution -> verification -> experience. Knowing an approval hash is never
+  authorization in V12. Only the V12.3 gateway calls connectors; only the V12.5 controller
+  drives a UI backend; only core.v11.execution_layer calls the V8 executor.
+- Proactive behaviour only suggests; LOW_RISK may auto-run only when the owner opts in;
+  HIGH/IRREVERSIBLE always need explicit authorization (+confirmation +verification).
+- Connectors are registered only for explicitly configured local paths
+  (DOOM_WORKSPACE_ROOT, DOOM_GIT_REPO, DOOM_SQLITE_DB). Cloud connectors stay disabled and
+  are Cost-Guard-blocked. Browser automation stays OFF.
+- Production entry (core.commands.submit_user_input) defaults to the V8 core; the unified
+  V12 OS is opt-in via DOOM_COGNITIVE_OS=1 pending an owner decision after a supervised trial.
+- Local model answers come from the existing V8 responder (Ollama llama3 @ localhost).
+
+Regression commands (V12, in addition to V11 above):
+  python test_doom_security_audit.py
+  python test_doom_unified_os.py
+  python test_v12_7_proactive_assistant.py
+  python test_v12_6_realtime_runtime.py
+  python test_v12_5_computer_interaction.py
+  python test_v12_4_multimodal_context.py
+  python test_v12_3_integration_framework.py
+  python test_v12_2_adaptive_learning.py
+  python test_v12_1_response_intelligence.py
+  python test_v12_1_live_local_model.py   (skips without local Ollama)
+  python doom_performance_audit.py --cycles 1000
