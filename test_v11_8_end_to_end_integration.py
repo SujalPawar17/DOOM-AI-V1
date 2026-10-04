@@ -645,6 +645,12 @@ class _SyncThread:
     def start(self):
         self._target()
 
+    def is_alive(self):
+        return False
+
+    def join(self, timeout=None):
+        return None
+
 
 class TestScenarioHProactive(V118TestBase):
 

@@ -122,6 +122,8 @@ class ContinuousMonitoringState:
     # Monitoring health metrics
     monitoring_errors: int = 0
     last_error_time: float = 0.0
+    # V11.9: events skipped because a monitoring-triggered cycle was still running
+    cycles_skipped_busy: int = 0
     # Integration with V11.4 advanced memory
     advanced_memory_system: Optional[AdvancedMemorySystem] = None
 
@@ -143,6 +145,8 @@ class ContinuousMonitoringEnhancement:
         self.state = ContinuousMonitoringState()
         self.state.advanced_memory_system = advanced_memory_system if self.config.enable_advanced_memory_integration else None
         self._thread: Optional[threading.Thread] = None
+        # V11.9: at most one monitoring-triggered cognitive cycle in flight
+        self._cycle_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.RLock()  # Reentrant lock for nested locking scenarios
 
@@ -162,6 +166,12 @@ class ContinuousMonitoringEnhancement:
             if self._thread is not None:
                 self._thread.join(timeout=5.0)
                 self._thread = None
+            # V11.9: wait (bounded) for an in-flight monitoring cycle
+            cycle_thread = self._cycle_thread
+            if cycle_thread is not None:
+                cycle_thread.join(timeout=10.0)
+                if not cycle_thread.is_alive():
+                    self._cycle_thread = None
 
     def _monitor_loop(self) -> None:
         """Main continuous monitoring loop."""
@@ -722,6 +732,11 @@ class ContinuousMonitoringEnhancement:
 
     def _handle_monitoring_event(self, event: MonitoringEvent) -> None:
         """Handle a monitoring event by initiating a cognitive cycle."""
+        # V11.9: never stack cycles - skip while the previous one is still running
+        previous = self._cycle_thread
+        if previous is not None and previous.is_alive():
+            self.state.cycles_skipped_busy += 1
+            return
         now = time.time()
         self.state.last_cycle_time = now
         self.state.cycles_in_last_hour.append(now)
@@ -755,6 +770,7 @@ class ContinuousMonitoringEnhancement:
                 self._record_monitoring_error(e)
 
         cycle_thread = threading.Thread(target=run_cycle, daemon=True)
+        self._cycle_thread = cycle_thread
         cycle_thread.start()
 
     def _create_user_input_from_event(self, event: MonitoringEvent) -> str:
@@ -802,6 +818,8 @@ class ContinuousMonitoringEnhancement:
                 "last_cycle_time": self.state.last_cycle_time,
                 "cycles_in_last_hour": len(self.state.cycles_in_last_hour),
                 "monitoring_errors": self.state.monitoring_errors,
+                "cycles_skipped_busy": self.state.cycles_skipped_busy,
+                "cycle_in_flight": self._cycle_thread is not None and self._cycle_thread.is_alive(),
                 "last_error_time": self.state.last_error_time,
                 "in_cooldown": not self._is_cooldown_complete(),
                 "at_rate_limit": not self._is_rate_limit_ok(),

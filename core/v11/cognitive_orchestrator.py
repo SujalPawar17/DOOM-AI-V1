@@ -8,7 +8,9 @@ from __future__ import annotations
 import os
 os.environ["PROACTIVE_V8_ENABLED"] = "true"
 os.environ["PROACTIVE_V828_GOAL_EXPERIENCE_ENABLED"] = "true"
+import threading
 import time
+from collections import OrderedDict
 from typing import Dict, Any, List, Optional, Tuple
 from core.v10.context_fusion import FusedContext
 from core.v10.goal_understanding import GoalUnderstandingResult, GoalContinuity
@@ -31,6 +33,7 @@ from core.cost_guard.types import ResourceRequest, ResourceType
 # Import V11 components
 from core.v11.execution_layer import execution_layer, execute_plan_from_planning_result
 from core.v11.experience_integration import ExperienceIntegration
+from core.v11.advanced_memory import get_advanced_memory_system
 # Note: Other V11 components (V11.3-V11.5) will be implemented in subsequent phases
 
 # V11.8: Map V8 executor capabilities to the local resources their default adapters
@@ -111,6 +114,35 @@ class V11CognitiveOrchestrator:
         # Orchestrator state
         self.last_cycle_time = 0.0
         self.cycle_count = 0
+        # V11.9: cycles may run concurrently (user + monitor thread)
+        self._state_lock = threading.Lock()
+        # V11.9: (owner, session, computer_session, plan_hash) -> live pending_id, bounded
+        self._pending_by_plan: "OrderedDict[Tuple[str, str, str, str], str]" = OrderedDict()
+
+    _MAX_PENDING_REFS = 256
+
+    def _stash_or_reuse_pending(self, plan: Any, identity: Any) -> Tuple[Optional[str], str]:
+        """Stash a plan for approval, reusing a still-live pending entry for the identical
+        plan + identity instead of creating a duplicate (bounds V8 pending-store growth
+        when the same plan is re-proposed, e.g. by the proactive monitor)."""
+        key = (identity.owner_id, identity.session_id, identity.computer_session_id,
+               str(getattr(plan, "plan_hash", "") or ""))
+        with self._state_lock:
+            existing = self._pending_by_plan.get(key)
+        if existing:
+            display, code = pending_display(existing, identity)
+            if display is not None and code == "OK":
+                return existing, "OK"
+        pending_id, code = stash_pending_plan(plan=plan, identity=identity)
+        with self._state_lock:
+            if pending_id:
+                self._pending_by_plan[key] = pending_id
+                self._pending_by_plan.move_to_end(key)
+                while len(self._pending_by_plan) > self._MAX_PENDING_REFS:
+                    self._pending_by_plan.popitem(last=False)
+            else:
+                self._pending_by_plan.pop(key, None)
+        return pending_id, code
 
     @staticmethod
     def _record_goal_outcome(owner_id: str, plan_goal_id: Any, succeeded: bool, status_value: str) -> str:
@@ -156,8 +188,10 @@ class V11CognitiveOrchestrator:
     ) -> Dict[str, Any]:
         """Process a complete cognitive cycle through the V11 architecture pipeline."""
         start_time = time.time()
-        cycle_id = f"cycle_{int(start_time * 1000)}_{self.cycle_count}"
-        self.cycle_count += 1
+        with self._state_lock:
+            cycle_number = self.cycle_count
+            self.cycle_count += 1
+        cycle_id = f"cycle_{int(start_time * 1000)}_{cycle_number}"
 
         # Initialize result structure
         result = {
@@ -401,10 +435,7 @@ class V11CognitiveOrchestrator:
                     session_id=session_id,
                     computer_session_id=stash_cs
                 )
-                pending_id, stash_error = stash_pending_plan(
-                    plan=planning_result.plan,
-                    identity=ident
-                )
+                pending_id, stash_error = self._stash_or_reuse_pending(planning_result.plan, ident)
 
             auth_time = (time.time() - auth_start) * 1000
             result["stages"]["authorization"] = {
@@ -702,6 +733,13 @@ class V11CognitiveOrchestrator:
                 if hasattr(experience_result, 'status') and experience_result.status.name != "OK":
                     overall_success = False
                     error_message = f"Experience integration failed: {experience_result.status.name}"
+                elif experience_result is not None:
+                    # V11.9: a new experience exists; drop this owner's cached memory
+                    # retrievals so the next cycle cannot read stale memory.
+                    try:
+                        get_advanced_memory_system().invalidate_owner_cache(owner_id)
+                    except Exception:
+                        pass
             else:
                 # No executor outcome: skip experience integration to prevent junk records
                 skip_reason = {

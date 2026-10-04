@@ -19,6 +19,7 @@ Integrates with existing memory sources:
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -94,8 +95,11 @@ class AdvancedMemoryState:
     last_store_time: float = 0.0
     retrieval_count: int = 0
     store_count: int = 0
-    cache: Dict[str, Tuple[MemoryRecord, float]] = field(default_factory=dict)  # key -> (record, timestamp)
+    cache: Dict[Tuple[Any, ...], Tuple[List[MemoryRecord], float]] = field(default_factory=dict)  # (owner, query, session, project) -> (records, timestamp)
     cache_ttl: float = 300.0  # 5 minutes
+    # V11.9: hard bound on cached retrievals (oldest evicted first)
+    cache_max_entries: int = 256
+    cache_evictions: int = 0
 
 
 class AdvancedMemorySystem:
@@ -114,7 +118,9 @@ class AdvancedMemorySystem:
         """
         self.config = config or AdvancedMemoryConfig()
         self.state = AdvancedMemoryState()
-        
+        # V11.9: the cache is shared by user cycles and the monitor thread
+        self._cache_lock = threading.RLock()
+
         # Use custom weights if provided, otherwise use defaults
         self.hybrid_weights = self.config.hybrid_weights or DEFAULT_HYBRID_WEIGHTS
 
@@ -622,12 +628,16 @@ class AdvancedMemorySystem:
         Returns:
             List of MemoryRecord objects, processed and ranked by relevance.
         """
-        cache_key = f"{owner_id}:{query}:{session_id}:{project_id}"
-        if cache_key in self.state.cache:
-            cached_list, timestamp = self.state.cache[cache_key]
-            if time.time() - timestamp < self.state.cache_ttl:
-                self.state.retrieval_count += 1
-                return cached_list  # Return cached result
+        # V11.9: tuple key - a string join let crafted owner/query values collide across owners
+        cache_key = (owner_id, query, session_id, project_id)
+        with self._cache_lock:
+            cached = self.state.cache.get(cache_key)
+            if cached is not None:
+                cached_list, timestamp = cached
+                if time.time() - timestamp < self.state.cache_ttl:
+                    self.state.retrieval_count += 1
+                    return list(cached_list)  # Return a copy of the cached result
+                del self.state.cache[cache_key]  # expired
         
         # Retrieve memories from all sources
         all_memories = []
@@ -663,12 +673,42 @@ class AdvancedMemorySystem:
         # Extract just the records, limit to context limit
         result_memories = [record for record, score in scored_memories[:self.config.max_context_memories]]
         
-        # Cache the result
-        self.state.cache[cache_key] = (result_memories, time.time())
-        self.state.last_retrieval_time = time.time()
-        self.state.retrieval_count += 1
-        
+        # Cache the result (bounded; expired entries purged first, then oldest)
+        now = time.time()
+        with self._cache_lock:
+            self.state.cache[cache_key] = (list(result_memories), now)
+            self._prune_cache_locked(now)
+            self.state.last_retrieval_time = now
+            self.state.retrieval_count += 1
+
         return result_memories
+
+    def _prune_cache_locked(self, now: float) -> None:
+        """Drop expired entries, then evict oldest entries beyond the bound."""
+        cache = self.state.cache
+        expired = [k for k, (_records, ts) in cache.items() if now - ts >= self.state.cache_ttl]
+        for k in expired:
+            del cache[k]
+        overflow = len(cache) - max(1, int(self.state.cache_max_entries))
+        if overflow > 0:
+            for k, _v in sorted(cache.items(), key=lambda kv: kv[1][1])[:overflow]:
+                del cache[k]
+            self.state.cache_evictions += overflow
+
+    def invalidate_owner_cache(self, owner_id: str) -> int:
+        """V11.9: drop cached retrievals for one owner (e.g. after a new experience).
+
+        Only that owner's entries are removed; returns the number removed.
+        """
+        with self._cache_lock:
+            keys = [k for k in self.state.cache if k[0] == owner_id]
+            for k in keys:
+                del self.state.cache[k]
+        return len(keys)
+
+    def cache_size(self) -> int:
+        with self._cache_lock:
+            return len(self.state.cache)
     def store_memory(
         self,
         content: str,

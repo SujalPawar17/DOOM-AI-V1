@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import hashlib
 from typing import Dict, Any, Optional, Tuple
@@ -42,6 +43,23 @@ from core.v11.advanced_memory import retrieve_advanced_memories
 MAX_CONTEXT_KEYS = 50
 MAX_VALUE_LENGTH = 1000
 MAX_CALLER_CONTEXT_KEYS = 16  # V11.8: bound on caller-supplied (e.g. monitoring) keys
+
+
+_OPTIONAL_SNAPSHOT_FIELDS = (
+    ("active_goal_intent", "intent", 64),
+    ("active_goal_capability", "capability_class", 32),
+    ("active_goal_provenance", "provenance", 64),
+    ("active_goal_requested_unix_ms", "requested_unix_ms", None),
+    ("active_goal_goal_hash", "goal_hash", 64),
+    ("active_goal_session_id", "session_id", 64),
+    ("active_goal_computer_session_id", "computer_session_id", 64),
+)
+
+
+def _debug(message: str) -> None:
+    """V11.9: diagnostics are opt-in (DOOM_CONTEXT_FUSION_DEBUG) and never print values."""
+    if os.getenv("DOOM_CONTEXT_FUSION_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+        print(f"DEBUG: {message}")
 DEFAULT_LANGUAGE = "en"
 
 # Keys that should always be preserved regardless of relevance to request
@@ -185,12 +203,12 @@ class ContextFusion:
             
 # Process each source in precedence order
             for source in self._precedence:
-                print(f'DEBUG: Processing source: {source}')
+                _debug(f'Processing source: {source}')
                 try:
                     source_data = self._fetch_source(
                         source, request, owner_id, session_id, language_hint, now_ms, _cache
                     )
-                    print(f'DEBUG: source_data for {source}: {source_data}')
+                    _debug(f'source_data keys for {source}: {sorted(source_data.keys()) if isinstance(source_data, dict) else type(source_data).__name__}')
                     
                     if source_data:
                          # Apply filtering and bounding
@@ -205,7 +223,7 @@ class ContextFusion:
                          )
                 except Exception as e:
                      # Handle source failure gracefully
-                     print(f'DEBUG: Exception in source {source}: {e}')
+                     _debug(f'Exception in source {source}: {type(e).__name__}')
                      self._handle_source_failure(
                          source, e, owner_id, now_ms,
                          fused_context, provenance, privacy_levels
@@ -364,7 +382,7 @@ class ContextFusion:
                      memory_dict[context_key] = record.content
                  return memory_dict
              except Exception as e:
-                 print(f'DEBUG: Exception in MEMORY source: {e}')
+                 _debug(f'Exception in MEMORY source: {type(e).__name__}')
                  return {}
         elif source == ContextSource.GOAL_STATE:
             cache_key = f"goal_state:{owner_id}"
@@ -381,15 +399,8 @@ class ContextFusion:
                     goal_state_data.update({
                         "active_goal_id": snap.goal_id[:64] if snap.goal_id else "",
                         "active_goal_title": str(snap.title or "")[:80],
-                        "active_goal_intent": str(snap.intent or "")[:64],
-                        "active_goal_capability": str(snap.capability_class or "")[:32],
-                        "active_goal_provenance": str(snap.provenance or "")[:64],
-                        "active_goal_requested_unix_ms": int(snap.requested_unix_ms or 0),
-                        "active_goal_goal_hash": str(snap.goal_hash or "")[:64],
                         "active_goal_schema_version": int(snap.schema_version or 0),
                         "active_goal_owner_id": str(snap.owner_id or "")[:64],
-                        "active_goal_session_id": str(snap.session_id or "")[:64],
-                        "active_goal_computer_session_id": str(snap.computer_session_id or "")[:64],
                         "active_goal_plan_title": str(snap.plan_title or "")[:80],
                         "active_goal_step_titles": list(snap.step_titles or [])[:6],  # Max 6 steps
                         "active_goal_step_states": [str(s) for s in (snap.step_states or [])][:6],
@@ -403,6 +414,13 @@ class ContextFusion:
                         "active_goal_created_at": float(snap.created_at or 0),
                         "active_goal_last_active_at": float(snap.last_active_at or 0),
                     })
+                    # V11.9: GoalSnapshot (V8.26) has no intent/capability/provenance/hash/session
+                    # fields; reading them raised AttributeError and emptied this whole source.
+                    # Include them only when present so ACTIVE_GOAL values are not overwritten.
+                    for ctx_key, attr, limit in _OPTIONAL_SNAPSHOT_FIELDS:
+                        if hasattr(snap, attr):
+                            raw = getattr(snap, attr)
+                            goal_state_data[ctx_key] = int(raw or 0) if limit is None else str(raw or "")[:limit]
                 
                 # Get recent goal experiences (last 5)
                 experiences_result = list_experiences(owner_id, limit=5, include_inactive=False)
@@ -466,11 +484,11 @@ class ContextFusion:
                             error_signatures.append("timeout_error")
                         elif "permission" in blocker_text or "permission" in user_note_text or "access" in blocker_text or "access" in user_note_text:
                             error_signatures.append("permission_error")
-                        elif "not found" in blocker_text or "not found" in user_note_text or "missing" in blocker_text or "missing" in victim_text:
+                        elif "not found" in blocker_text or "not found" in user_note_text or "missing" in blocker_text or "missing" in user_note_text:
                             error_signatures.append("not_found_error")
-                        elif "invalid" in blocker_text or "invalid" in victim_text or "validation" in blocker_text or "validation" in victim_text:
+                        elif "invalid" in blocker_text or "invalid" in user_note_text or "validation" in blocker_text or "validation" in user_note_text:
                             error_signatures.append("validation_error")
-                        elif "network" in blocker_text or "network" in victim_text or "connection" in blocker_text or "connection" in victim_text:
+                        elif "network" in blocker_text or "network" in user_note_text or "connection" in blocker_text or "connection" in user_note_text:
                             error_signatures.append("network_error")
                         else:
                             # Generic error signature based on first blocker or note
@@ -563,14 +581,17 @@ class ContextFusion:
                 return {}
         elif source == ContextSource.SYSTEM:
             try:
-                from core.advanced_automation import get_system_info
-                sys_info = get_system_info()
-                # For deterministic testing, we'll return fixed values or hash-changing elements
-                # In production, this would be real system info
+                # V11.9: only availability is used here (cpu/memory are fixed for
+                # determinism). get_system_info() blocked ~1 s per cycle in
+                # psutil.cpu_percent(interval=1) to compute a discarded value; probe
+                # the same psutil subsystems without blocking instead.
+                import psutil
+                psutil.virtual_memory()
+                psutil.disk_usage('/')
                 return {
                     "system_cpu": 0,  # Fixed for determinism in tests
                     "system_memory": 0,  # Fixed for determinism in tests
-                    "system_available": "error" not in sys_info
+                    "system_available": True
                 }
             except Exception:
                 return {
