@@ -12,16 +12,26 @@ from typing import Any, Dict, Optional
 
 from core.v11.cognitive_orchestrator import V11CognitiveOrchestrator
 from core.v12.adaptive_learning import AdaptiveLearning
+from core.v12.multimodal import (
+    PerceptionNormalizer, PerceptualItem, UnifiedPerceptualContext, compose_caller_context,
+)
 from core.v12.response_intelligence import ResponseIntelligence
 
 
 class V12CognitiveOrchestrator(V11CognitiveOrchestrator):
 
     def __init__(self, response_intelligence: Optional[ResponseIntelligence] = None,
-                 learning: Optional[AdaptiveLearning] = None):
+                 learning: Optional[AdaptiveLearning] = None,
+                 perception: Optional[UnifiedPerceptualContext] = None):
         super().__init__()
         self.response_intelligence = response_intelligence or ResponseIntelligence()
         self.learning = learning or AdaptiveLearning()
+        self.perception = perception or UnifiedPerceptualContext()
+        self.normalizer = PerceptionNormalizer()
+
+    def perceive(self, item: PerceptualItem) -> bool:
+        """V12.4: add a normalized perceptual item to its owner+session context."""
+        return self.perception.add(item)
 
     def process_cognitive_cycle(self, user_input: str, owner_id: str, session_id: str = "",
                                 lang: Optional[str] = None, context: Optional[Dict[str, Any]] = None,
@@ -33,13 +43,19 @@ class V12CognitiveOrchestrator(V11CognitiveOrchestrator):
             learned = self.learning.retrieve(owner_id, session_id, user_input)
         except Exception:
             learned = {}
-        merged_context = dict(learned)
-        merged_context.update(context or {})
+        try:
+            perceptual = self.perception.to_context(owner_id, session_id)
+        except Exception:
+            perceptual = {}
+        # Priority: caller/monitoring keys > perceptual context > learned knowledge.
+        merged_context = compose_caller_context(context, perceptual, learned)
         result = super().process_cognitive_cycle(
             user_input=user_input, owner_id=owner_id, session_id=session_id, lang=lang,
             context=merged_context or None, project_id=project_id,
             authorized_plan_hash=authorized_plan_hash, computer_session_id=computer_session_id,
         )
+        result.setdefault("stages", {})["perception"] = {
+            "completed": True, "percept_keys": sorted(k for k in merged_context if k.startswith("percept_"))}
         result.setdefault("stages", {})["adaptive_learning"] = self._learn_from_cycle(
             user_input, owner_id, session_id, context, result, sorted(learned))
         return result
