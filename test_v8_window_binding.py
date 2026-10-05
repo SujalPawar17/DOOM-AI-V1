@@ -120,7 +120,8 @@ class TestOpaqueCandidatesAndBind(unittest.TestCase):
         reset_bind_candidates_for_tests()
 
     def test_candidates_are_opaque_no_hwnd(self):
-        ident = _win()
+        # A distinctive 12-digit hwnd: the default 42 can occur by chance inside a random UUID.
+        ident = _win(hwnd=987654321013)
         with patch("proactive.computer.session.get_session", return_value=_sess()):
             rows, code = list_bind_candidates("alice", "cs-1", enumerator=lambda **k: [ident])
         self.assertEqual(code, "OK")

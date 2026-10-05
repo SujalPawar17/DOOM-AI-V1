@@ -249,3 +249,11 @@ def get_doom_os() -> DoomOS:
         if _OS is None:
             _OS = DoomOS()
         return _OS
+
+
+def reset_doom_os() -> None:
+    """V13.1: drop the process singleton (after shutdown) so the next get_doom_os()
+    builds a fresh instance. Does not shut anything down itself."""
+    global _OS
+    with _OS_LOCK:
+        _OS = None

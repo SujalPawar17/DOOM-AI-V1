@@ -187,7 +187,7 @@ class AdvancedMemorySystem:
                 
         except Exception as e:
             # Graceful failure - memory failure must not break task execution
-            print(f"[V11.4 Advanced Memory] Personal memory normalization failed: {e}")
+            print(f"[V11.4 Advanced Memory] Personal memory normalization failed: {type(e).__name__}")
             
         return memories
 
@@ -243,7 +243,7 @@ class AdvancedMemorySystem:
                     
         except Exception as e:
             # Graceful failure
-            print(f"[V11.4 Advanced Memory] User model normalization failed: {e}")
+            print(f"[V11.4 Advanced Memory] User model normalization failed: {type(e).__name__}")
             
         return memories
 
@@ -292,7 +292,7 @@ class AdvancedMemorySystem:
                     
         except Exception as e:
             # Graceful failure
-            print(f"[V11.4 Advanced Memory] Experience normalization failed: {e}")
+            print(f"[V11.4 Advanced Memory] Experience normalization failed: {type(e).__name__}")
             
         return memories
 
@@ -338,7 +338,7 @@ class AdvancedMemorySystem:
                 
         except Exception as e:
             # Graceful failure
-            print(f"[V11.4 Advanced Memory] General memory normalization failed: {e}")
+            print(f"[V11.4 Advanced Memory] General memory normalization failed: {type(e).__name__}")
             
         return memories
 
@@ -385,7 +385,7 @@ class AdvancedMemorySystem:
                 
         except Exception as e:
             # Graceful failure
-            print(f"[V11.4 Advanced Memory] Goal memory normalization failed: {e}")
+            print(f"[V11.4 Advanced Memory] Goal memory normalization failed: {type(e).__name__}")
             
         return memories
 
@@ -601,7 +601,7 @@ class AdvancedMemorySystem:
             return scored_memories
             
         except Exception as e:
-            print(f"[V11.4 Advanced Memory] Memory scoring failed: {e}")
+            print(f"[V11.4 Advanced Memory] Memory scoring failed: {type(e).__name__}")
             # Fallback to simple ordering
             return [(record, 0.5) for record in memories]
 
@@ -759,7 +759,7 @@ class AdvancedMemorySystem:
                 print("[V11.4 Advanced Memory] Memory storage rejected by policy")
                 return False
         except Exception as e:
-            print(f"[V11.4 Advanced Memory] Memory storage failed: {e}")
+            print(f"[V11.4 Advanced Memory] Memory storage failed: {type(e).__name__}")
             return False
 def store_advanced_memory(
     content: str,

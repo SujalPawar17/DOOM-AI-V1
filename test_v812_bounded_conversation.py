@@ -91,6 +91,15 @@ class _Step:
         self.parameters = (("text", text),)
 
 
+class _Plan:
+    """Minimal plan context: V8.28 execute_respond requires a plan (owner/session scope)."""
+    owner_id = ""
+    session_id = ""
+
+
+_PLAN = _Plan()
+
+
 class TestV812BoundedConversation(unittest.TestCase):
     def setUp(self):
         _v8_on()
@@ -129,7 +138,7 @@ class TestV812BoundedConversation(unittest.TestCase):
     def test_04_local_provider_selected(self):
         fake = FakeOllama("ok")
         use_respond_provider_for_tests(fake)
-        status, body = execute_respond(_Step("hello"), None)
+        status, body = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.SUCCESS.value)
         self.assertEqual(body, "ok")
         self.assertEqual(fake.name, "ollama")
@@ -138,7 +147,7 @@ class TestV812BoundedConversation(unittest.TestCase):
     def test_05_paid_provider_blocked(self):
         paid = FakeNamed("openai", "https://api.openai.com")
         use_respond_provider_for_tests(paid)
-        status, body = execute_respond(_Step("hello"), None)
+        status, body = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value)
         self.assertEqual(body, "")
         self.assertFalse(paid.called)
@@ -146,31 +155,31 @@ class TestV812BoundedConversation(unittest.TestCase):
     def test_06_unknown_provider_blocked(self):
         unk = FakeNamed("mysterycloud")
         use_respond_provider_for_tests(unk)
-        status, body = execute_respond(_Step("hello"), None)
+        status, body = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value)
         self.assertFalse(unk.called)
 
     def test_07_provider_unavailable(self):
         fake = FakeOllama(exc=ProviderUnavailableError("down", provider="ollama"))
         use_respond_provider_for_tests(fake)
-        status, body = execute_respond(_Step("hello"), None)
+        status, body = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value)
         self.assertEqual(body, "")
 
     def test_08_provider_timeout(self):
         fake = FakeOllama(exc=ProviderTimeoutError("slow", provider="ollama", timeout=20))
         use_respond_provider_for_tests(fake)
-        status, _ = execute_respond(_Step("hello"), None)
+        status, _ = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.LOCAL_MODEL_TIMEOUT.value)
 
     def test_09_input_length_limit(self):
-        status, _ = execute_respond(_Step("x" * (MAX_INPUT_CHARS + 1)), None)
+        status, _ = execute_respond(_Step("x" * (MAX_INPUT_CHARS + 1)), _PLAN)
         self.assertEqual(status, ExecutionStatus.INPUT_TOO_LARGE.value)
 
     def test_10_output_length_limit(self):
         fake = FakeOllama("y" * (MAX_OUTPUT_CHARS + 1))
         use_respond_provider_for_tests(fake)
-        status, body = execute_respond(_Step("hello"), None)
+        status, body = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.OUTPUT_LIMIT.value)
         self.assertEqual(body, "")
 
@@ -183,7 +192,7 @@ class TestV812BoundedConversation(unittest.TestCase):
         self.assertNotIn("subprocess", src)
         fake = FakeOllama("plain")
         use_respond_provider_for_tests(fake)
-        execute_respond(_Step("hello"), None)
+        execute_respond(_Step("hello"), _PLAN)
         self.assertIsNone(fake.last["tools"])
 
     def test_12_fake_tool_call_not_executed(self):
@@ -276,13 +285,13 @@ class TestV812BoundedConversation(unittest.TestCase):
             self.assertNotIn(token, blob)
         fake = FakeOllama("ok")
         use_respond_provider_for_tests(fake)
-        execute_respond(_Step("hello"), None)
+        execute_respond(_Step("hello"), _PLAN)
         self.assertNotIn("api_key", fake.last["system_prompt"].lower())
 
     def test_21_no_secrets_in_response_error(self):
         fake = FakeOllama("here is api_key=sk-secret")
         use_respond_provider_for_tests(fake)
-        _, body = execute_respond(_Step("hello"), None)
+        _, body = execute_respond(_Step("hello"), _PLAN)
         self.assertNotIn("sk-secret", body)
         self.assertIn("[REDACTED]", body)
 
@@ -290,7 +299,7 @@ class TestV812BoundedConversation(unittest.TestCase):
         os.environ["PROACTIVE_V8_CONTEXT_ENABLED"] = "true"
         fake = FakeOllama("ok")
         use_respond_provider_for_tests(fake)
-        execute_respond(_Step("hello"), None)
+        execute_respond(_Step("hello"), _PLAN)
         joined = fake.last["prompt"] + fake.last["system_prompt"]
         self.assertNotIn("episodic", joined.lower())
         self.assertNotIn("</safe_context>", joined)
@@ -324,7 +333,7 @@ class TestV812BoundedConversation(unittest.TestCase):
         self.assertEqual(cost_guard.policy, CostPolicyMode.HARD_ZERO)
         paid = FakeNamed("groq")
         use_respond_provider_for_tests(paid)
-        status, _ = execute_respond(_Step("hello"), None)
+        status, _ = execute_respond(_Step("hello"), _PLAN)
         self.assertEqual(status, ExecutionStatus.LOCAL_MODEL_UNAVAILABLE.value)
         self.assertFalse(paid.called)
 
@@ -362,7 +371,7 @@ class TestV812BoundedConversation(unittest.TestCase):
         self.assertNotIn("i'm not capable", blob)
         fake = FakeOllama("def reverse_string(s):\n    return s[::-1]\n")
         use_respond_provider_for_tests(fake)
-        execute_respond(_Step("Write a simple Python function that reverses a string."), None)
+        execute_respond(_Step("Write a simple Python function that reverses a string."), _PLAN)
         sys = fake.last["system_prompt"].lower()
         self.assertIn("code as text", sys)
         self.assertIn("safe_context", sys)
@@ -374,7 +383,7 @@ class TestV812BoundedConversation(unittest.TestCase):
         use_respond_provider_for_tests(fake)
         status, body = execute_respond(
             _Step("Write a simple Python function that reverses a string."),
-            None,
+            _PLAN,
         )
         self.assertEqual(status, ExecutionStatus.SUCCESS.value)
         self.assertIn("```python", body)

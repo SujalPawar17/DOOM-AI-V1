@@ -190,7 +190,8 @@ class PerceptionNormalizer:
         return self._item(owner_id, session_id, modality, source, summary, bytes(data), len(data), info,
                           privacy, timestamp)
 
-    def document(self, owner_id, session_id, name: str, data: bytes, source="file", timestamp=None) -> PerceptualItem:
+    def document(self, owner_id, session_id, name: str, data: bytes, source="file", timestamp=None,
+                 extracted_text: Optional[str] = None) -> PerceptualItem:
         if not isinstance(data, (bytes, bytearray)):
             raise PerceptionError("document bytes required")
         if len(data) > MAX_PAYLOAD_BYTES:
@@ -198,7 +199,12 @@ class PerceptionNormalizer:
         name = str(name or "document")[:120]
         ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
         meta: Dict[str, Any] = {"name": name, "type": ext.lstrip(".") or "unknown"}
-        if ext in TEXT_DOCUMENT_TYPES:
+        if extracted_text is not None:
+            # V13.2: text extracted by a local extractor (DOCX / PDF / text types)
+            meta["words"] = len(extracted_text.split())
+            meta["extracted"] = True
+            summary = f"document {name} ({meta['words']} words): {_bounded_text(extracted_text, 160)}"
+        elif ext in TEXT_DOCUMENT_TYPES:
             text = bytes(data).decode("utf-8", errors="replace")
             meta["words"] = len(text.split())
             meta["lines"] = text.count("\n") + (1 if text and not text.endswith("\n") else 0)

@@ -10,6 +10,10 @@ def _cognitive_os_enabled() -> bool:
     return os.getenv("DOOM_COGNITIVE_OS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _v8_process(text: str, lang: str, source: str) -> str:
+    return doom_core.process_request(text, lang, context={"input_source": source})
+
+
 def submit_user_input(command: str, lang: str = None, *, source: str = "text"):
     """Canonical user-text entry for typed input and voice STT transcripts.
 
@@ -29,13 +33,12 @@ def submit_user_input(command: str, lang: str = None, *, source: str = "text"):
         lang = lm.detect_language_from_text(text)
     try:
         if _cognitive_os_enabled():
-            # Opt-in unified V12 cognitive OS (DOOM_COGNITIVE_OS=1). Default: V8 core.
-            from core.v12.doom_os import get_doom_os
-            response = get_doom_os().handle_text(text, lang, source=source).text
+            # V13.1 controlled rollout of the unified cognitive OS (DOOM_COGNITIVE_OS=1):
+            # safe V8 fallback only if it fails to initialize; never re-runs a request.
+            from core.v13.cognitive_os_rollout import get_rollout
+            response = get_rollout().route(text, lang, source, _v8_process).text
         else:
-            response = doom_core.process_request(
-                text, lang, context={"input_source": source}
-            )
+            response = _v8_process(text, lang, source)
         speak(response, lang=lang)
         return response
     except Exception as e:
